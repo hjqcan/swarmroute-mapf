@@ -118,6 +118,11 @@ public sealed class FleetLoopDriver
         public int Idx { get; set; }
         public int Replans { get; set; }
 
+        /// <summary>Consecutive ticks this en-route agent has failed to advance at the right-of-way gate
+        /// (reset to 0 the moment it moves). A high streak is a physical standoff — a head-on swap or a
+        /// circular blocking chain the lockstep executor can't resolve — which the diagnostic log surfaces.</summary>
+        public int BlockedTicks { get; set; }
+
         /// <summary>When set, the agent is yielding a deadlock: it is being routed to this avoidance site
         /// instead of its goal, until the case is recovered and the target is cleared.</summary>
         public string? RedirectTarget { get; set; }
@@ -177,6 +182,7 @@ public sealed class FleetLoopDriver
         IFleetRedirectQuery? redirects = null,
         Func<CancellationToken, Task<IReadOnlyCollection<string>>>? recoverTick = null,
         Func<string, CancellationToken, Task>? escalateLivelock = null,
+        Action<string>? log = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(cycle);
@@ -187,6 +193,11 @@ public sealed class FleetLoopDriver
         // Anti-livelock backstop: a single victim may be redirected at most this many times before the run
         // escalates it as a livelock (in addition to the strict distance-decrease guard below).
         const int maxRedirectAttempts = 5;
+
+        // Diagnostic: after this many consecutive ticks blocked at the gate, an en-route agent is reported as a
+        // physical standoff (head-on swap / blocking chain) — the case RAG cycle-detection can't see because the
+        // agents HOLD their (interval-separated) reservations rather than wait for one another in the table.
+        const int standoffLogThreshold = 12;
 
         // Stable fleet order (priority then ordinal id) so timeline + routes are reproducible.
         var fleet = agents
@@ -426,10 +437,30 @@ public sealed class FleetLoopDriver
                     if (blockedByMover || occupant is not null)
                     {
                         claimedNext.Add(fromCp); // wait: hold the current CP (and all leases).
+                        ag.BlockedTicks++;
+
+                        // Surface a physical standoff (logged once, when the streak crosses the threshold). The
+                        // reservation table considered these agents interval-separated; lockstep execution (one
+                        // CP/tick) makes them meet, so no Allocation.Contended fires and RAG detection never sees
+                        // it — this log is how that gap becomes visible.
+                        if (log is not null && ag.BlockedTicks == standoffLogThreshold)
+                        {
+                            var occName = occupant?.Id ?? "(higher-priority mover)";
+                            var mutualSwap = occupant is { EnRoute: true, Done: false }
+                                && occupant.Idx + 1 < occupant.CpRoute.Count
+                                && string.Equals(occupant.CpRoute[occupant.Idx + 1], fromCp, StringComparison.Ordinal);
+                            log(
+                                $"standoff@tick{tick}: {ag.Id} stalled {ag.BlockedTicks}+ ticks at {fromCp} wanting {toCp}; " +
+                                $"blocked by {occName}" +
+                                (mutualSwap ? $" which wants {fromCp} back -> HEAD-ON SWAP {ag.Id}<->{occName}" : string.Empty) +
+                                $" (goal {ag.Goal}; redirects so far={redirects_}). " +
+                                "Not a RAG cycle: both hold granted reservations, so deadlock detection won't fire.");
+                        }
                         continue;
                     }
 
                     ag.Idx++;
+                    ag.BlockedTicks = 0;
                     claimedNext.Add(toCp);
                     await cycle.ReleaseAsync(ag.Id,
                     [

@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace SwarmRoute.Simulation.Application;
 
 /// <summary>
@@ -15,15 +17,18 @@ public sealed class SimulationService : ISimulationService
     private readonly GridFieldFactory _gridFactory;
     private readonly FleetLoopDriver _loopDriver;
     private readonly ISimulationEngineFactory _engineFactory;
+    private readonly ILogger<SimulationService> _logger;
 
     public SimulationService(
         GridFieldFactory gridFactory,
         FleetLoopDriver loopDriver,
-        ISimulationEngineFactory engineFactory)
+        ISimulationEngineFactory engineFactory,
+        ILogger<SimulationService> logger)
     {
         _gridFactory = gridFactory ?? throw new ArgumentNullException(nameof(gridFactory));
         _loopDriver = loopDriver ?? throw new ArgumentNullException(nameof(loopDriver));
         _engineFactory = engineFactory ?? throw new ArgumentNullException(nameof(engineFactory));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     /// <inheritdoc />
@@ -62,6 +67,7 @@ public sealed class SimulationService : ISimulationService
                 redirects: engine.Redirects,
                 recoverTick: engine.RecoverTick,
                 escalateLivelock: engine.EscalateLivelock,
+                log: msg => _logger.LogWarning("[standoff] {Detail}", msg),
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 

@@ -1,5 +1,5 @@
 import { useIntl } from 'react-intl'
-import { CheckCircle2, AlertTriangle, CircleSlash } from 'lucide-react'
+import { CheckCircle2, AlertTriangle, CircleSlash, Eye, EyeOff } from 'lucide-react'
 import { useSimStore } from '@/store/simStore'
 import { hueFor } from '@/utils/palette'
 import { sortedAgents } from '@/utils/simModel'
@@ -139,6 +139,8 @@ function AgentList() {
   const intl = useIntl()
   const result = useSimStore((s) => s.result)
   const cursor = useSimStore((s) => s.cursor)
+  const hiddenPaths = useSimStore((s) => s.hiddenPaths)
+  const togglePath = useSimStore((s) => s.togglePath)
   if (!result) return null
 
   const agents = sortedAgents(result.agents)
@@ -157,19 +159,34 @@ function AgentList() {
         {agents.map((a) => {
           const hue = hueFor(a.colorIndex)
           const state = stateById.get(a.id) ?? 'Waiting'
+          const hidden = hiddenPaths.has(a.id)
           return (
-            <li
-              key={a.id}
-              className="flex items-center justify-between rounded-md border border-hairline/60 bg-base px-2.5 py-1.5"
-            >
-              <span className="flex items-center gap-2">
-                <span
-                  className="h-2.5 w-2.5 shrink-0 rounded-full"
-                  style={{ backgroundColor: hue }}
-                />
-                <span className="font-mono text-sm text-text-primary">{a.id}</span>
-              </span>
-              <StateChip state={state} />
+            <li key={a.id}>
+              <button
+                type="button"
+                onClick={() => togglePath(a.id)}
+                aria-pressed={hidden}
+                title={intl.formatMessage({
+                  id: hidden ? 'telemetry.agent.showPath' : 'telemetry.agent.hidePath',
+                })}
+                className="flex w-full items-center justify-between rounded-md border border-hairline/60 bg-base px-2.5 py-1.5 text-left transition-colors hover:border-hairline hover:bg-panel"
+              >
+                <span className={`flex items-center gap-2 transition-opacity ${hidden ? 'opacity-40' : ''}`}>
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: hue }}
+                  />
+                  <span className="font-mono text-sm text-text-primary">{a.id}</span>
+                </span>
+                <span className="flex items-center gap-2">
+                  {hidden ? (
+                    <EyeOff size={14} className="shrink-0 text-text-muted" />
+                  ) : (
+                    <Eye size={14} className="shrink-0 text-text-muted/40" />
+                  )}
+                  <StateChip state={state} />
+                </span>
+              </button>
             </li>
           )
         })}

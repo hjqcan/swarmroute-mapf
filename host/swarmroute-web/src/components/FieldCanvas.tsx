@@ -30,6 +30,7 @@ export default function FieldCanvas() {
   const result = useSimStore((s) => s.result)
   const cursor = useSimStore((s) => s.cursor)
   const playing = useSimStore((s) => s.playing)
+  const hiddenPaths = useSimStore((s) => s.hiddenPaths)
 
   const lookup = useMemo(() => (result ? buildSiteLookup(result) : null), [result])
 
@@ -75,6 +76,7 @@ export default function FieldCanvas() {
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
     for (const agent of agents) {
+      if (hiddenPaths.has(agent.id)) continue
       if (agent.pathSiteIds.length < 2) continue
       ctx.strokeStyle = trailFor(agent.colorIndex)
       ctx.lineWidth = Math.max(2, proj.cell * 0.1)
@@ -198,7 +200,7 @@ export default function FieldCanvas() {
         ctx.stroke()
       }
     }
-  }, [result, lookup, size, reduced])
+  }, [result, lookup, size, reduced, hiddenPaths])
 
   // While playing: one persistent RAF loop that repaints every frame. It reads the
   // LIVE store cursor inside draw(), so it must NOT depend on `cursor` — adding cursor

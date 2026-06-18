@@ -45,6 +45,8 @@
   "telemetry.metric.collisions": "碰撞数",
   "telemetry.metric.replans": "重规划次数",
   "telemetry.agents": "AGV 列表",
+  "telemetry.agent.hidePath": "隐藏该 AGV 的规划路径",
+  "telemetry.agent.showPath": "显示该 AGV 的规划路径",
   "telemetry.empty": "运行后显示状态与各 AGV 明细。",
 
   "state.Waiting": "等待",

@@ -25,6 +25,11 @@ export interface SimState {
   error: string | null
   run: () => Promise<void>
 
+  /* ---- per-agent path visibility on the field (ids whose planned path is hidden) ---- */
+  hiddenPaths: Set<string>
+  /** Toggle one agent's planned-path polyline on the field. */
+  togglePath: (agentId: string) => void
+
   /* ---- playback (a "frame cursor" is a float index into timeline.frames) ---- */
   playing: boolean
   speed: PlaybackSpeed
@@ -66,6 +71,8 @@ export const useSimStore = create<SimState>()(
             loading: false,
             error: null,
             cursor: 0,
+            // A fresh run starts with every path visible again.
+            hiddenPaths: new Set(),
             // Auto-play a successful run so the verification is immediately visible.
             playing: result.timeline.frames.length > 1,
           })
@@ -79,6 +86,16 @@ export const useSimStore = create<SimState>()(
           set({ loading: false, error: message, playing: false })
         }
       },
+
+      hiddenPaths: new Set<string>(),
+      togglePath: (agentId) =>
+        set((s) => {
+          // New Set on every toggle so subscribers (the canvas) see a fresh reference and repaint.
+          const next = new Set(s.hiddenPaths)
+          if (next.has(agentId)) next.delete(agentId)
+          else next.add(agentId)
+          return { hiddenPaths: next }
+        }),
 
       playing: false,
       speed: 1,

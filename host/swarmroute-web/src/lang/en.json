@@ -45,6 +45,8 @@
   "telemetry.metric.collisions": "Collisions",
   "telemetry.metric.replans": "Replans",
   "telemetry.agents": "AGVs",
+  "telemetry.agent.hidePath": "Hide this AGV's planned path",
+  "telemetry.agent.showPath": "Show this AGV's planned path",
   "telemetry.empty": "After a run, shows status and per-AGV detail.",
 
   "state.Waiting": "Waiting",
