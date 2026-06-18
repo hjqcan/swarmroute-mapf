@@ -4,6 +4,10 @@
     <ProjectReference Include="..\SwarmRoute.Deadlock.Application\SwarmRoute.Deadlock.Application.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <LangVersion>latest</LangVersion>

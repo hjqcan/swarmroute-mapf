@@ -2,6 +2,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\SwarmRoute.SpatioTemporal.Kernel\SwarmRoute.SpatioTemporal.Kernel.csproj" />
+    <!-- IRoadmapQueryService returns the domain VO RoadmapGraph, which PathPlanning/Coordination
+         consume through this contract; reference Map.Domain so that type is visible to referencers. -->
+    <ProjectReference Include="..\SwarmRoute.Map.Domain\SwarmRoute.Map.Domain.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
