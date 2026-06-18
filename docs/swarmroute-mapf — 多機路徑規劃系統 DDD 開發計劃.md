@@ -20,8 +20,8 @@
 ### 已鎖定的關鍵決策（來自確認）
 
 1. **建置位置**：在 **repo 根目錄建全新方案 `SwarmRoute.Mapf.sln`**，從 `third-party/AJR.*` 移植邏輯、把圖演算法庫當 project reference 重用；`third-party/` 維持唯讀參考。
-2. **技術堆疊**：**比照 grukirbs** — .NET 8、EF Core 8 + PostgreSQL(Npgsql)、CAP（跨上下文整合事件 / Outbox + RabbitMQ）、Hangfire（背景任務）、內建 DI、AutoMapper、NetDevPack。**不**沿用 AJR.Platform.Minimal 的 SqlSugar/Autofac/Quartz/SignalR/IdentityServer4（該平台僅作參考）。
-3. **DDD 基底**：**內嵌 grukirbs 的 NetDevPack fork**（見下方「NetDevPack 內嵌」一節 — 須取得來源）。
+2. **技術堆疊**：**比照 grukirbs 架構、升級至最新 LTS** — **.NET 10 (LTS, C# 14)**、EF Core 10 + PostgreSQL(Npgsql)、CAP（跨上下文整合事件 / Outbox + RabbitMQ）、Hangfire（背景任務）、內建 DI、AutoMapper、NetDevPack（使用者已提供於 `lib/NetDevPack`）。grukirbs 本身用 .NET 8，本專案統一拉到 .NET 10。**不**沿用 AJR.Platform.Minimal 的 SqlSugar/Autofac/Quartz/SignalR/IdentityServer4（該平台僅作參考）。
+3. **DDD 基底**：**使用 NetDevPack**（使用者已提供於 repo 根 `lib/NetDevPack`，netstandard2.1、相容 net10、免 retarget），以 ProjectReference 納入。
 4. **首個里程碑**：**腳手架 + v0 基線**（移植現有引擎成可跑多機基線），v1–v3 作為路線圖。
 
 ---
@@ -35,8 +35,8 @@
 ```
 /Users/hjqcan/workspace/swarmroute-mapf/
 ├─ SwarmRoute.Mapf.sln
-├─ Directory.Build.props            # net8.0, ImplicitUsings, Nullable, analyzers
-├─ Directory.Packages.props         # 集中套件版本 (EF 8, CAP, Hangfire, AutoMapper)
+├─ Directory.Build.props            # net10.0, ImplicitUsings, Nullable, analyzers
+├─ Directory.Packages.props         # 集中套件版本 (EF Core 10, CAP 9.x, Hangfire 1.8.x, AutoMapper)
 │
 ├─ Shared/                          # 共享核心（對應 grukirbs/Shared）
 │  ├─ SwarmRoute.Domain.Abstractions/      # IBaseRepository<T>；EventBus 抽象 IIntegrationEvent/IIntegrationEventPublisher
@@ -45,7 +45,7 @@
 │  ├─ SwarmRoute.Infra.BackgroundJobs.Core/# Hangfire JobBase、IRecurringJobConfigurator
 │  ├─ SwarmRoute.StateMachine.Core/        # IStateMachine/IStateGuard（Stateless 封裝；對應 grukirbs StateMachine+Guards）
 │  ├─ SwarmRoute.SpatioTemporal.Kernel/  ★ 跨上下文「時空預約」共享語彙（純型別，無行為，見下）
-│  └─ vendor/NetDevPack/                   # 內嵌的 NetDevPack fork（project，見「NetDevPack 內嵌」）
+│  （NetDevPack 由使用者提供於 repo 根 lib/NetDevPack，以 ProjectReference 納入）
 │
 ├─ Map/                             # 上下文1 資源/地圖 — 完整持久化上下文
 │  ├─ SwarmRoute.Map.Domain.Shared/        # MapResourceStatus、MapSiteType、MapLineType、錯誤碼
@@ -91,7 +91,7 @@
 │  └─ SwarmRoute.Host/                     # Program.cs：AddEventBus + 各上下文 IoC + Hangfire + Coordination
 │
 └─ third-party/                     # （既有）唯讀參考 + 可重用演算法庫
-   └─ algorithms/                         # 由 AJR.Platform.Algorithms(.DataStructures) retarget net8.0 後 vendoring 進來
+   └─ algorithms/                         # 由 AJR.Platform.Algorithms(.DataStructures) retarget net10.0 後 vendoring 進來
 ```
 
 ### 各上下文分層矩陣（哪些用完整 grukirbs 分層、哪些精簡）
@@ -207,7 +207,7 @@ MAPF 天生把「規劃 + 預約 + 死鎖」耦在一起；切錯會得到貧血
 
 ## 建置階段（首里程碑 = Phase 0–4：腳手架 + v0 基線）
 
-- **Phase 0 — 骨架與核心（可編譯、空）**：建 `SwarmRoute.Mapf.sln`、`Directory.*.props`、`Shared/` 核心（`Domain.Abstractions/EventBus/Infra.Data.Core/StateMachine.Core/SpatioTemporal.Kernel`）、**內嵌 NetDevPack**（見下）、把 `third-party/algorithms` retarget net8.0 並 vendoring。產出：`dotnet build` 綠燈、無功能。
+- **Phase 0 — 骨架與核心（可編譯、空）**：建 `SwarmRoute.Mapf.sln`、`Directory.*.props`、`Shared/` 核心（`Domain.Abstractions/EventBus/Infra.Data.Core/StateMachine.Core/SpatioTemporal.Kernel`）、納入 `lib/NetDevPack`（ProjectReference）、把 `third-party/algorithms` retarget net10.0 並 vendoring。產出：`dotnet build` 綠燈、無功能。
 - **Phase 1 — Map 完整垂直切片**：移植 `MapSite/MapLine/MapBlock/MapPos/MapResourceStatus/MapSiteType` → `Map.Domain`；建 `Roadmap` 聚合 + `RoadmapGraph`（移植 `GraphMap.Init`）；`MapDbContext`、`IRoadmapRepository`、migration、`MapsController` 匯入 + `IRoadmapQueryService`。產出：HTTP 匯入拓撲、查詢圖。
 - **Phase 2 — 單機端到端（demo 里程碑）**：PathPlanning 精簡專案 + `DijkstraPathPlanner`（移植 `CBS.SearchPath`）消費 `IRoadmapQueryService`；stub `IReservationQuery`（永遠空閒）；最小 `FleetCoordinationLoop` 規劃單車 A→B。產出：**可編譯垂直切片——拓撲進、路徑出**（證明架構）。
 - **Phase 3 — 預約式 TrafficControl（v0 交管）**：建 `ReservationTable` 聚合 + `IResourceAllocator/IReservationCalendar/IConflictDetector`（移植 GraphMap 上鎖/剪枝/`UnlockPath`）；實作真 `ReservationService`；迴圈接 plan→`TryReserve`→拒則重規劃→通過則釋放；加快照 DbContext + `LeaseExpirySweepJob`；發 `Reservation.*` + `Allocation.Contended`。產出：多機不碰撞移動。
@@ -225,13 +225,13 @@ MAPF 天生把「規劃 + 預約 + 死鎖」耦在一起；切錯會得到貧血
 
 ---
 
-## NetDevPack 內嵌（須先解決）
+## NetDevPack（已就緒）
 
-grukirbs 把 NetDevPack 以 **單一 ProjectReference** 引到 `..\..\..\gurkinetdevpack\src\NetDevPack\NetDevPack.csproj`（另有 `GurkiPlugins`、`GurkiCommunication`，皆機器人插件/通訊，**車隊協調器不需要**）。實際只用到 4 個命名空間：`NetDevPack.Domain`(34)、`NetDevPack.Messaging`(28)、`NetDevPack.Data`(18)、`NetDevPack.Utilities`(5)——即 `Entity/IAggregateRoot/ValueObject/DomainEvent/Event/IUnitOfWork/IRepository/IDomainEventDispatcher` 等。
+grukirbs 用 `NetDevPack.Domain`(Entity/IAggregateRoot/ValueObject/DomainEvent)、`NetDevPack.Messaging`(Event/IDomainEventDispatcher)、`NetDevPack.Data`(IUnitOfWork/IRepository)、`NetDevPack.Utilities` 這幾個命名空間（`GurkiPlugins`、`GurkiCommunication` 為機器人插件/通訊，**車隊協調器不需要**）。
 
-**問題**：`gurkinetdevpack` 原始碼**不在 `third-party/` 也不在 workspace 任何位置**（已搜尋確認）。
+**現況（已解決，原 R1 阻塞關閉）**：使用者已將 NetDevPack 放於 repo 根 **`lib/NetDevPack/src/NetDevPack/NetDevPack.csproj`**——目標框架 **netstandard2.1**（與 .NET 10 相容、**免 retarget**），含所有所需型別：`Entity/ValueObject/DomainEvent/IUnitOfWork/IRepository/IDomainEventDispatcher/InMemoryDomainEventDispatcher`（另依賴 FluentValidation 11）。
 
-**行動**：Phase 0 需從使用者的 `gurkinetdevpack` repo 取得該 `src/NetDevPack` 專案，複製進 `Shared/vendor/NetDevPack/` 並以 ProjectReference 引用（與 grukirbs 位元級一致）。**取得前無法編譯**——這是 Phase 0 的前置阻塞。若一時拿不到，退路為改用公開 `NetDevPack` NuGet（fork 即以此為基），介面相容；但這偏離「內嵌 fork」的決定，需再確認。
+**行動**：Phase 0 直接把該 `.csproj` 以 ProjectReference 加入方案各 Domain/Infra 專案即可，無前置阻塞。
 
 ---
 
@@ -246,11 +246,11 @@ grukirbs 把 NetDevPack 以 **單一 ProjectReference** 引到 `..\..\..\gurkine
 
 ## 風險與決策提醒
 
-- **R1（阻塞）NetDevPack 來源**：見上節，須先取得 fork 原始碼。
+- **R1（已解決）NetDevPack 來源**：使用者已提供於 `lib/NetDevPack`（netstandard2.1、相容 net10），以 ProjectReference 納入，原阻塞關閉。
 - **R2 即時預約狀態：記憶體 vs EF**：`ReservationTable` 每控制週期變動，走 `BaseDbContext.Commit()`/Postgres 每 tick 寫會跟不上。**權威狀態 = 記憶體聚合（singleton，`StateVersion` 樂觀並行）；EF 僅作快照+稽核（週期 + 關機時）供崩潰復原。** TrafficControl 的 `Commit()` 語意因此與其他上下文不同，須在程式碼註明（領域事件仍走正常分發）。
 - **R3 鎖模型 v0 設計**：v0 移植整路上鎖**但** `ReservationTable/ResourceLease/SpaceTimeCell` 從一開始就以時間區間為基礎，讓 v1 SIPP 是策略替換而非重寫；**勿**把整路上鎖寫死進聚合不變條件。
 - **R4 單一 `ReservationTable` 聚合 = 爭用瓶頸**：一個 `StateVersion` 串行化全車隊配置；起步可接受，規模化時按 `MapBlock`/zone 分片（建議先讓 `ResourceLease` 可獨立定址、分片延後）。
-- **R5 演算法庫授權/目標框架**：`third-party/algorithms` 為 net6.0 原始碼，retarget net8.0 並 vendoring 前確認無授權限制。
+- **R5 演算法庫授權/目標框架**：`third-party/algorithms` 為 net6.0 原始碼，retarget net10.0 並 vendoring 前確認無授權限制。
 - **R6 迴圈節奏與確定性**：終身 MAPF 需定義觸發模型（固定 tick vs 事件驅動，建議事件驅動 + watchdog tick）與重規劃確定性（tie-break、`HadWaitedTime` 優先），否則 livelock。v2 引入 RHCR 時窗。
 
 ---
