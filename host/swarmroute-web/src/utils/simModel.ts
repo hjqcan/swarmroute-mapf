@@ -84,6 +84,38 @@ export function interpolatePositions(
   return out
 }
 
+/**
+ * The displayed (engine) tick at a float cursor. The cursor is a 0-based index over
+ * the frames array; the engine numbers ticks in `frame.tick` (which need not equal
+ * the index). Always read the label from the frame, never from the cursor.
+ */
+export function tickAtCursor(result: SimulationResult, cursor: number): number {
+  const frames = result.timeline.frames
+  if (frames.length === 0) return 0
+  const idx = Math.max(0, Math.min(frames.length - 1, Math.round(cursor)))
+  return frames[idx].tick
+}
+
+/** First and last engine tick numbers in the timeline. */
+export function tickRange(result: SimulationResult): { first: number; last: number } {
+  const frames = result.timeline.frames
+  if (frames.length === 0) return { first: 0, last: 0 }
+  return { first: frames[0].tick, last: frames[frames.length - 1].tick }
+}
+
+/**
+ * The frame-array index of the colliding tick (for a CollisionDetected run), or null.
+ * The cursor/ribbon-columns are 0-based frame indices, but `stats.collisionTick` is an
+ * engine tick number — this maps between the two so the field flash and the ribbon's
+ * red block/marker land on the correct column instead of comparing a tick to an index.
+ */
+export function collisionFrameIndex(result: SimulationResult): number | null {
+  const { status, collisionTick } = result.stats
+  if (status !== 'CollisionDetected' || collisionTick == null) return null
+  const idx = result.timeline.frames.findIndex((f) => f.tick === collisionTick)
+  return idx >= 0 ? idx : null
+}
+
 /** Stable ordering of agents by colorIndex then id (for ribbon rows + legend). */
 export function sortedAgents(agents: AgentDto[]): AgentDto[] {
   return [...agents].sort((a, b) => a.colorIndex - b.colorIndex || a.id.localeCompare(b.id))

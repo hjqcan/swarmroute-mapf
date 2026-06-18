@@ -5,7 +5,7 @@ import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion'
 import { useElementSize } from '@/hooks/useElementSize'
 import { COLORS, hueFor, withAlpha } from '@/utils/palette'
 import { setupHiDpiCanvas } from '@/utils/canvas'
-import { occupancyByAgent, sortedAgents } from '@/utils/simModel'
+import { collisionFrameIndex, occupancyByAgent, sortedAgents } from '@/utils/simModel'
 
 const PAD_LEFT = 56 // gutter for the agent labels
 const PAD_RIGHT = 14
@@ -92,12 +92,13 @@ export default function ReservationRibbon() {
         ctx.lineTo(x, height - PAD_BOTTOM)
         ctx.stroke()
         ctx.fillStyle = COLORS.textMuted
-        ctx.fillText(String(t), x, PAD_TOP - 11)
+        // Label with the engine tick from the frame, not the column index.
+        ctx.fillText(String(frames[t]?.tick ?? t), x, PAD_TOP - 11)
       }
     }
 
-    const collisionTick =
-      result.stats.status === 'CollisionDetected' ? result.stats.collisionTick : null
+    // Column index of the colliding tick (cursor/columns are 0-based indices, collisionTick is an engine tick).
+    const collisionIdx = collisionFrameIndex(result)
     const collisionAgents = new Set(result.stats.collisionAgentIds ?? [])
 
     /* ---- one row per AGV ---- */
@@ -147,7 +148,7 @@ export default function ReservationRibbon() {
         const w = Math.max(2, colW * 0.78)
         const h = blockH
         const isCollision =
-          collisionTick != null && t === collisionTick && collisionAgents.has(agent.id)
+          collisionIdx != null && t === collisionIdx && collisionAgents.has(agent.id)
         // Holds (same CP as previous) are dimmer; fresh occupancy is brighter.
         const held = prev === cp
         ctx.fillStyle = isCollision ? COLORS.danger : withAlpha(hue, held ? 0.35 : 0.85)
@@ -163,8 +164,8 @@ export default function ReservationRibbon() {
     })
 
     /* ---- collision tick marker (full-height) ---- */
-    if (collisionTick != null) {
-      const x = xForTick(collisionTick)
+    if (collisionIdx != null) {
+      const x = xForTick(collisionIdx)
       ctx.strokeStyle = withAlpha(COLORS.danger, 0.8)
       ctx.lineWidth = 1.5
       ctx.setLineDash([3, 3])

@@ -5,7 +5,7 @@ import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion'
 import { useElementSize } from '@/hooks/useElementSize'
 import { COLORS, hueFor, trailFor, withAlpha } from '@/utils/palette'
 import { makeProjector, setupHiDpiCanvas } from '@/utils/canvas'
-import { buildSiteLookup, interpolatePositions } from '@/utils/simModel'
+import { buildSiteLookup, collisionFrameIndex, interpolatePositions } from '@/utils/simModel'
 
 const MARGIN = 44
 
@@ -52,9 +52,11 @@ export default function FieldCanvas() {
     const r = Math.max(3, Math.min(9, proj.cell * 0.16))
     const liveCursor = useSimStore.getState().cursor
 
-    const collisionTick = stats.status === 'CollisionDetected' ? stats.collisionTick : null
+    // collisionFrameIndex maps the engine's collisionTick to its frame-array index so the
+    // flash fires at the right cursor position (comparing the cursor to the raw tick never matched).
+    const collisionIdx = collisionFrameIndex(result)
     const collisionAgents = new Set(stats.collisionAgentIds ?? [])
-    const atCollision = collisionTick != null && liveCursor >= collisionTick - 0.001
+    const atCollision = collisionIdx != null && liveCursor >= collisionIdx - 0.001
     const flashOn = atCollision && (reduced || Math.floor(Date.now() / 350) % 2 === 0)
 
     /* ---- lanes (faint directed edges) ---- */
@@ -184,9 +186,8 @@ export default function FieldCanvas() {
     }
 
     /* ---- collision ring on the contended control point ---- */
-    if (flashOn && collisionTick != null) {
-      const idx = Math.min(collisionTick, result.timeline.frames.length - 1)
-      const frame = result.timeline.frames[idx]
+    if (flashOn && collisionIdx != null) {
+      const frame = result.timeline.frames[collisionIdx]
       const involved = frame?.positions.filter((p) => collisionAgents.has(p.agentId)) ?? []
       for (const p of involved) {
         const px = proj.toX(p.x)
@@ -217,11 +218,8 @@ export default function FieldCanvas() {
       // Single paint for the paused / scrub / collision-flash-frozen case. If a
       // collision flash is showing while paused, keep a slow blink alive.
       draw()
-      const stats = result?.stats
-      const showingCollision =
-        stats?.status === 'CollisionDetected' &&
-        stats.collisionTick != null &&
-        cursor >= stats.collisionTick - 0.001
+      const collisionIdx = result ? collisionFrameIndex(result) : null
+      const showingCollision = collisionIdx != null && cursor >= collisionIdx - 0.001
       if (showingCollision && !reduced) {
         const loop = () => {
           draw()

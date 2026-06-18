@@ -151,6 +151,16 @@ public sealed class FleetLoopDriver
         var status = FleetLoopStatus.Completed;
         FleetCollisionInfo? collision = null;
 
+        // Record the initial state (tick 0): every agent waiting at its start CP, before any movement. This
+        // gives a viewer a frame where the fleet sits at its origins, so playback visibly departs from A (the
+        // loop below reserves AND advances an agent within the same tick, so tick 1 is already one CP in).
+        frames.Add(new FleetTickFrame(
+            0,
+            fleet
+                .OrderBy(a => a.Id, StringComparer.Ordinal)
+                .Select(a => new FleetTickPosition(a.Id, a.Position, a.State))
+                .ToList()));
+
         while (fleet.Any(a => !a.Done))
         {
             cancellationToken.ThrowIfCancellationRequested();

@@ -2,6 +2,7 @@ import { Segmented, Slider } from 'antd'
 import { Pause, Play, RotateCcw } from 'lucide-react'
 import { useIntl } from 'react-intl'
 import { useSimStore, type PlaybackSpeed } from '@/store/simStore'
+import { tickAtCursor, tickRange } from '@/utils/simModel'
 
 const SPEEDS: PlaybackSpeed[] = [0.5, 1, 2, 4]
 
@@ -37,7 +38,10 @@ export default function PlaybackControls() {
     togglePlaying()
   }
 
-  const currentTick = Math.round(cursor)
+  // Label from the engine tick carried in the frame, not the cursor index, so the
+  // counter matches the collision banner ("第 N 节拍") and the ribbon axis.
+  const currentTick = result ? tickAtCursor(result, cursor) : 0
+  const lastTick = result ? tickRange(result).last : 0
 
   return (
     <div className="flex items-center gap-4">
@@ -81,7 +85,7 @@ export default function PlaybackControls() {
       <span className="hidden font-mono text-2xs tabular-nums text-text-muted sm:inline">
         {intl.formatMessage(
           { id: 'playback.frameOf' },
-          { current: currentTick, total: maxIndex }
+          { current: currentTick, total: lastTick }
         )}
       </span>
 
