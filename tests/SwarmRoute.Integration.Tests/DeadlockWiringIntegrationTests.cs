@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using SwarmRoute.Deadlock.Application.Contract.Services;
+using SwarmRoute.Deadlock.Application.Resolution;
 using SwarmRoute.Deadlock.Application.Services;
 using SwarmRoute.Deadlock.Domain.Events;
 using SwarmRoute.Deadlock.Domain.Services;
@@ -31,6 +32,7 @@ public sealed class DeadlockWiringIntegrationTests
         services.AddScoped<IAvoidancePointSelector, NullAvoidancePointSelector>();
         services.AddScoped<IDetourReservationService, NullDetourReservationService>();
         services.AddScoped<IClearanceConfirmer, NullClearanceConfirmer>();
+        services.AddSingleton<IActiveResolutionRegistry, InMemoryActiveResolutionRegistry>();
         services.AddScoped<IDeadlockAppService, DeadlockAppService>();
 
         var provider = services.BuildServiceProvider();

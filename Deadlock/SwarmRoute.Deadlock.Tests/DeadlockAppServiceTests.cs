@@ -1,4 +1,5 @@
 using System.Linq;
+using SwarmRoute.Deadlock.Application.Resolution;
 using SwarmRoute.Deadlock.Application.Services;
 using SwarmRoute.Deadlock.Domain.Events;
 using SwarmRoute.Deadlock.Domain.Services;
@@ -11,7 +12,8 @@ public class DeadlockAppServiceTests
     private static DeadlockAppService BuildService(
         CapturingIntegrationEventPublisher publisher,
         IAvoidancePointSelector? avoidSelector = null,
-        IDetourReservationService? detour = null)
+        IDetourReservationService? detour = null,
+        IActiveResolutionRegistry? registry = null)
     {
         var resolver = new AvoidanceDeadlockResolver(
             new DeterministicVictimSelector(),
@@ -19,7 +21,9 @@ public class DeadlockAppServiceTests
             detour ?? new NullDetourReservationService(),
             new NullClearanceConfirmer());
 
-        return new DeadlockAppService(new RagDeadlockDetector(), resolver, publisher);
+        return new DeadlockAppService(
+            new RagDeadlockDetector(), resolver, publisher,
+            registry ?? new InMemoryActiveResolutionRegistry());
     }
 
     [Fact]

@@ -9,7 +9,7 @@ namespace SwarmRoute.Deadlock.Domain.Services;
 public sealed class NullAvoidancePointSelector : IAvoidancePointSelector
 {
     /// <inheritdoc />
-    public string? SelectAvoidancePoint(string victimAgentId) => null;
+    public string? SelectAvoidancePoint(string victimAgentId, IReadOnlySet<string>? excludedSiteIds = null) => null;
 }
 
 /// <summary>

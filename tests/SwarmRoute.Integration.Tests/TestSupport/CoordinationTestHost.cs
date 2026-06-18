@@ -1,7 +1,10 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using SwarmRoute.Coordination.Application;
+using SwarmRoute.Coordination.Application.Deadlock;
 using SwarmRoute.Deadlock.Application.Abstractions;
+using SwarmRoute.Deadlock.Application.Contract.Services;
+using SwarmRoute.Deadlock.Domain.Services;
 using SwarmRoute.Deadlock.Infra.CrossCutting.IoC;
 using SwarmRoute.Domain.Abstractions.EventBus;
 using SwarmRoute.EventBus.Extensions;
@@ -9,6 +12,7 @@ using SwarmRoute.Map.Application.Contract.Services;
 using SwarmRoute.Map.Domain.ValueObjects;
 using SwarmRoute.PathPlanning.Infra.CrossCutting.IoC;
 using SwarmRoute.SpatioTemporal.Kernel;
+using SwarmRoute.TrafficControl.Application.Contract.Services;
 using SwarmRoute.TrafficControl.Domain.Services;
 using SwarmRoute.TrafficControl.Infra.CrossCutting.IoC;
 
@@ -35,10 +39,15 @@ public sealed class CoordinationTestHost : IDisposable
         Services = services;
     }
 
+    /// <param name="avoidSite">When set, wires the deadlock-resolution seams for closed-loop tests: a fixed
+    /// avoidance-point selector returning this site, an always-grant detour, and a real snapshot-re-detecting
+    /// clearance confirmer (replacing the bootstrapper's Null seams). When null the Null seams stand (M1/M2/M3
+    /// detect-only behaviour is unchanged).</param>
     public static CoordinationTestHost Build(
         RoadmapGraph graph,
         IFleetClock? clock = null,
-        IResourceTopology? topology = null)
+        IResourceTopology? topology = null,
+        string? avoidSite = null)
     {
         var roadmapId = Guid.NewGuid();
         var services = new ServiceCollection();
@@ -77,6 +86,17 @@ public sealed class CoordinationTestHost : IDisposable
         DeadlockNativeInjectorBootStrapper.RegisterServices(services);
         services.AddScoped<IDeadlockSnapshotProvider, TrafficSnapshotDeadlockTestAdapter>();
 
+        // 6b. Opt-in: wire the resolution seams so a detected deadlock is actually resolved + recovered.
+        if (avoidSite is not null)
+        {
+            services.RemoveAll<IAvoidancePointSelector>();
+            services.AddScoped<IAvoidancePointSelector>(_ => new FixedAvoidancePointSelector(avoidSite));
+            services.RemoveAll<IDetourReservationService>();
+            services.AddScoped<IDetourReservationService, AlwaysGrantDetourReservationService>();
+            services.RemoveAll<IClearanceConfirmer>();
+            services.AddScoped<IClearanceConfirmer, SnapshotClearanceConfirmer>();
+        }
+
         // 7. Coordination cycle (no hosted loop — tests drive RunCycleAsync directly).
         services.AddCoordination();
 
@@ -86,6 +106,15 @@ public sealed class CoordinationTestHost : IDisposable
     public IFleetCoordinationCycle Cycle => Services.GetRequiredService<IFleetCoordinationCycle>();
 
     public CapturingIntegrationEventHandler Events => Services.GetRequiredService<CapturingIntegrationEventHandler>();
+
+    /// <summary>The write seam used to seed/clear reservations (and to drive contention-triggered scans).</summary>
+    public ITrafficCoordinatorAppService Traffic => Services.GetRequiredService<ITrafficCoordinatorAppService>();
+
+    /// <summary>The recovery pump that drives ConfirmCleared → Recover → Resolved for open resolutions.</summary>
+    public IDeadlockRecoveryService Recovery => Services.GetRequiredService<IDeadlockRecoveryService>();
+
+    /// <summary>The Coordination-side redirect projection populated by the deadlock-resolution consumer.</summary>
+    public IFleetRedirectQuery Redirects => Services.GetRequiredService<IFleetRedirectQuery>();
 
     public void Dispose() => Services.Dispose();
 }

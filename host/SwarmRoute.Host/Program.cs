@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using SwarmRoute.Coordination.Application;
 using SwarmRoute.Deadlock.Application.Abstractions;
+using SwarmRoute.Deadlock.Application.Resolution;
 using SwarmRoute.Deadlock.Domain.Services;
 using SwarmRoute.EventBus.Extensions;
 using SwarmRoute.Host.Adapters;
@@ -67,8 +68,18 @@ builder.Services.AddSingleton<IResourceTopology, MapResourceTopologyAdapter>();
 
 //    6b. Deadlock seams (Null* were registered via TryAdd by the bootstrapper, so these explicit ones win).
 builder.Services.AddScoped<IDeadlockSnapshotProvider, TrafficSnapshotDeadlockAdapter>();
-builder.Services.AddScoped<IAvoidancePointSelector, MapAvoidancePointSelector>();
 builder.Services.AddScoped<IDetourReservationService, TrafficDetourReservationAdapter>();
+//        Avoidance-point selection: Map-backed selector wrapped in the anti-livelock "no repeat point" guard
+//        (singleton history remembers the last point per victim across scans).
+builder.Services.AddSingleton<AvoidancePointHistory>();
+builder.Services.AddScoped<MapAvoidancePointSelector>();
+builder.Services.AddScoped<IAvoidancePointSelector>(sp =>
+    new AntiLivelockAvoidancePointSelector(
+        sp.GetRequiredService<MapAvoidancePointSelector>(),
+        sp.GetRequiredService<AvoidancePointHistory>()));
+//        Clearance: confirm recovery by re-detecting over a fresh TrafficControl snapshot (replaces the
+//        optimistic NullClearanceConfirmer registered by the bootstrapper).
+builder.Services.AddScoped<IClearanceConfirmer, SnapshotClearanceConfirmer>();
 
 // 7. Coordination cycle + hosted watchdog loop.
 builder.Services.AddCoordination(registerHostedLoop: true);

@@ -1,4 +1,5 @@
 using SwarmRoute.Coordination.Application;
+using SwarmRoute.Coordination.Application.Deadlock;
 using SwarmRoute.Map.Domain.ValueObjects;
 using SwarmRoute.SpatioTemporal.Kernel;
 
@@ -52,7 +53,10 @@ public sealed record FleetCollisionInfo(int Tick, string SiteId, IReadOnlyList<s
 /// <param name="Collisions">Detected CP collisions among agents holding right-of-way (0 for a clean run).</param>
 /// <param name="Arrived">Agents that reached their goal.</param>
 /// <param name="Replans">Total prune-and-replan retries observed across the run.</param>
-public sealed record FleetLoopStats(FleetLoopStatus Status, int Ticks, int Collisions, int Arrived, int Replans);
+/// <param name="Redirects">Total deadlock redirects enacted (victims sent to an avoidance site).</param>
+/// <param name="Recoveries">Total deadlock recoveries (victims restored to their original goal after the cycle cleared).</param>
+public sealed record FleetLoopStats(
+    FleetLoopStatus Status, int Ticks, int Collisions, int Arrived, int Replans, int Redirects = 0, int Recoveries = 0);
 
 /// <summary>The full recorded result of a closed-loop run.</summary>
 /// <param name="Frames">Tick-by-tick timeline (includes the colliding tick when one occurs).</param>
@@ -114,6 +118,24 @@ public sealed class FleetLoopDriver
         public int Idx { get; set; }
         public int Replans { get; set; }
 
+        /// <summary>When set, the agent is yielding a deadlock: it is being routed to this avoidance site
+        /// instead of its goal, until the case is recovered and the target is cleared.</summary>
+        public string? RedirectTarget { get; set; }
+
+        /// <summary>How many distinct deadlock redirects this agent has been given (anti-livelock guard).</summary>
+        public int RedirectAttempts { get; set; }
+
+        /// <summary>Best (smallest) graph distance to the ORIGINAL goal observed at a redirect decision; the
+        /// anti-livelock guard requires this to strictly decrease across redirects, else it escalates.</summary>
+        public long BestDistanceToGoal { get; set; } = long.MaxValue;
+
+        /// <summary>The goal to plan toward this tick: the avoidance site while redirecting, else the real goal.</summary>
+        public string EffectiveGoal => RedirectTarget ?? Goal;
+
+        /// <summary>True while the agent is yielding to an avoidance site and physically sitting on it (waiting
+        /// for recovery to restore its original goal). Such an agent is not re-planned and is not "done".</summary>
+        public bool HoldingAtAvoidSite => RedirectTarget is not null && !EnRoute && !Done && Start == RedirectTarget;
+
         /// <summary>Where the agent physically sits this tick: current CP if en route/arrived, else its origin.</summary>
         public string Position => EnRoute || Done ? CpRoute[Idx] : Start;
 
@@ -128,6 +150,15 @@ public sealed class FleetLoopDriver
     /// </summary>
     /// <param name="advanceClock">Sets the fleet clock to the current tick at the start of each tick (the sim
     /// passes its <see cref="ManualFleetClock"/>'s setter); when null the engine's own clock is left untouched.</param>
+    /// <param name="redirects">Optional deadlock-redirect projection. When supplied, the driver enacts the
+    /// Deadlock context's resolutions: a victim with an active redirect is re-planned from its current CP to the
+    /// avoidance site; a recovered victim is restored to its original goal; an escalated (livelock) victim stops
+    /// being redirected. When null, deadlock resolution is inert (back-compat with the plain sim/closed-loop tests).</param>
+    /// <param name="recoverTick">Optional per-tick recovery pump (bound to <c>IDeadlockRecoveryService.TryRecoverAllAsync</c>
+    /// by the host/test). Drives <c>ConfirmCleared → Recover → Resolved</c> for open resolutions whose cycle has cleared.</param>
+    /// <param name="escalateLivelock">Optional escalation hook (bound to <c>IDeadlockEscalationService.EscalateLivelockAsync</c>):
+    /// invoked when the anti-livelock guard fires (a redirect would not strictly reduce the victim's distance to its
+    /// original goal, or the attempt cap is hit).</param>
     /// <exception cref="ArgumentNullException">If <paramref name="cycle"/>, <paramref name="graph"/> or <paramref name="agents"/> is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException">If <paramref name="maxTicks"/> &lt; 1.</exception>
     /// <exception cref="FleetLoopException">Only on an internal invariant breach (reserved path not start→goal).</exception>
@@ -138,12 +169,19 @@ public sealed class FleetLoopDriver
         IReadOnlyCollection<FleetAgentSpec> agents,
         int maxTicks,
         Action<long>? advanceClock = null,
+        IFleetRedirectQuery? redirects = null,
+        Func<CancellationToken, Task<IReadOnlyCollection<string>>>? recoverTick = null,
+        Func<string, CancellationToken, Task>? escalateLivelock = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(cycle);
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(agents);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxTicks, 1);
+
+        // Anti-livelock backstop: a single victim may be redirected at most this many times before the run
+        // escalates it as a livelock (in addition to the strict distance-decrease guard below).
+        const int maxRedirectAttempts = 5;
 
         // Stable fleet order (priority then ordinal id) so timeline + routes are reproducible.
         var fleet = agents
@@ -156,6 +194,8 @@ public sealed class FleetLoopDriver
         var tick = 0;
         var collisions = 0;
         var maxConcurrent = 0;
+        var redirects_ = 0;
+        var recoveries = 0;
         var status = FleetLoopStatus.Completed;
         FleetCollisionInfo? collision = null;
 
@@ -172,6 +212,21 @@ public sealed class FleetLoopDriver
                 .OrderBy(a => a.Id, StringComparer.Ordinal)
                 .Select(a => new FleetTickPosition(a.Id, a.Position, a.State))
                 .ToList()));
+
+        // Drops an agent's in-flight reservation and resets it to "pending at its current CP" so the next cycle
+        // re-plans it (toward its EffectiveGoal) from where it physically stands. Used to redirect a deadlock
+        // victim onto its avoidance route and to restore it to its real goal once recovered.
+        async Task YieldAndReplanFromCurrentAsync(RunAgent ag)
+        {
+            var here = ag.Position;
+            if (ag.AllResources.Count > 0)
+                await cycle.ReleaseAsync(ag.Id, ag.AllResources, cancellationToken).ConfigureAwait(false);
+            ag.EnRoute = false;
+            ag.Start = here;
+            ag.CpRoute = new[] { here };
+            ag.Idx = 0;
+            ag.AllResources = Array.Empty<ResourceRef>();
+        }
 
         while (fleet.Any(a => !a.Done))
         {
@@ -191,10 +246,64 @@ public sealed class FleetLoopDriver
             // reservation table's interval collision-freedom to actual execution.
             advanceClock?.Invoke(tick);
 
-            // (1) Plan + reserve every agent that still needs right-of-way.
+            // (0) Deadlock resolution (only when wired). Recover cleared victims first (so a restored victim
+            //     re-plans toward its real goal THIS tick), then enact any newly-requested redirects. This is the
+            //     consumer side of Deadlock.Case.ResolutionRequested/Resolved/Escalated: the events populate the
+            //     redirect store during the previous cycle's TryReserve; the driver (the v0 execution layer that
+            //     actually knows each agent's pose) acts on them here.
+            if (redirects is not null)
+            {
+                // 0a. Pump recovery: drive ConfirmCleared → Recover → Resolved for any open resolution whose
+                //     cycle has cleared. Runs BETWEEN ticks (never nested inside a TryReserve publish).
+                if (recoverTick is not null)
+                    await recoverTick(cancellationToken).ConfigureAwait(false);
+
+                foreach (var ag in fleet.Where(a => a.RedirectTarget is not null && !a.Done))
+                {
+                    // Recovered (cycle cleared) or escalated (livelock): stop yielding, restore the real goal.
+                    if (redirects.IsRecovered(ag.Id) || redirects.IsEscalated(ag.Id))
+                    {
+                        if (redirects.IsRecovered(ag.Id))
+                            recoveries++;
+                        ag.RedirectTarget = null;
+                        await YieldAndReplanFromCurrentAsync(ag).ConfigureAwait(false);
+                    }
+                }
+
+                // 0b. Enact new redirects requested by the Deadlock context.
+                foreach (var intent in redirects.ActiveRedirects)
+                {
+                    var ag = fleet.FirstOrDefault(a => a.Id == intent.VictimAgentId);
+                    if (ag is null || ag.Done)
+                        continue;
+                    if (string.Equals(ag.RedirectTarget, intent.AvoidSiteId, StringComparison.Ordinal))
+                        continue; // already enacting this redirect
+
+                    // Anti-livelock: a redirect is allowed only if the victim's distance to its ORIGINAL goal
+                    // strictly decreased since the last redirect (net progress), bounded by an attempt cap.
+                    // Otherwise escalate as a livelock and stop redirecting it (DoD §6 / WS-Q3).
+                    var dist = graph.DistanceTo(ag.Position, ag.Goal) ?? long.MaxValue;
+                    var noProgress = ag.RedirectAttempts >= 1 && dist >= ag.BestDistanceToGoal;
+                    if (noProgress || ag.RedirectAttempts >= maxRedirectAttempts)
+                    {
+                        if (escalateLivelock is not null)
+                            await escalateLivelock(ag.Id, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    ag.BestDistanceToGoal = Math.Min(ag.BestDistanceToGoal, dist);
+                    ag.RedirectAttempts++;
+                    redirects_++;
+                    ag.RedirectTarget = intent.AvoidSiteId;
+                    await YieldAndReplanFromCurrentAsync(ag).ConfigureAwait(false);
+                }
+            }
+
+            // (1) Plan + reserve every agent that still needs right-of-way. A victim holding at its avoidance
+            //     site (waiting for recovery) is intentionally NOT re-planned.
             var pending = fleet
-                .Where(a => !a.Done && !a.EnRoute)
-                .Select(a => new AgentGoal(a.Id, a.Start, a.Goal, a.Priority))
+                .Where(a => !a.Done && !a.EnRoute && !a.HoldingAtAvoidSite)
+                .Select(a => new AgentGoal(a.Id, a.Start, a.EffectiveGoal, a.Priority))
                 .ToList();
 
             if (pending.Count > 0)
@@ -219,9 +328,9 @@ public sealed class FleetLoopDriver
                             .ToList();
                         ag.AllResources = r.Path!.Cells.Select(c => c.Resource).Distinct().ToList();
 
-                        if (ag.CpRoute.Count == 0 || ag.CpRoute[0] != ag.Start || ag.CpRoute[^1] != ag.Goal)
+                        if (ag.CpRoute.Count == 0 || ag.CpRoute[0] != ag.Start || ag.CpRoute[^1] != ag.EffectiveGoal)
                             throw new FleetLoopException(
-                                $"Reserved path for '{ag.Id}' does not run {ag.Start}->{ag.Goal} " +
+                                $"Reserved path for '{ag.Id}' does not run {ag.Start}->{ag.EffectiveGoal} " +
                                 $"(got [{string.Join(",", ag.CpRoute)}]).");
                     }
                 }
@@ -295,13 +404,26 @@ public sealed class FleetLoopDriver
 
                 if (ag.Idx >= ag.CpRoute.Count - 1)
                 {
-                    // Arrived: hand back everything still held (goal CP + any remainder) — no leak — and mark the
-                    // goal CP as a parked obstacle so the rest of the fleet routes around it.
-                    ag.Done = true;
-                    ag.EnRoute = false;
-                    claimedNext.Add(ag.Position);
-                    parkedCells.Add(ag.Position);
-                    await cycle.ReleaseAsync(ag.Id, ag.AllResources, cancellationToken).ConfigureAwait(false);
+                    var here = ag.CpRoute[ag.Idx];
+                    if (ag.RedirectTarget is not null)
+                    {
+                        // Reached the avoidance site: hold here (keeping the avoid-site lease) and wait for the
+                        // deadlock case to recover — this is NOT the real goal, so the agent is not "done". The
+                        // (0) block restores the original goal once the cycle clears.
+                        ag.EnRoute = false;
+                        ag.Start = here;
+                        claimedNext.Add(here);
+                    }
+                    else
+                    {
+                        // Arrived at the real goal: hand back everything still held (goal CP + any remainder) — no
+                        // leak — and mark the goal CP as a parked obstacle so the rest of the fleet routes around it.
+                        ag.Done = true;
+                        ag.EnRoute = false;
+                        claimedNext.Add(here);
+                        parkedCells.Add(here);
+                        await cycle.ReleaseAsync(ag.Id, ag.AllResources, cancellationToken).ConfigureAwait(false);
+                    }
                 }
             }
 
@@ -349,7 +471,9 @@ public sealed class FleetLoopDriver
             Ticks: tick,
             Collisions: collisions,
             Arrived: fleet.Count(a => a.Done),
-            Replans: fleet.Sum(a => a.Replans));
+            Replans: fleet.Sum(a => a.Replans),
+            Redirects: redirects_,
+            Recoveries: recoveries);
 
         return new FleetLoopResult(frames, routes, stats, maxConcurrent, collision);
     }

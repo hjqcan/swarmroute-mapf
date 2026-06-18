@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using SwarmRoute.Deadlock.Application.Abstractions;
 using SwarmRoute.Deadlock.Application.Contract.Services;
+using SwarmRoute.Deadlock.Application.Resolution;
 using SwarmRoute.Deadlock.Application.Services;
 using SwarmRoute.Deadlock.Application.Subscribers;
 using SwarmRoute.Deadlock.Domain.Services;
@@ -59,8 +60,14 @@ public static class DeadlockNativeInjectorBootStrapper
         services.TryAddScoped<IClearanceConfirmer, NullClearanceConfirmer>();
         services.TryAddScoped<IDeadlockSnapshotProvider, NullDeadlockSnapshotProvider>();
 
-        // Application - service & subscriber
+        // Open-resolution registry: SINGLETON so the live case/plan survive between the scan that opens a
+        // resolution and the later tick that recovers it (the Deadlock context persists no EF state).
+        services.TryAddSingleton<IActiveResolutionRegistry, InMemoryActiveResolutionRegistry>();
+
+        // Application - service, recovery driver & subscriber
         services.AddScoped<IDeadlockAppService, DeadlockAppService>();
+        services.AddScoped<IDeadlockRecoveryService, DeadlockRecoveryService>();
+        services.AddScoped<IDeadlockEscalationService, DeadlockEscalationService>();
         services.AddScoped<AllocationContendedSubscriber>();
         services.AddScoped<IIntegrationEventHandler>(sp =>
             sp.GetRequiredService<AllocationContendedSubscriber>());

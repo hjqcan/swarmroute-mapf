@@ -20,7 +20,8 @@ internal sealed class CapturingIntegrationEventPublisher : IIntegrationEventPubl
 /// <summary>Avoidance-point selector that always returns a fixed site (simulates an integrated map).</summary>
 internal sealed class FixedAvoidancePointSelector(string siteId) : IAvoidancePointSelector
 {
-    public string? SelectAvoidancePoint(string victimAgentId) => siteId;
+    public string? SelectAvoidancePoint(string victimAgentId, IReadOnlySet<string>? excludedSiteIds = null)
+        => excludedSiteIds is not null && excludedSiteIds.Contains(siteId) ? null : siteId;
 }
 
 /// <summary>Detour reservation that always succeeds (simulates an integrated TrafficControl).</summary>

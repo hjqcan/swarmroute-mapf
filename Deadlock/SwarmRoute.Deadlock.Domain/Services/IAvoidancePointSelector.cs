@@ -18,5 +18,8 @@ public interface IAvoidancePointSelector
     /// is currently available (the resolver then escalates).
     /// </summary>
     /// <param name="victimAgentId">The agent that must yield.</param>
-    string? SelectAvoidancePoint(string victimAgentId);
+    /// <param name="excludedSiteIds">Site ids the selector should NOT return (e.g. the point chosen on the
+    /// previous attempt — the anti-livelock "don't pick the same point twice in a row" guard). When the only
+    /// otherwise-valid candidate is excluded the caller may retry with no exclusion. Null/empty = no exclusion.</param>
+    string? SelectAvoidancePoint(string victimAgentId, IReadOnlySet<string>? excludedSiteIds = null);
 }

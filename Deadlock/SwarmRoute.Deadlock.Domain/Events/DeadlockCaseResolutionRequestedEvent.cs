@@ -1,5 +1,6 @@
 using NetDevPack.Messaging;
 using SwarmRoute.Deadlock.Domain.Shared.Enums;
+using SwarmRoute.Deadlock.Domain.Shared.Events;
 using SwarmRoute.Domain.Abstractions.EventBus;
 
 namespace SwarmRoute.Deadlock.Domain.Events;
@@ -10,8 +11,11 @@ namespace SwarmRoute.Deadlock.Domain.Events;
 /// and re-plan it. Carries the victim agent id and the suggested avoid target so the consumer does not
 /// have to re-derive them.
 /// </summary>
-public class DeadlockCaseResolutionRequestedEvent : DomainEvent, IIntegrationEvent
+public class DeadlockCaseResolutionRequestedEvent : DomainEvent, IIntegrationEvent, IDeadlockResolutionRequested
 {
+    /// <inheritdoc />
+    public Guid CaseId => AggregateId;
+
     public DeadlockCaseResolutionRequestedEvent(
         Guid caseId,
         string victimAgentId,

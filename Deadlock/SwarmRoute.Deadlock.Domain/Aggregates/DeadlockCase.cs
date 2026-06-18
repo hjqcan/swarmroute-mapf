@@ -157,6 +157,28 @@ public class DeadlockCase : Entity, IAggregateRoot
         IncrementStateVersion();
     }
 
+    /// <summary>
+    /// Detected/Resolving → Escalated, classified as <see cref="DeadlockKind.Livelock"/>, raising
+    /// <see cref="DeadlockCaseEscalatedEvent"/>. Used by the anti-livelock guard when a redirected victim
+    /// makes no progress (its distance to the original goal did not strictly decrease, or the only
+    /// avoidance point would repeat). Unlike <see cref="Escalate"/> this carries the victim + raises an
+    /// integration event so the fleet stops redirecting the victim. Idempotent if already escalated.
+    /// </summary>
+    public void EscalateLivelock(string? reason = null)
+    {
+        if (Status == DeadlockCaseStatus.Escalated)
+            return;
+        if (Status == DeadlockCaseStatus.Resolved)
+            throw new InvalidOperationException(
+                $"{DeadlockErrorCodes.InvalidTransition}: cannot escalate from {Status}.");
+
+        Kind = DeadlockKind.Livelock;
+        Status = DeadlockCaseStatus.Escalated;
+        IncrementStateVersion();
+
+        AddDomainEvent(new DeadlockCaseEscalatedEvent(Id, VictimAgentId ?? string.Empty, Kind, reason));
+    }
+
     private void IncrementStateVersion()
     {
         checked { StateVersion++; }

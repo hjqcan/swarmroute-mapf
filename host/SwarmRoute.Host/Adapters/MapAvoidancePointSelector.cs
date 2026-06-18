@@ -48,7 +48,7 @@ public sealed class MapAvoidancePointSelector : IAvoidancePointSelector
     }
 
     /// <inheritdoc />
-    public string? SelectAvoidancePoint(string victimAgentId)
+    public string? SelectAvoidancePoint(string victimAgentId, IReadOnlySet<string>? excludedSiteIds = null)
     {
         if (string.IsNullOrWhiteSpace(victimAgentId))
             return null;
@@ -75,6 +75,7 @@ public sealed class MapAvoidancePointSelector : IAvoidancePointSelector
             var candidate = roadmap.Sites
                 .Where(s => s.Enable && s.SiteType == type)
                 .Select(s => s.SiteId)
+                .Where(id => excludedSiteIds is null || !excludedSiteIds.Contains(id))
                 .Where(id => IsCandidateFree(id, victimAgentId, occupiedByOthers))
                 .OrderBy(id => id, StringComparer.Ordinal)
                 .FirstOrDefault();
