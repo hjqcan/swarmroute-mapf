@@ -1,5 +1,6 @@
 using SwarmRoute.TrafficControl.Application.Services;
 using SwarmRoute.TrafficControl.Domain.Aggregates;
+using SwarmRoute.TrafficControl.Domain.Shared;
 using static SwarmRoute.TrafficControl.Tests.TestHelpers;
 
 namespace SwarmRoute.TrafficControl.Tests;
@@ -63,5 +64,19 @@ public class SnapshotProviderTests
 
         Assert.Contains(("AGV-A", Cp("S1")), snapshot.Owns);
         Assert.Contains(("AGV-B", Lane("S1")), snapshot.Owns);
+    }
+
+    [Fact]
+    public void Reversed_lane_contention_waits_on_the_blocking_owned_lane()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        Assert.Equal(AllocationOutcome.Granted, table.TryGrant(Path(Cell(Lane("A-B"), 0, 100)), "AGV-A"));
+        Assert.Equal(AllocationOutcome.Queued, table.TryGrant(Path(Cell(Lane("B-A"), 50, 150)), "AGV-B"));
+
+        var snapshot = new TrafficControlSnapshotProvider(table).GetSnapshot();
+
+        Assert.Contains(("AGV-A", Lane("A-B")), snapshot.Owns);
+        Assert.Contains(("AGV-B", Lane("A-B")), snapshot.Waits);
+        Assert.DoesNotContain(("AGV-B", Lane("B-A")), snapshot.Waits);
     }
 }

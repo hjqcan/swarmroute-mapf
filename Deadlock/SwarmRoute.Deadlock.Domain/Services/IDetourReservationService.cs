@@ -15,5 +15,8 @@ public interface IDetourReservationService
     /// Attempts to reserve a collision-free detour for <paramref name="victimAgentId"/> to
     /// <paramref name="avoidanceSiteId"/>. Returns <see langword="true"/> if the detour was granted.
     /// </summary>
-    bool TryReserveDetour(string victimAgentId, string avoidanceSiteId);
+    Task<bool> TryReserveDetourAsync(
+        string victimAgentId,
+        string avoidanceSiteId,
+        CancellationToken cancellationToken = default);
 }

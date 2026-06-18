@@ -84,6 +84,20 @@ public class ReservationTableTests
     }
 
     [Fact]
+    public void Successful_retry_removes_the_agents_stale_wait_edges()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        table.TryGrant(Path(Cell(Cp("S1"), 0, 100)), "AGV-A");
+
+        Assert.Equal(AllocationOutcome.Queued, table.TryGrant(Path(Cell(Cp("S1"), 50, 150)), "AGV-B"));
+        Assert.Contains(table.ContendedRequests, r => r.AgentId == "AGV-B" && r.Resource == Cp("S1"));
+
+        Assert.Equal(AllocationOutcome.Granted, table.TryGrant(Path(Cell(Cp("S2"), 50, 150)), "AGV-B"));
+
+        Assert.DoesNotContain(table.ContendedRequests, r => r.AgentId == "AGV-B");
+    }
+
+    [Fact]
     public void Reversed_lane_overlap_is_queued_as_same_physical_edge_conflict()
     {
         var table = new ReservationTable(EmptyTopology);
@@ -94,7 +108,8 @@ public class ReservationTableTests
 
         Assert.Equal(AllocationOutcome.Queued, outcome);
         Assert.DoesNotContain(table.ActiveLeases, l => l.AgentId == "AGV-B");
-        Assert.Contains(table.ContendedRequests, r => r.AgentId == "AGV-B" && r.Resource == Lane("B-A"));
+        Assert.Contains(table.ContendedRequests, r => r.AgentId == "AGV-B" && r.Resource == Lane("A-B"));
+        Assert.DoesNotContain(table.ContendedRequests, r => r.AgentId == "AGV-B" && r.Resource == Lane("B-A"));
     }
 
     // ---- Release-no-leak regression: ParentBlock + interference closure freed ----
@@ -274,12 +289,30 @@ public class ReservationTableTests
     }
 
     [Fact]
-    public void Same_agent_may_hold_overlapping_windows_of_one_resource()
+    public void Same_agent_overlapping_windows_of_one_resource_are_merged()
     {
         var table = new ReservationTable(EmptyTopology);
         Assert.Equal(AllocationOutcome.Granted, table.TryGrant(Path(Cell(Cp("S1"), 0, 100)), "AGV-A"));
-        // Same agent, overlapping window on the same resource is allowed (not a conflict).
+        // Same agent, overlapping window on the same resource is allowed, but the table stores one union lease.
         Assert.Equal(AllocationOutcome.Granted, table.TryGrant(Path(Cell(Cp("S1"), 50, 150)), "AGV-A"));
-        Assert.Equal(2, table.ActiveLeases.Count);
+        var lease = Assert.Single(table.ActiveLeases);
+        Assert.Equal(T(0, 150), lease.Interval);
+    }
+
+    [Fact]
+    public void Same_agent_exact_duplicate_reservation_is_idempotent()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        var path = Path(Cell(Cp("S1"), 0, 100));
+
+        Assert.Equal(AllocationOutcome.Granted, table.TryGrant(path, "AGV-A"));
+        var version = table.StateVersion;
+        table.ClearDomainEvents();
+
+        Assert.Equal(AllocationOutcome.Granted, table.TryGrant(path, "AGV-A"));
+
+        Assert.Single(table.ActiveLeases);
+        Assert.Equal(version, table.StateVersion);
+        Assert.True(table.DomainEvents is null || table.DomainEvents.Count == 0);
     }
 }

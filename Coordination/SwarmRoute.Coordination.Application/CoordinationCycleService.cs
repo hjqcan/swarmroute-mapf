@@ -16,7 +16,7 @@ namespace SwarmRoute.Coordination.Application;
 ///   <item><description>Map: <see cref="IRoadmapQueryService.GetGraphAsync"/> (cached, in-process).</description></item>
 ///   <item><description>TrafficControl: <see cref="IReservationQuery.GetView"/> for the current reservation view.</description></item>
 ///   <item><description>PathPlanning: <see cref="IPathPlanner.Plan"/> over the graph + view.</description></item>
-///   <item><description>TrafficControl: <see cref="ITrafficCoordinatorAppService.TryReserve"/> — on
+///   <item><description>TrafficControl: <see cref="ITrafficCoordinatorAppService.TryReserveAsync"/> — on
 ///     <see cref="AllocationOutcome.Queued"/>/<see cref="AllocationOutcome.Blocked"/> the contended CP/Lane
 ///     resources are pruned (fed back as the planner's blacklist) and the agent is re-planned, bounded by
 ///     <see cref="MaxReplanAttempts"/>.</description></item>
@@ -43,6 +43,7 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
     private readonly IReservationQuery _reservations;
     private readonly IPathPlanner _planner;
     private readonly ITrafficCoordinatorAppService _traffic;
+    private readonly IFleetClock _clock;
     private readonly ILogger<CoordinationCycleService> _logger;
 
     public CoordinationCycleService(
@@ -50,12 +51,14 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
         IReservationQuery reservations,
         IPathPlanner planner,
         ITrafficCoordinatorAppService traffic,
+        IFleetClock clock,
         ILogger<CoordinationCycleService> logger)
     {
         _roadmaps = roadmaps ?? throw new ArgumentNullException(nameof(roadmaps));
         _reservations = reservations ?? throw new ArgumentNullException(nameof(reservations));
         _planner = planner ?? throw new ArgumentNullException(nameof(planner));
         _traffic = traffic ?? throw new ArgumentNullException(nameof(traffic));
+        _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -72,6 +75,9 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
         // Map: the roadmap graph for this horizon (cached, in-process).
         var graph = await _roadmaps.GetGraphAsync(roadmapId, cancellationToken).ConfigureAwait(false);
 
+        // One rolling-horizon timestamp per cycle; every planned interval is expressed on this fleet clock.
+        var cycleReleaseTimeMs = _clock.NowMs;
+
         // Deterministic priority order: lower Priority first, then ordinal agent id.
         var ordered = goals
             .OrderBy(g => g.Priority)
@@ -82,13 +88,19 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
         foreach (var goal in ordered)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            results.Add(PlanAndReserve(roadmapId, graph, goal));
+            results.Add(await PlanAndReserveAsync(roadmapId, graph, goal, cycleReleaseTimeMs, cancellationToken)
+                .ConfigureAwait(false));
         }
 
         return new CycleReport(results);
     }
 
-    private AgentCycleResult PlanAndReserve(Guid roadmapId, RoadmapGraph graph, AgentGoal goal)
+    private async Task<AgentCycleResult> PlanAndReserveAsync(
+        Guid roadmapId,
+        RoadmapGraph graph,
+        AgentGoal goal,
+        long releaseTimeMs,
+        CancellationToken cancellationToken)
     {
         // TrafficControl: current reservation view (re-read each attempt so the planner sees the latest state).
         var pruned = new HashSet<ResourceRef>();
@@ -105,7 +117,7 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
                 goal.AgentId,
                 goal.FromSiteId,
                 goal.ToSiteId,
-                releaseTimeMs: 0,
+                releaseTimeMs: releaseTimeMs,
                 blacklistedResources: pruned.Count == 0 ? null : pruned);
 
             var plan = _planner.Plan(graph, request, view);
@@ -129,7 +141,8 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
             lastPath = plan.Path;
 
             // TrafficControl: try to take right-of-way for the whole path.
-            var outcome = _traffic.TryReserve(plan.Path, goal.AgentId);
+            var outcome = await _traffic.TryReserveAsync(plan.Path, goal.AgentId, cancellationToken)
+                .ConfigureAwait(false);
             lastOutcome = outcome;
             if (outcome == AllocationOutcome.Granted)
             {
@@ -146,18 +159,16 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
                     FailureReason: null);
             }
 
-            // Denied/Queued/Blocked: prune the contended resources and re-plan (bounded). Pruning the path's
-            // own non-endpoint CPs and traversed Lanes forces an alternate route; if none exists the next plan
-            // fails and we stop.
+            // Denied/Queued/Blocked: prune only the concrete resources that are actually blocking this path.
             var before = pruned.Count;
-            foreach (var cell in plan.Path.Cells)
+            foreach (var resource in _traffic.BlockedResources(plan.Path, goal.AgentId))
             {
                 // Never prune the agent's own start/goal — that would make the goal unreachable by construction.
-                if (cell.Resource.Kind == ResourceKind.CP
-                    && (string.Equals(cell.Resource.Id, goal.FromSiteId, StringComparison.Ordinal) ||
-                        string.Equals(cell.Resource.Id, goal.ToSiteId, StringComparison.Ordinal)))
+                if (resource.Kind == ResourceKind.CP
+                    && (string.Equals(resource.Id, goal.FromSiteId, StringComparison.Ordinal) ||
+                        string.Equals(resource.Id, goal.ToSiteId, StringComparison.Ordinal)))
                     continue;
-                pruned.Add(cell.Resource);
+                pruned.Add(resource);
             }
 
             _logger.LogDebug(
@@ -181,6 +192,9 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
     }
 
     /// <inheritdoc />
-    public void Release(string agentId, IReadOnlyList<ResourceRef> passedResources)
-        => _traffic.Release(agentId, passedResources);
+    public Task ReleaseAsync(
+        string agentId,
+        IReadOnlyList<ResourceRef> passedResources,
+        CancellationToken cancellationToken = default)
+        => _traffic.ReleaseAsync(agentId, passedResources, cancellationToken);
 }

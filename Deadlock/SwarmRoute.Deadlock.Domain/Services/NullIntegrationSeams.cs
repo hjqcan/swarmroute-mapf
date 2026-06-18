@@ -15,12 +15,16 @@ public sealed class NullAvoidancePointSelector : IAvoidancePointSelector
 /// <summary>
 /// No-op <see cref="IDetourReservationService"/> for standalone builds/tests. Always fails the
 /// reservation (nothing is actually wired to TrafficControl yet).
-/// <para>TODO(integration): delegate to <c>ITrafficCoordinatorAppService.TryReserve</c>.</para>
+/// <para>TODO(integration): delegate to <c>ITrafficCoordinatorAppService.TryReserveAsync</c>.</para>
 /// </summary>
 public sealed class NullDetourReservationService : IDetourReservationService
 {
     /// <inheritdoc />
-    public bool TryReserveDetour(string victimAgentId, string avoidanceSiteId) => false;
+    public Task<bool> TryReserveDetourAsync(
+        string victimAgentId,
+        string avoidanceSiteId,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(false);
 }
 
 /// <summary>

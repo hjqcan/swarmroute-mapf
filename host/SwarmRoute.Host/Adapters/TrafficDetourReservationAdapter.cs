@@ -8,16 +8,16 @@ namespace SwarmRoute.Host.Adapters;
 
 /// <summary>
 /// Real-enough <see cref="IDetourReservationService"/>: reserves the chosen avoidance site for the victim by
-/// going through TrafficControl's <see cref="ITrafficCoordinatorAppService.TryReserve"/> — the same write seam
+/// going through TrafficControl's <see cref="ITrafficCoordinatorAppService.TryReserveAsync"/> — the same write seam
 /// the control loop uses, so the detour can never create a new collision (invariant I1). The detour is
 /// modelled as a hold on the avoid site (and, via the table's topology closure, its parent block + interference)
-/// for a bounded window starting "now".
+/// for a bounded window.
 /// </summary>
 /// <remarks>
-/// v0 keeps the detour minimal (a single-cell hold on the destination avoid site) rather than planning a full
-/// multi-hop route, because the victim's exact current pose is owned by the (not-yet-present) fleet-state
-/// context; the reservation still exercises the real allocator and respects every existing lease. If the avoid
-/// site is already taken the detour is reported as not granted and the resolver escalates.
+/// v0 is deliberately only a bounded destination hold over <c>[now, now + 60000)</c>. It is not a completed detour
+/// resolution because the victim's current pose and path-to-avoid-site reservation belong to the not-yet-present
+/// fleet-state/dispatch integration. This adapter only prevents overclaiming while still exercising the real
+/// allocator and respecting every existing lease.
 /// </remarks>
 public sealed class TrafficDetourReservationAdapter : IDetourReservationService
 {
@@ -25,21 +25,31 @@ public sealed class TrafficDetourReservationAdapter : IDetourReservationService
     private const long DetourHoldMs = 60_000;
 
     private readonly ITrafficCoordinatorAppService _traffic;
+    private readonly IFleetClock _clock;
 
-    public TrafficDetourReservationAdapter(ITrafficCoordinatorAppService traffic)
-        => _traffic = traffic ?? throw new ArgumentNullException(nameof(traffic));
+    public TrafficDetourReservationAdapter(ITrafficCoordinatorAppService traffic, IFleetClock clock)
+    {
+        _traffic = traffic ?? throw new ArgumentNullException(nameof(traffic));
+        _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+    }
 
     /// <inheritdoc />
-    public bool TryReserveDetour(string victimAgentId, string avoidanceSiteId)
+    public async Task<bool> TryReserveDetourAsync(
+        string victimAgentId,
+        string avoidanceSiteId,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(victimAgentId) || string.IsNullOrWhiteSpace(avoidanceSiteId))
             return false;
 
+        var nowMs = _clock.NowMs;
         var cell = new SpaceTimeCell(
             RoadmapGraph.SiteRef(avoidanceSiteId),
-            new TimeInterval(0, DetourHoldMs));
+            new TimeInterval(nowMs, nowMs + DetourHoldMs));
         var path = new SpaceTimePath(new[] { cell });
 
-        return _traffic.TryReserve(path, victimAgentId) == AllocationOutcome.Granted;
+        var outcome = await _traffic.TryReserveAsync(path, victimAgentId, cancellationToken)
+            .ConfigureAwait(false);
+        return outcome == AllocationOutcome.Granted;
     }
 }

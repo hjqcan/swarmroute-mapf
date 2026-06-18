@@ -1,9 +1,14 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using SwarmRoute.Coordination.Application;
+using SwarmRoute.Deadlock.Application.Abstractions;
+using SwarmRoute.Deadlock.Infra.CrossCutting.IoC;
+using SwarmRoute.Domain.Abstractions.EventBus;
 using SwarmRoute.EventBus.Extensions;
 using SwarmRoute.Map.Application.Contract.Services;
 using SwarmRoute.Map.Domain.ValueObjects;
 using SwarmRoute.PathPlanning.Infra.CrossCutting.IoC;
+using SwarmRoute.SpatioTemporal.Kernel;
 using SwarmRoute.TrafficControl.Infra.CrossCutting.IoC;
 
 namespace SwarmRoute.Integration.Tests.TestSupport;
@@ -25,14 +30,14 @@ public sealed class CoordinationTestHost : IDisposable
         Services = services;
     }
 
-    public static CoordinationTestHost Build(RoadmapGraph graph)
+    public static CoordinationTestHost Build(RoadmapGraph graph, IFleetClock? clock = null)
     {
         var roadmapId = Guid.NewGuid();
         var services = new ServiceCollection();
 
         services.AddLogging();
 
-        // 1. Event bus (real in-memory dispatch + NoOp integration publisher).
+        // 1. Event bus (real in-memory integration dispatch).
         services.AddEventBus();
 
         // 2. Map read seam — supplied by a graph-backed fake (production uses RoadmapGraphProvider + EF).
@@ -43,14 +48,30 @@ public sealed class CoordinationTestHost : IDisposable
 
         // 4. TrafficControl AFTER PathPlanning so ReservationService overrides IReservationQuery.
         TrafficControlNativeInjectorBootStrapper.RegisterServices(services);
+        if (clock is not null)
+        {
+            services.RemoveAll<IFleetClock>();
+            services.AddSingleton(clock);
+        }
 
-        // 5. Coordination cycle (no hosted loop — tests drive RunCycleAsync directly).
+        // 5. Observe integration events without replacing the publisher or skipping real subscribers.
+        services.AddSingleton<CapturingIntegrationEventHandler>();
+        services.AddSingleton<IIntegrationEventHandler>(sp =>
+            sp.GetRequiredService<CapturingIntegrationEventHandler>());
+
+        // 6. Deadlock reactive subscriber, with the snapshot seam bridged to TrafficControl.
+        DeadlockNativeInjectorBootStrapper.RegisterServices(services);
+        services.AddScoped<IDeadlockSnapshotProvider, TrafficSnapshotDeadlockTestAdapter>();
+
+        // 7. Coordination cycle (no hosted loop — tests drive RunCycleAsync directly).
         services.AddCoordination();
 
         return new CoordinationTestHost(roadmapId, services.BuildServiceProvider());
     }
 
     public IFleetCoordinationCycle Cycle => Services.GetRequiredService<IFleetCoordinationCycle>();
+
+    public CapturingIntegrationEventHandler Events => Services.GetRequiredService<CapturingIntegrationEventHandler>();
 
     public void Dispose() => Services.Dispose();
 }

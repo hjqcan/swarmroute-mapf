@@ -6,6 +6,7 @@ using SwarmRoute.Deadlock.Application.Contract.Services;
 using SwarmRoute.Deadlock.Application.Services;
 using SwarmRoute.Deadlock.Application.Subscribers;
 using SwarmRoute.Deadlock.Domain.Services;
+using SwarmRoute.Domain.Abstractions.EventBus;
 
 namespace SwarmRoute.Deadlock.Infra.CrossCutting.IoC;
 
@@ -31,8 +32,22 @@ public static class DeadlockNativeInjectorBootStrapper
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        var services = builder.Services;
+        RegisterCore(builder.Services);
+        return builder;
+    }
 
+    /// <summary>
+    /// Web-agnostic overload used by non-web hosts and integration tests.
+    /// </summary>
+    public static IServiceCollection RegisterServices(IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        RegisterCore(services);
+        return services;
+    }
+
+    private static void RegisterCore(IServiceCollection services)
+    {
         // Domain - detection & resolution
         services.AddScoped<IDeadlockDetector, RagDeadlockDetector>();
         services.AddScoped<IVictimSelector, DeterministicVictimSelector>();
@@ -47,7 +62,7 @@ public static class DeadlockNativeInjectorBootStrapper
         // Application - service & subscriber
         services.AddScoped<IDeadlockAppService, DeadlockAppService>();
         services.AddScoped<AllocationContendedSubscriber>();
-
-        return builder;
+        services.AddScoped<IIntegrationEventHandler>(sp =>
+            sp.GetRequiredService<AllocationContendedSubscriber>());
     }
 }

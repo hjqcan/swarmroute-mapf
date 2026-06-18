@@ -91,6 +91,30 @@ public sealed class ReservationRequest : ValueObject
     public ReservationRequest AgedBy(int seconds)
         => new(AgentId, Resource, RequestTime, EstimateTime, HadWaitedTime + seconds, Requested, Priority);
 
+    /// <summary>
+    /// Returns a single request edge for repeated waits by the same agent on the same resource.
+    /// </summary>
+    public ReservationRequest MergedWith(ReservationRequest other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        if (!string.Equals(AgentId, other.AgentId, StringComparison.Ordinal) || !Resource.Equals(other.Resource))
+            throw new ArgumentException("Only requests for the same agent and resource can be merged.", nameof(other));
+
+        var requestTime = RequestTime <= other.RequestTime ? RequestTime : other.RequestTime;
+        var requested = new TimeInterval(
+            Math.Min(Requested.StartMs, other.Requested.StartMs),
+            Math.Max(Requested.EndMs, other.Requested.EndMs));
+
+        return new ReservationRequest(
+            AgentId,
+            Resource,
+            requestTime,
+            Math.Max(EstimateTime, other.EstimateTime),
+            Math.Max(HadWaitedTime, other.HadWaitedTime),
+            requested,
+            Math.Max(Priority, other.Priority));
+    }
+
     protected override IEnumerable<object> GetEqualityComponents()
     {
         yield return AgentId;

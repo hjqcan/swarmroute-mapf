@@ -26,7 +26,11 @@ internal sealed class FixedAvoidancePointSelector(string siteId) : IAvoidancePoi
 /// <summary>Detour reservation that always succeeds (simulates an integrated TrafficControl).</summary>
 internal sealed class AlwaysGrantDetourReservationService : IDetourReservationService
 {
-    public bool TryReserveDetour(string victimAgentId, string avoidanceSiteId) => true;
+    public Task<bool> TryReserveDetourAsync(
+        string victimAgentId,
+        string avoidanceSiteId,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(true);
 }
 
 /// <summary>Clearance confirmer with a settable outcome.</summary>

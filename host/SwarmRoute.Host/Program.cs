@@ -15,7 +15,7 @@ using DeadlockBootStrapper = SwarmRoute.Deadlock.Infra.CrossCutting.IoC.Deadlock
 // into one running system, in grukirbs order (architecture-design.md §7).
 //
 // Wiring order (ORDER MATTERS):
-//   1. AddEventBus()                              — IDomainEventDispatcher + NoOp integration publisher
+//   1. AddEventBus()                              — IDomainEventDispatcher + in-process integration publisher
 //   2. MapNativeInjectorBootStrapper              — topology, RoadmapGraph read seam (DbContext: MapDatabase)
 //   3. PathPlanningNativeInjectorBootStrapper     — IPathPlanner + NullReservationQuery (no DB)
 //   4. TrafficControlNativeInjectorBootStrapper   — AFTER Planning so ReservationService overrides

@@ -48,4 +48,18 @@ public class ReservationServiceTests
         Assert.False(view.IsFree(Lane("A-B"), T(50, 60)));
         Assert.Contains(view.FreeIntervals(Lane("A-B")), s => s.Interval.StartMs == 100 && s.Interval.EndMs == long.MaxValue);
     }
+
+    [Fact]
+    public void Snapshot_view_uses_the_same_topology_closure_as_the_writer()
+    {
+        var topology = ClosureTopology(Cp("S1"), Block("B1"));
+        var table = new ReservationTable(topology);
+        table.TryGrant(Path(Cell(Block("B1"), 0, 100)), "AGV-A");
+
+        var view = new ReservationService(table).GetView(Guid.NewGuid());
+
+        Assert.False(view.IsFree(Cp("S1"), T(50, 60)));
+        Assert.True(view.IsFree(Cp("S1"), T(100, 200)));
+        Assert.Contains(view.FreeIntervals(Cp("S1")), s => s.Interval.StartMs == 100 && s.Interval.EndMs == long.MaxValue);
+    }
 }

@@ -13,7 +13,7 @@ namespace SwarmRoute.TrafficControl.Domain.ValueObjects;
 /// <remarks>
 /// Immutable value object (grukirbs convention). State changes (e.g. <see cref="WithState"/>) return a new
 /// instance; the owning <c>ReservationTable</c> aggregate swaps leases in its indices. Equality is by all
-/// four components so two leases on the same resource by different agents (or different windows) are distinct.
+/// four components so two leases on the same resource by different agents (or disjoint windows) are distinct.
 /// </remarks>
 public sealed class ResourceLease : ValueObject
 {
@@ -44,8 +44,8 @@ public sealed class ResourceLease : ValueObject
 
     /// <summary>
     /// True when this lease conflicts with <paramref name="other"/>: same resource, overlapping interval,
-    /// but a <em>different</em> agent. The same agent may hold overlapping windows of one resource (e.g. a
-    /// dwell that spans entry and exit), which is not a conflict.
+    /// but a <em>different</em> agent. The aggregate merges overlapping/touching windows for the same agent and
+    /// resource, so those requests are not conflicts and do not duplicate the live table.
     /// </summary>
     public bool ConflictsWith(ResourceLease other)
     {

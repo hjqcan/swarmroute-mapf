@@ -11,8 +11,8 @@ namespace SwarmRoute.TrafficControl.Application.Services;
 /// <summary>
 /// The write seam implementation (<see cref="ITrafficCoordinatorAppService"/>). Drives the singleton,
 /// authoritative <see cref="ReservationTable"/> through the <see cref="IResourceAllocator"/> for grants and
-/// releases, then forwards any integration events the aggregate accumulated to the bus (best-effort, so the
-/// synchronous hot path is never blocked on the broker).
+/// releases, then forwards any integration events the aggregate accumulated to the bus before the current DI
+/// scope ends.
 /// </summary>
 public sealed class TrafficCoordinatorAppService : ITrafficCoordinatorAppService
 {
@@ -34,7 +34,10 @@ public sealed class TrafficCoordinatorAppService : ITrafficCoordinatorAppService
     }
 
     /// <inheritdoc />
-    public AllocationOutcome TryReserve(SpaceTimePath path, string agentId)
+    public async Task<AllocationOutcome> TryReserveAsync(
+        SpaceTimePath path,
+        string agentId,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(path);
         if (string.IsNullOrWhiteSpace(agentId))
@@ -42,12 +45,19 @@ public sealed class TrafficCoordinatorAppService : ITrafficCoordinatorAppService
 
         var outcome = _allocator.Allocate(_table, path, agentId);
         _logger.LogDebug("TryReserve agent={AgentId} cells={Cells} -> {Outcome}", agentId, path.Cells.Count, outcome);
-        DrainAndPublish();
+        await DrainAndPublishAsync(cancellationToken).ConfigureAwait(false);
         return outcome;
     }
 
     /// <inheritdoc />
-    public void Release(string agentId, IReadOnlyList<ResourceRef> passedResources)
+    public IReadOnlyCollection<ResourceRef> BlockedResources(SpaceTimePath path, string agentId)
+        => _allocator.BlockedResources(_table, path, agentId);
+
+    /// <inheritdoc />
+    public async Task ReleaseAsync(
+        string agentId,
+        IReadOnlyList<ResourceRef> passedResources,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(agentId))
             throw new ArgumentException("agentId must be provided.", nameof(agentId));
@@ -55,7 +65,7 @@ public sealed class TrafficCoordinatorAppService : ITrafficCoordinatorAppService
 
         var freed = _table.ReleaseBehind(agentId, passedResources);
         _logger.LogDebug("Release agent={AgentId} passed={Passed} -> freed={Freed}", agentId, passedResources.Count, freed.Count);
-        DrainAndPublish();
+        await DrainAndPublishAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -63,30 +73,22 @@ public sealed class TrafficCoordinatorAppService : ITrafficCoordinatorAppService
     /// reservation table is in-memory (no DbContext on the hot path) the usual BaseDbContext.Commit dispatch
     /// does not run here, so we drain explicitly.
     /// </summary>
-    private void DrainAndPublish()
+    private async Task DrainAndPublishAsync(CancellationToken cancellationToken)
     {
-        var events = _table.DomainEvents;
-        if (events is null || events.Count == 0)
+        var batch = _table.DrainDomainEvents();
+        if (batch.Count == 0)
             return;
-
-        var batch = events.ToList();
-        _table.ClearDomainEvents();
 
         if (_publisher is null)
             return;
 
-        // Fire-and-forget: cross-context notifications (e.g. Allocation.Contended → Deadlock) must not
-        // block the control loop on the broker. Failures are swallowed/logged, never thrown.
-        _ = Task.Run(async () =>
+        try
         {
-            try
-            {
-                await _publisher.PublishAsync(batch).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Best-effort integration-event publish failed for {Count} event(s).", batch.Count);
-            }
-        });
+            await _publisher.PublishAsync(batch, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Integration-event publish failed for {Count} event(s).", batch.Count);
+        }
     }
 }

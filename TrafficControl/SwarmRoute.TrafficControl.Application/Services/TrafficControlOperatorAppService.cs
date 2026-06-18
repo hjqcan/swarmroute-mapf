@@ -56,12 +56,9 @@ public sealed class TrafficControlOperatorAppService : ITrafficControlOperatorAp
 
     private async Task DrainAndPublishAsync(CancellationToken cancellationToken)
     {
-        var events = _table.DomainEvents;
-        if (events is null || events.Count == 0)
+        var batch = _table.DrainDomainEvents();
+        if (batch.Count == 0)
             return;
-
-        var batch = events.ToList();
-        _table.ClearDomainEvents();
 
         if (_publisher is not null)
             await _publisher.PublishAsync(batch, cancellationToken).ConfigureAwait(false);

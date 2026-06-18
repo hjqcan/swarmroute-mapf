@@ -11,7 +11,8 @@ namespace SwarmRoute.TrafficControl.Application.Contract.Services;
 /// </summary>
 /// <remarks>
 /// Operates against the singleton, in-memory authoritative <c>ReservationTable</c> (the single writer,
-/// invariant I5). Calls are synchronous and cheap by design — the control loop calls them every tick.
+/// invariant I5). Calls are in-process but async because successful writes must publish integration events
+/// before the current DI scope is disposed.
 /// </remarks>
 public interface ITrafficCoordinatorAppService
 {
@@ -21,12 +22,25 @@ public interface ITrafficCoordinatorAppService
     /// were created; otherwise <see cref="AllocationOutcome.Queued"/> / <see cref="AllocationOutcome.Blocked"/>
     /// with a contended request recorded (which the caller uses to prune and replan).
     /// </summary>
-    AllocationOutcome TryReserve(SpaceTimePath path, string agentId);
+    Task<AllocationOutcome> TryReserveAsync(
+        SpaceTimePath path,
+        string agentId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the planner-visible CP/Lane resources from <paramref name="path"/> that are currently blocked for
+    /// <paramref name="agentId"/>. TrafficControl still detects block/interference closure conflicts internally,
+    /// but Coordination receives only resources the planner can prune.
+    /// </summary>
+    IReadOnlyCollection<ResourceRef> BlockedResources(SpaceTimePath path, string agentId);
 
     /// <summary>
     /// Releases the leases <paramref name="agentId"/> holds on the <paramref name="passedResources"/> it has
     /// driven past — including each resource's parent block and interference closure (the leak the original
     /// <c>UnlockPath</c> left behind). Monotonic: only releases the past (invariant I6).
     /// </summary>
-    void Release(string agentId, IReadOnlyList<ResourceRef> passedResources);
+    Task ReleaseAsync(
+        string agentId,
+        IReadOnlyList<ResourceRef> passedResources,
+        CancellationToken cancellationToken = default);
 }

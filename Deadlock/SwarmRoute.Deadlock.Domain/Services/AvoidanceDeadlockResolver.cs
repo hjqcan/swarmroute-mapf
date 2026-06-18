@@ -12,7 +12,7 @@ namespace SwarmRoute.Deadlock.Domain.Services;
 /// Victim selection is delegated to <see cref="IVictimSelector"/> (deterministic: smallest cycle,
 /// smallest-id tie-break). Avoidance-point selection and detour reservation are delegated to the
 /// integration seams (<see cref="IAvoidancePointSelector"/> / <see cref="IDetourReservationService"/>);
-/// in a standalone build those are the <c>Null*</c> implementations, so <see cref="Solve"/> will
+/// in a standalone build those are the <c>Null*</c> implementations, so <see cref="SolveAsync"/> will
 /// escalate (no avoid site) rather than fabricate a detour. Once integrated with Map/TrafficControl the
 /// same flow performs real work.
 /// </para>
@@ -37,7 +37,9 @@ public sealed class AvoidanceDeadlockResolver : IDeadlockResolver
     }
 
     /// <inheritdoc />
-    public AvoidancePlan Solve(DeadlockCase deadlockCase)
+    public async Task<AvoidancePlan> SolveAsync(
+        DeadlockCase deadlockCase,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(deadlockCase);
 
@@ -67,7 +69,7 @@ public sealed class AvoidanceDeadlockResolver : IDeadlockResolver
         plan.RecordAvoidancePoint(avoidSite);
 
         // ReserveDetour (collision-free, via TrafficControl seam).
-        if (!_detourReservation.TryReserveDetour(victim, avoidSite))
+        if (!await _detourReservation.TryReserveDetourAsync(victim, avoidSite, cancellationToken).ConfigureAwait(false))
         {
             plan.Abort("Deadlock.AvoidancePlan.DetourDenied");
             deadlockCase.Escalate("Deadlock.AvoidancePlan.DetourDenied");

@@ -1,7 +1,7 @@
 using Hangfire;
 using Microsoft.Extensions.Logging;
+using SwarmRoute.SpatioTemporal.Kernel;
 using SwarmRoute.TrafficControl.Domain.Aggregates;
-using SwarmRoute.TrafficControl.Domain.Services;
 
 namespace SwarmRoute.TrafficControl.Infra.BackgroundJobs;
 

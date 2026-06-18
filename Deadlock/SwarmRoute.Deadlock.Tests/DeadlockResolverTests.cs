@@ -11,7 +11,7 @@ public class DeadlockResolverTests
         DeadlockCase.Detect(DeadlockCycle.FromAgentIds(["B", "A", "C"]));
 
     [Fact]
-    public void Solve_WithIntegratedSeams_DispatchesVictimToAvoidSite()
+    public async Task Solve_WithIntegratedSeams_DispatchesVictimToAvoidSite()
     {
         var resolver = new AvoidanceDeadlockResolver(
             new DeterministicVictimSelector(),
@@ -20,7 +20,7 @@ public class DeadlockResolverTests
             new StubClearanceConfirmer(cleared: true));
 
         var @case = NewCase();
-        var plan = resolver.Solve(@case);
+        var plan = await resolver.SolveAsync(@case);
 
         // victim is deterministic smallest id "A"
         Assert.Equal("A", plan.VictimAgentId);
@@ -31,7 +31,7 @@ public class DeadlockResolverTests
     }
 
     [Fact]
-    public void Recover_AfterSolve_CompletesPlanAndResolvesCase()
+    public async Task Recover_AfterSolve_CompletesPlanAndResolvesCase()
     {
         var resolver = new AvoidanceDeadlockResolver(
             new DeterministicVictimSelector(),
@@ -40,7 +40,7 @@ public class DeadlockResolverTests
             new StubClearanceConfirmer(cleared: true));
 
         var @case = NewCase();
-        var plan = resolver.Solve(@case);
+        var plan = await resolver.SolveAsync(@case);
 
         var ok = resolver.Recover(@case, plan);
 
@@ -50,7 +50,7 @@ public class DeadlockResolverTests
     }
 
     [Fact]
-    public void Recover_WhenNotCleared_DoesNotResolve()
+    public async Task Recover_WhenNotCleared_DoesNotResolve()
     {
         var resolver = new AvoidanceDeadlockResolver(
             new DeterministicVictimSelector(),
@@ -59,7 +59,7 @@ public class DeadlockResolverTests
             new StubClearanceConfirmer(cleared: false));
 
         var @case = NewCase();
-        var plan = resolver.Solve(@case);
+        var plan = await resolver.SolveAsync(@case);
 
         Assert.False(resolver.Recover(@case, plan));
         Assert.Equal(AvoidancePlanStep.ConfirmCleared, plan.CurrentStep);
@@ -67,7 +67,7 @@ public class DeadlockResolverTests
     }
 
     [Fact]
-    public void Solve_WithNoAvoidSite_EscalatesCaseAndAbortsPlan()
+    public async Task Solve_WithNoAvoidSite_EscalatesCaseAndAbortsPlan()
     {
         var resolver = new AvoidanceDeadlockResolver(
             new DeterministicVictimSelector(),
@@ -76,7 +76,7 @@ public class DeadlockResolverTests
             new NullClearanceConfirmer());
 
         var @case = NewCase();
-        var plan = resolver.Solve(@case);
+        var plan = await resolver.SolveAsync(@case);
 
         Assert.Equal(AvoidancePlanStep.Aborted, plan.CurrentStep);
         Assert.Equal(DeadlockCaseStatus.Escalated, @case.Status);
@@ -85,7 +85,7 @@ public class DeadlockResolverTests
     }
 
     [Fact]
-    public void Solve_WhenDetourDenied_Escalates()
+    public async Task Solve_WhenDetourDenied_Escalates()
     {
         var resolver = new AvoidanceDeadlockResolver(
             new DeterministicVictimSelector(),
@@ -94,7 +94,7 @@ public class DeadlockResolverTests
             new NullClearanceConfirmer());
 
         var @case = NewCase();
-        var plan = resolver.Solve(@case);
+        var plan = await resolver.SolveAsync(@case);
 
         Assert.Equal(AvoidancePlanStep.Aborted, plan.CurrentStep);
         Assert.Equal(DeadlockCaseStatus.Escalated, @case.Status);

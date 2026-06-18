@@ -7,8 +7,8 @@ namespace SwarmRoute.TrafficControl.Domain.Services;
 /// <summary>
 /// Default <see cref="IResourceAllocator"/>. Allocation delegates to the aggregate's whole-path
 /// <c>TryGrant</c> (which itself applies the blacklist + interference-closure + occupied-by-another filter,
-/// keeping the invariant); <see cref="BlockedResources"/> reproduces the pruning set for replanning. The
-/// closure is consulted via <see cref="IResourceTopology"/>. Stateless → singleton-safe.
+/// keeping the invariant); <see cref="BlockedResources"/> maps those closure conflicts back to candidate path
+/// CP/Lane resources that the planner can actually prune. Stateless → singleton-safe.
 /// </summary>
 public sealed class ResourceAllocator : IResourceAllocator
 {
@@ -37,19 +37,27 @@ public sealed class ResourceAllocator : IResourceAllocator
 
         foreach (var cell in path.Cells)
         {
-            foreach (var member in _topology.ClosureOf(cell.Resource))
-            {
-                if (_topology.IsBlacklisted(member, agentId))
-                {
-                    blocked.Add(member);
-                    continue;
-                }
-
-                if (!table.IsFreeForExcept(member, cell.Interval, agentId))
-                    blocked.Add(member);
-            }
+            if (IsPlannerPrunable(cell.Resource) && CellIsBlocked(table, cell, agentId))
+                blocked.Add(cell.Resource);
         }
 
         return blocked;
     }
+
+    private bool CellIsBlocked(ReservationTable table, SpaceTimeCell cell, string agentId)
+    {
+        foreach (var member in _topology.ClosureOf(cell.Resource))
+        {
+            if (_topology.IsBlacklisted(member, agentId))
+                return true;
+
+            if (!table.IsFreeForExcept(member, cell.Interval, agentId))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsPlannerPrunable(ResourceRef resource)
+        => resource.Kind is ResourceKind.CP or ResourceKind.Lane;
 }

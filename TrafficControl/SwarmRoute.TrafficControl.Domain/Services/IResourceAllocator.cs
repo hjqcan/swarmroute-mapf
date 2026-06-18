@@ -22,9 +22,9 @@ public interface IResourceAllocator
     AllocationOutcome Allocate(ReservationTable table, SpaceTimePath path, string agentId, int priority = 0);
 
     /// <summary>
-    /// The set of resources that pruning would remove for <paramref name="agentId"/>: those held by another
-    /// agent over the path's window or blacklisted, plus their interference closure. This is exactly the
-    /// vertex/edge set the planner would delete from its graph copy, surfaced for replanning.
+    /// The set of candidate-path resources that pruning should remove for <paramref name="agentId"/>. Closure
+    /// members such as blocks/interference resources are used to detect the blockage, but the returned resources
+    /// are planner-visible CP/Lane values that can actually be deleted from the graph copy.
     /// </summary>
     IReadOnlyCollection<ResourceRef> BlockedResources(ReservationTable table, SpaceTimePath path, string agentId);
 }

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using SwarmRoute.PathPlanning.Domain.Reservations;
+using SwarmRoute.SpatioTemporal.Kernel;
 using SwarmRoute.TrafficControl.Application.Contract.Services;
 using SwarmRoute.TrafficControl.Application.Services;
 using SwarmRoute.TrafficControl.Application.Subscribers;

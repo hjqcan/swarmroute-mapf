@@ -49,4 +49,45 @@ public sealed class FakeRoadmapQueryService : IRoadmapQueryService
 
         return RoadmapGraph.Build(sites, lines);
     }
+
+    /// <summary>
+    /// Builds an arbitrary roadmap from a site list and undirected edges (each becomes a directed lane in both
+    /// directions, unit distance). e.g. a "+" intersection: sites W,E,N,S,C0 with edges (W,C0),(C0,E),(N,C0),(C0,S).
+    /// </summary>
+    public static RoadmapGraph Graph(IReadOnlyList<string> siteIds, params (string A, string B)[] edges)
+    {
+        var sites = siteIds
+            .Select(id => new MapSite(id, MapSiteType.WorkSite, MapPosition.Empty))
+            .ToList();
+
+        var lines = new List<MapLine>();
+        foreach (var (a, b) in edges)
+        {
+            lines.Add(new MapLine($"{a}-{b}", a, b, distance: 1));
+            lines.Add(new MapLine($"{b}-{a}", b, a, distance: 1));
+        }
+
+        return RoadmapGraph.Build(sites, lines);
+    }
+
+    /// <summary>
+    /// Builds an arbitrary bidirectional roadmap with explicit edge distances.
+    /// </summary>
+    public static RoadmapGraph WeightedGraph(
+        IReadOnlyList<string> siteIds,
+        params (string A, string B, double Distance)[] edges)
+    {
+        var sites = siteIds
+            .Select(id => new MapSite(id, MapSiteType.WorkSite, MapPosition.Empty))
+            .ToList();
+
+        var lines = new List<MapLine>();
+        foreach (var (a, b, distance) in edges)
+        {
+            lines.Add(new MapLine($"{a}-{b}", a, b, distance));
+            lines.Add(new MapLine($"{b}-{a}", b, a, distance));
+        }
+
+        return RoadmapGraph.Build(sites, lines);
+    }
 }

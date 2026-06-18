@@ -64,7 +64,7 @@ public sealed class DeadlockAppService : IDeadlockAppService
             // Select victim + request resolution (and reserve detour if integrated). In a standalone
             // build the Null seams cause this to escalate, but the victim/strategy + ResolutionRequested
             // event are still produced.
-            _resolver.Solve(deadlockCase);
+            await _resolver.SolveAsync(deadlockCase, cancellationToken).ConfigureAwait(false);
 
             cases.Add(deadlockCase);
             cycleDtos.Add(new DeadlockCycleDto

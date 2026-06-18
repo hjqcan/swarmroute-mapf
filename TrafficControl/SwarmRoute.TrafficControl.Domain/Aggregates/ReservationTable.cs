@@ -1,4 +1,5 @@
 using NetDevPack.Domain;
+using NetDevPack.Messaging;
 using SwarmRoute.SpatioTemporal.Kernel;
 using SwarmRoute.TrafficControl.Domain.Events;
 using SwarmRoute.TrafficControl.Domain.Services;
@@ -18,8 +19,9 @@ namespace SwarmRoute.TrafficControl.Domain.Aggregates;
 /// so free-interval math and conflict checks are local) and by <c>AgentId</c> (so release / RAG snapshot are
 /// O(agent's leases)).</para>
 /// <para><b>Invariant.</b> No two <em>conflicting</em> leases coexist: same resource, overlapping interval,
-/// different agents. Every mutating method preserves it and bumps <see cref="IncrementStateVersion"/> for
-/// optimistic concurrency.</para>
+/// different agents. Same-agent overlapping/touching windows on the same resource are merged, not duplicated.
+/// Every mutating method preserves this and bumps <see cref="IncrementStateVersion"/> for optimistic
+/// concurrency.</para>
 /// <para><b>v0 semantics.</b> A granted reservation covers the whole path timeline at once (≈ the original
 /// whole-path lock) — but it is genuinely interval-based, so swapping in SIPP at v1 is a strategy change in
 /// the allocator, not a model change here.</para>
@@ -80,6 +82,37 @@ public sealed class ReservationTable : Entity, IAggregateRoot
         }
     }
 
+    /// <summary>
+    /// Atomically copies and clears the aggregate's buffered domain events under the table lock.
+    /// </summary>
+    public IReadOnlyList<Event> DrainDomainEvents()
+    {
+        lock (_sync)
+        {
+            var events = DomainEvents;
+            if (events is null || events.Count == 0)
+                return [];
+
+            var batch = events.ToList();
+            ClearDomainEvents();
+            return batch;
+        }
+    }
+
+    /// <summary>
+    /// Returns an immutable reservation view over the current leases using the same topology-closure resource
+    /// semantics as the writer side.
+    /// </summary>
+    public IReservationView CreateSnapshotView()
+    {
+        lock (_sync)
+        {
+            return new SnapshotReservationView(
+                _byResource.Values.SelectMany(v => v).ToList(),
+                _topology);
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Grant (ports GraphMap whole-path lock + pruning's "occupied by another / blacklisted" filter)
     // ---------------------------------------------------------------------------------------------
@@ -119,10 +152,11 @@ public sealed class ReservationTable : Entity, IAggregateRoot
                     continue;
                 }
 
-                if (FindBlockingLease(resource, interval, agentId) is not null)
+                var blockingLease = FindBlockingLease(resource, interval, agentId);
+                if (blockingLease is not null)
                 {
                     contended = true;
-                    RecordContended(resource, agentId, interval, priority);
+                    RecordContended(blockingLease.Resource, agentId, interval, priority);
                 }
             }
 
@@ -135,13 +169,26 @@ public sealed class ReservationTable : Entity, IAggregateRoot
                 return outcome;
             }
 
-            // All free → create leases for the whole closure (Reserved).
+            // All free → create or merge leases for the whole closure (Reserved).
+            var changedLeaseCount = 0;
             foreach (var (resource, interval) in requestedCells)
-                Insert(new ResourceLease(resource, agentId, interval, LeaseState.Reserved));
+            {
+                if (Insert(new ResourceLease(resource, agentId, interval, LeaseState.Reserved)))
+                    changedLeaseCount++;
+            }
 
-            PruneSatisfiedContendedRequests();
-            Touch();
-            AddDomainEvent(new ReservationGrantedEvent(Id, agentId, requestedCells.Count));
+            // A successful allocation means this agent is no longer waiting on any previous failed
+            // candidate path. Keep the RAG Waits edges tied to current contention, not retry history.
+            var pruned = _contended.RemoveAll(r => string.Equals(r.AgentId, agentId, StringComparison.Ordinal));
+            pruned += PruneSatisfiedContendedRequests();
+
+            if (changedLeaseCount > 0 || pruned > 0)
+            {
+                Touch();
+                if (changedLeaseCount > 0)
+                    AddDomainEvent(new ReservationGrantedEvent(Id, agentId, changedLeaseCount));
+            }
+
             return AllocationOutcome.Granted;
         }
     }
@@ -417,7 +464,7 @@ public sealed class ReservationTable : Entity, IAggregateRoot
         return true;
     }
 
-    private void Insert(ResourceLease lease)
+    private bool Insert(ResourceLease lease)
     {
         // Invariant guard: never insert a conflicting lease.
         foreach (var other in LeasesConflictingWith(lease.Resource))
@@ -429,16 +476,53 @@ public sealed class ReservationTable : Entity, IAggregateRoot
                     $"conflicts with {other.Resource.Kind}:{other.Resource.Id} held by {other.AgentId} over an overlapping interval.");
         }
 
+        var mergedStart = lease.Interval.StartMs;
+        var mergedEnd = lease.Interval.EndMs;
+
         if (!_byResource.TryGetValue(lease.Resource, out var existing))
         {
             existing = new List<ResourceLease>();
             _byResource[lease.Resource] = existing;
         }
 
+        var mergees = existing
+            .Where(l => string.Equals(l.AgentId, lease.AgentId, StringComparison.Ordinal)
+                        && WindowsTouchOrOverlap(l.Interval, lease.Interval))
+            .ToList();
+
+        if (mergees.Count > 0)
+        {
+            if (mergees.Count == 1
+                && mergees[0].State == lease.State
+                && Covers(mergees[0].Interval, lease.Interval))
+                return false;
+
+            foreach (var mergee in mergees)
+            {
+                mergedStart = Math.Min(mergedStart, mergee.Interval.StartMs);
+                mergedEnd = Math.Max(mergedEnd, mergee.Interval.EndMs);
+                RemoveLeaseFromIndexes(mergee);
+            }
+
+            if (!_byResource.TryGetValue(lease.Resource, out existing))
+            {
+                existing = new List<ResourceLease>();
+                _byResource[lease.Resource] = existing;
+            }
+
+            lease = new ResourceLease(lease.Resource, lease.AgentId, new TimeInterval(mergedStart, mergedEnd), lease.State);
+        }
+
+        AddLeaseToIndexes(lease, existing);
+        return true;
+    }
+
+    private void AddLeaseToIndexes(ResourceLease lease, List<ResourceLease> resourceBucket)
+    {
         // keep sorted by start for free-interval math
-        var idx = existing.FindIndex(l => l.Interval.StartMs > lease.Interval.StartMs);
-        if (idx < 0) existing.Add(lease);
-        else existing.Insert(idx, lease);
+        var idx = resourceBucket.FindIndex(l => l.Interval.StartMs > lease.Interval.StartMs);
+        if (idx < 0) resourceBucket.Add(lease);
+        else resourceBucket.Insert(idx, lease);
 
         if (!_byAgent.TryGetValue(lease.AgentId, out var agentLeases))
         {
@@ -446,6 +530,23 @@ public sealed class ReservationTable : Entity, IAggregateRoot
             _byAgent[lease.AgentId] = agentLeases;
         }
         agentLeases.Add(lease);
+    }
+
+    private void RemoveLeaseFromIndexes(ResourceLease lease)
+    {
+        if (_byResource.TryGetValue(lease.Resource, out var bucket))
+        {
+            bucket.Remove(lease);
+            if (bucket.Count == 0)
+                _byResource.Remove(lease.Resource);
+        }
+
+        if (_byAgent.TryGetValue(lease.AgentId, out var agentLeases))
+        {
+            agentLeases.Remove(lease);
+            if (agentLeases.Count == 0)
+                _byAgent.Remove(lease.AgentId);
+        }
     }
 
     private List<ResourceLease> RemoveWhere(string agentId, Func<ResourceLease, bool> predicate)
@@ -512,6 +613,12 @@ public sealed class ReservationTable : Entity, IAggregateRoot
     private static bool ResourcesConflict(ResourceRef a, ResourceRef b)
         => a.Equals(b) || IsReversedLane(a, b);
 
+    private static bool WindowsTouchOrOverlap(TimeInterval a, TimeInterval b)
+        => a.StartMs <= b.EndMs && b.StartMs <= a.EndMs;
+
+    private static bool Covers(TimeInterval outer, TimeInterval inner)
+        => outer.StartMs <= inner.StartMs && outer.EndMs >= inner.EndMs;
+
     private static bool IsReversedLane(ResourceRef a, ResourceRef b)
     {
         if (a.Kind != ResourceKind.Lane || b.Kind != ResourceKind.Lane)
@@ -530,13 +637,33 @@ public sealed class ReservationTable : Entity, IAggregateRoot
         return aStart.SequenceEqual(bEnd) && aEnd.SequenceEqual(bStart);
     }
 
+    private static IReadOnlyList<ResourceLease> BlockingLeasesFor(
+        IReadOnlyCollection<ResourceLease> leases,
+        IResourceTopology topology,
+        ResourceRef resource)
+    {
+        var resources = topology.ClosureOf(resource);
+        return leases
+            .Where(lease => resources.Any(member => ResourcesConflict(member, lease.Resource)))
+            .OrderBy(lease => lease.Interval.StartMs)
+            .ToList();
+    }
+
     private bool AddOrKeepContended(ReservationRequest request)
     {
-        if (_contended.Any(existing =>
-                string.Equals(existing.AgentId, request.AgentId, StringComparison.Ordinal)
-                && existing.Resource.Equals(request.Resource)
-                && existing.Requested.Equals(request.Requested)))
-            return false;
+        var existingIndex = _contended.FindIndex(existing =>
+            string.Equals(existing.AgentId, request.AgentId, StringComparison.Ordinal)
+            && existing.Resource.Equals(request.Resource));
+
+        if (existingIndex >= 0)
+        {
+            var merged = _contended[existingIndex].MergedWith(request);
+            if (merged.Equals(_contended[existingIndex]))
+                return false;
+
+            _contended[existingIndex] = merged;
+            return true;
+        }
 
         _contended.Add(request);
         return true;
@@ -554,4 +681,58 @@ public sealed class ReservationTable : Entity, IAggregateRoot
     }
 
     private void IncrementStateVersion() => StateVersion++;
+
+    private sealed class SnapshotReservationView : IReservationView
+    {
+        private readonly IReadOnlyList<ResourceLease> _leases;
+        private readonly IResourceTopology _topology;
+
+        public SnapshotReservationView(
+            IReadOnlyList<ResourceLease> leases,
+            IResourceTopology topology)
+        {
+            _leases = leases;
+            _topology = topology;
+        }
+
+        public IEnumerable<SafeInterval> FreeIntervals(ResourceRef resource)
+        {
+            var result = new List<SafeInterval>();
+            long cursor = 0;
+
+            var leases = BlockingLeasesFor(_leases, _topology, resource);
+            if (leases.Count > 0)
+            {
+                long coveredEnd = long.MinValue;
+                foreach (var lease in leases)
+                {
+                    var s = lease.Interval.StartMs;
+                    var e = lease.Interval.EndMs;
+
+                    if (s > coveredEnd)
+                    {
+                        if (s > cursor)
+                            result.Add(new SafeInterval(resource, new TimeInterval(cursor, s)));
+                        coveredEnd = e;
+                    }
+                    else if (e > coveredEnd)
+                    {
+                        coveredEnd = e;
+                    }
+
+                    if (coveredEnd > cursor)
+                        cursor = coveredEnd;
+                }
+            }
+
+            if (cursor < long.MaxValue)
+                result.Add(new SafeInterval(resource, new TimeInterval(cursor, long.MaxValue)));
+
+            return result;
+        }
+
+        public bool IsFree(ResourceRef resource, TimeInterval interval)
+            => !BlockingLeasesFor(_leases, _topology, resource)
+                .Any(lease => lease.Interval.Overlaps(interval));
+    }
 }

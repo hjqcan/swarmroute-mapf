@@ -6,7 +6,7 @@ namespace SwarmRoute.Coordination.Application;
 /// priority order) it gets the roadmap graph + the current reservation view, plans a path, then tries to take
 /// right-of-way; when control is denied it prunes the contended resources and re-plans within a bounded retry
 /// budget — the clean-architecture replacement for the AJR <c>CBS</c> "couldn't lock the path → wait / replan"
-/// behaviour. <see cref="Release"/> is the incremental, monotonic resource hand-back as agents drive past.
+/// behaviour. <see cref="ReleaseAsync"/> is the incremental, monotonic resource hand-back as agents drive past.
 /// </summary>
 public interface IFleetCoordinationCycle
 {
@@ -26,5 +26,8 @@ public interface IFleetCoordinationCycle
     /// TrafficControl's <c>Release</c>; incremental + monotonic — only the past, invariant I6). Resource ids are
     /// the site/lane/block ids; each is released together with its parent-block + interference closure.
     /// </summary>
-    void Release(string agentId, IReadOnlyList<SwarmRoute.SpatioTemporal.Kernel.ResourceRef> passedResources);
+    Task ReleaseAsync(
+        string agentId,
+        IReadOnlyList<SwarmRoute.SpatioTemporal.Kernel.ResourceRef> passedResources,
+        CancellationToken cancellationToken = default);
 }
