@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Vendored from third-party/AJR.Infrastructure/AJR.Platform.Algorithms (originally net6.0).
+    Retargeted to net10.0 and renamed assembly to SwarmRoute.Algorithms.
+    Internal namespaces remain AJR.Platform.Algorithms.* to avoid churn across the vendored sources.
+    Exposes the graph algorithms consumed by SwarmRoute: DijkstraShortestPaths<TGraph,TVertex> and CyclesDetector
+    (plus DirectedWeightedSparseGraph<T> via the DataStructures reference).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SwarmRoute.Algorithms</AssemblyName>
+    <RootNamespace>AJR.Platform.Algorithms</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <NoWarn>$(NoWarn);CS0168;CS0219;CS0414;CS0649;CS8509;CS8524;IDE0005</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SwarmRoute.Algorithms.DataStructures\SwarmRoute.Algorithms.DataStructures.csproj" />
+  </ItemGroup>
+
+</Project>

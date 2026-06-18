@@ -1,0 +1,10 @@
+<Project>
+
+  <!--
+    Isolation boundary for the vendored NetDevPack source tree.
+    By NOT importing the repo-root Directory.Build.props, NetDevPack keeps its own
+    netstandard2.1 / Nullable=disable settings untouched. (It is consumed by net10.0 projects via
+    ProjectReference, which netstandard2.1 supports.)
+  -->
+
+</Project>

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Infra.CrossCutting.IoC\SwarmRoute.Map.Infra.CrossCutting.IoC.csproj" />
+    <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Infra.CrossCutting.IoC\SwarmRoute.PathPlanning.Infra.CrossCutting.IoC.csproj" />
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Infra.CrossCutting.IoC\SwarmRoute.TrafficControl.Infra.CrossCutting.IoC.csproj" />
+    <ProjectReference Include="..\..\Deadlock\SwarmRoute.Deadlock.Infra.CrossCutting.IoC\SwarmRoute.Deadlock.Infra.CrossCutting.IoC.csproj" />
+    <ProjectReference Include="..\..\Coordination\SwarmRoute.Coordination.Application\SwarmRoute.Coordination.Application.csproj" />
+    <ProjectReference Include="..\..\Shared\SwarmRoute.EventBus\SwarmRoute.EventBus.csproj" />
+  </ItemGroup>
+
+</Project>

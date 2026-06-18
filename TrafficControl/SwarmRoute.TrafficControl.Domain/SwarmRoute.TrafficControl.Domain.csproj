@@ -1,0 +1,17 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Shared\SwarmRoute.SpatioTemporal.Kernel\SwarmRoute.SpatioTemporal.Kernel.csproj" />
+    <ProjectReference Include="..\..\Shared\SwarmRoute.Domain.Abstractions\SwarmRoute.Domain.Abstractions.csproj" />
+    <ProjectReference Include="..\..\lib\NetDevPack\src\NetDevPack\NetDevPack.csproj" />
+    <ProjectReference Include="..\SwarmRoute.TrafficControl.Domain.Shared\SwarmRoute.TrafficControl.Domain.Shared.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

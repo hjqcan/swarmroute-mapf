@@ -1,0 +1,20 @@
+<Project>
+
+  <!--
+    Root MSBuild props shared by every project in SwarmRoute.Mapf.sln.
+    Per the team spec: NO Central Package Management (no Directory.Packages.props) —
+    package versions live directly in each .csproj so parallel squads never contend on a shared file.
+    Common compiler settings only live here.
+  -->
+  <!--
+    Common compiler settings only. TargetFramework is intentionally NOT set here so that the
+    vendored NetDevPack project (netstandard2.1, lives under lib/ within this tree) is not forced to
+    net10.0. Every SwarmRoute project declares net10.0 in its own csproj.
+  -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\SwarmRoute.TrafficControl.Application\SwarmRoute.TrafficControl.Application.csproj" />
+    <ProjectReference Include="..\SwarmRoute.TrafficControl.Infra.Data\SwarmRoute.TrafficControl.Infra.Data.csproj" />
+    <ProjectReference Include="..\SwarmRoute.TrafficControl.Infra.BackgroundJobs\SwarmRoute.TrafficControl.Infra.BackgroundJobs.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

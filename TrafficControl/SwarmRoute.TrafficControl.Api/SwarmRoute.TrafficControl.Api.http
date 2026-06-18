@@ -1,0 +1,6 @@
+@SwarmRoute.TrafficControl.Api_HostAddress = http://localhost:5047
+
+GET {{SwarmRoute.TrafficControl.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

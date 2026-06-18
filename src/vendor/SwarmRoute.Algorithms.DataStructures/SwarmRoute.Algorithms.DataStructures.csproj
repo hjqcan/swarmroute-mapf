@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Vendored from third-party/AJR.Infrastructure/AJR.Platform.Algorithms.DataStructures (originally net6.0).
+    Retargeted to net10.0 and renamed assembly to SwarmRoute.Algorithms.DataStructures.
+    Internal namespaces remain AJR.Platform.Algorithms.DataStructures.* to avoid churn across the vendored sources.
+    Exposes graph data structures (e.g. DirectedWeightedSparseGraph<T>, IGraph<T>) consumed by SwarmRoute.Algorithms.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SwarmRoute.Algorithms.DataStructures</AssemblyName>
+    <!-- Keep RootNamespace stable so the hardcoded embedded-resource name still resolves. -->
+    <RootNamespace>DataStructures</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Vendored third-party code: suppress its (many) analyzer warnings to keep build output clean. -->
+    <NoWarn>$(NoWarn);CS0168;CS0219;CS0414;CS0649;CS8509;CS8524;IDE0005</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- PrimesList.cs reads this by the fixed manifest name "DataStructures.Data.PrimesDocument_10K.csv". -->
+    <EmbeddedResource Include="Data\PrimesDocument_10K.csv">
+      <LogicalName>DataStructures.Data.PrimesDocument_10K.csv</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>
