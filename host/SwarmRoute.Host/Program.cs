@@ -6,6 +6,7 @@ using SwarmRoute.EventBus.Extensions;
 using SwarmRoute.Host.Adapters;
 using SwarmRoute.Map.Infra.CrossCutting.IoC;
 using SwarmRoute.PathPlanning.Infra.CrossCutting.IoC;
+using SwarmRoute.Simulation.Application;
 using SwarmRoute.TrafficControl.Domain.Services;
 using SwarmRoute.TrafficControl.Infra.CrossCutting.IoC;
 using DeadlockBootStrapper = SwarmRoute.Deadlock.Infra.CrossCutting.IoC.DeadlockNativeInjectorBootStrapper;
@@ -71,6 +72,10 @@ builder.Services.AddScoped<IDetourReservationService, TrafficDetourReservationAd
 
 // 7. Coordination cycle + hosted watchdog loop.
 builder.Services.AddCoordination(registerHostedLoop: true);
+
+// 7b. Simulation API — builds its own per-request engine, so it only needs its stateless collaborators here.
+//     The SimulationController lives in this Host assembly and is discovered by AddControllers() automatically.
+builder.Services.AddSimulation();
 
 var app = builder.Build();
 

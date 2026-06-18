@@ -53,7 +53,7 @@ public static class MapNativeInjectorBootStrapper
         builder.Services.AddScoped<IDomainEventHandler<MapRoadmapPublishedEvent>, RoadmapPublishedCacheInvalidator>();
 
         // AutoMapper profiles for this context.
-        builder.Services.AddAutoMapper(typeof(MapMappingProfile).Assembly);
+        builder.Services.AddAutoMapper(_ => { }, typeof(MapMappingProfile).Assembly);
 
         return builder;
     }

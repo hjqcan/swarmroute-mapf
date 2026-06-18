@@ -1,0 +1,55 @@
+{
+  "app.title": "Multi-AGV Dispatch Console",
+  "app.subtitle": "Simulate · Verify · Replay",
+
+  "controls.title": "Run parameters",
+  "controls.fieldSize": "Field size",
+  "controls.width": "Field width",
+  "controls.height": "Field height",
+  "controls.agvCount": "AGV count",
+  "controls.seed": "Seed",
+  "controls.seedPlaceholder": "optional",
+  "controls.shuffle": "Random",
+  "controls.run": "Run",
+  "controls.running": "Running…",
+  "controls.hint": "Nodes are control points; arrows are lanes. On run, the engine drives every AGV to its goal collision-free.",
+
+  "playback.play": "Play",
+  "playback.pause": "Pause",
+  "playback.restart": "Replay",
+  "playback.tick": "Tick",
+  "playback.speed": "Speed",
+  "playback.frameOf": "{current} / {total}",
+
+  "field.empty.title": "No simulation yet",
+  "field.empty.hint": "Set parameters on the left, then press Run.",
+  "field.start": "Start A",
+  "field.goal": "Goal B",
+
+  "ribbon.title": "Reservation ribbon",
+  "ribbon.subtitle": "who · where · when — the evidence behind \"collision-free\"",
+  "ribbon.axisTick": "tick →",
+  "ribbon.axisAgent": "AGV",
+  "ribbon.empty": "After a run, shows which control point each AGV holds over ticks.",
+
+  "telemetry.title": "Run telemetry",
+  "telemetry.status.completed.title": "Collision-free",
+  "telemetry.status.completed.desc": "Every AGV reached its goal with no control-point conflicts.",
+  "telemetry.status.collision.title": "Collision detected",
+  "telemetry.status.collision.desc": "At tick {tick}, AGV {agents} contended for the same control point.",
+  "telemetry.status.didNotConverge.title": "Did not converge",
+  "telemetry.status.didNotConverge.desc": "Not all AGVs reached their goal within the tick budget.",
+  "telemetry.metrics": "Metrics",
+  "telemetry.metric.ticks": "Ticks",
+  "telemetry.metric.arrived": "Arrived / total",
+  "telemetry.metric.collisions": "Collisions",
+  "telemetry.metric.replans": "Replans",
+  "telemetry.agents": "AGVs",
+  "telemetry.empty": "After a run, shows status and per-AGV detail.",
+
+  "state.Waiting": "Waiting",
+  "state.Moving": "Moving",
+  "state.Arrived": "Arrived",
+
+  "lang.toggle": "简体中文"
+}

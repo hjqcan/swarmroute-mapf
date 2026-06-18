@@ -5,6 +5,7 @@ using SwarmRoute.Integration.Tests.TestSupport;
 using SwarmRoute.Map.Domain.ValueObjects;
 using SwarmRoute.SpatioTemporal.Kernel;
 using SwarmRoute.TrafficControl.Application.Contract.Services;
+using SwarmRoute.TrafficControl.Domain.Services;
 using SwarmRoute.TrafficControl.Domain.Shared;
 
 namespace SwarmRoute.Integration.Tests;
@@ -19,6 +20,15 @@ public sealed class CoordinationCycleIntegrationTests
     private sealed class FixedClock(long nowMs) : IFleetClock
     {
         public long NowMs { get; } = nowMs;
+    }
+
+    private sealed class FixedTopology(
+        IReadOnlyDictionary<ResourceRef, IReadOnlyCollection<ResourceRef>> closures) : IResourceTopology
+    {
+        public IReadOnlyCollection<ResourceRef> ClosureOf(ResourceRef resource)
+            => closures.TryGetValue(resource, out var closure) ? closure : [resource];
+
+        public bool IsBlacklisted(ResourceRef resource, string agentId) => false;
     }
 
     private static SpaceTimePath SingleCell(ResourceRef resource, long startMs, long endMs)
@@ -145,6 +155,44 @@ public sealed class CoordinationCycleIntegrationTests
             .Select(c => c.Resource.Id)
             .ToList();
         Assert.DoesNotContain("B-D", lanes);
+    }
+
+    [Fact]
+    public async Task M2_Retry_ProjectsClosureBlockConflict_ToPlannerPrunableCell()
+    {
+        // A-B-D is shortest; B is not directly occupied, but its topology closure includes Block:Z.
+        // Retry must prune the candidate CP B, not pass Block:Z to a planner that cannot delete it.
+        var graph = FakeRoadmapQueryService.WeightedGraph(
+            ["A", "B", "C", "D"],
+            ("A", "B", 1.0),
+            ("B", "D", 1.0),
+            ("A", "C", 10.0),
+            ("C", "D", 10.0));
+        var block = new ResourceRef(ResourceKind.Block, "Z");
+        var topology = new FixedTopology(new Dictionary<ResourceRef, IReadOnlyCollection<ResourceRef>>
+        {
+            [RoadmapGraph.SiteRef("B")] = [RoadmapGraph.SiteRef("B"), block],
+        });
+        using var host = CoordinationTestHost.Build(graph, new FixedClock(0), topology);
+        var traffic = host.Services.GetRequiredService<ITrafficCoordinatorAppService>();
+
+        Assert.Equal(
+            AllocationOutcome.Granted,
+            await traffic.TryReserveAsync(SingleCell(block, 0, long.MaxValue), "blocker"));
+
+        var report = await host.Cycle.RunCycleAsync(
+            host.RoadmapId,
+            [new AgentGoal("agv-1", "A", "D")]);
+
+        var result = Assert.Single(report.Results);
+        Assert.True(result.Reserved, $"expected retry to reserve through A-C-D, got {result.Outcome}: {result.FailureReason}");
+        Assert.True(result.Attempts >= 2);
+
+        var visitedSites = result.Path!.Cells
+            .Where(c => c.Resource.Kind == ResourceKind.CP)
+            .Select(c => c.Resource.Id)
+            .ToList();
+        Assert.Equal(new[] { "A", "C", "D" }, visitedSites);
     }
 
     [Fact]

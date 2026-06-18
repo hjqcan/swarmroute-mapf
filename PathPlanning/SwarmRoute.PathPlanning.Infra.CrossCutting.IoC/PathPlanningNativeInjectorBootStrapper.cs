@@ -45,7 +45,8 @@ public static class PathPlanningNativeInjectorBootStrapper
         services.AddScoped<IPathPlanningAppService, PathPlanningAppService>();
 
         // AutoMapper profiles for this context.
-        services.AddAutoMapper(typeof(PathPlanningMappingProfile).Assembly);
+        services.AddLogging();
+        services.AddAutoMapper(_ => { }, typeof(PathPlanningMappingProfile).Assembly);
 
         return services;
     }

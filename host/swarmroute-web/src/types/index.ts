@@ -1,0 +1,93 @@
+/*
+ * API contract types for the SwarmRoute simulation engine.
+ *
+ * The backend (POST /api/simulation/run) returns this DTO DIRECTLY as camelCase JSON
+ * — it is NOT wrapped in { code, msg, data }. On bad input it returns 400 ProblemDetails.
+ * These types mirror SwarmRoute.Simulation.Application.SimulationResultDto.
+ */
+
+/** Per-agent motion state on a given tick. */
+export type RunState = 'Waiting' | 'Moving' | 'Arrived'
+
+/** Aggregate run outcome — the honest verification verdict. */
+export type RunStatus = 'Completed' | 'CollisionDetected' | 'DidNotConverge'
+
+/** Inputs to one simulation run. */
+export interface SimulationRequest {
+  width: number
+  height: number
+  agvCount: number
+  seed?: number
+}
+
+/** A single control point on the grid at planar (x=col, y=row). */
+export interface Site {
+  id: string
+  x: number
+  y: number
+  type: string
+}
+
+/** A directed lane between two control points. */
+export interface Lane {
+  id: string
+  from: string
+  to: string
+}
+
+/** The grid field: dimensions plus sites (nodes) and lanes (edges). */
+export interface FieldDto {
+  width: number
+  height: number
+  sites: Site[]
+  lanes: Lane[]
+}
+
+/** One AGV: id, start/goal, stable colour index, and the reserved CP sequence (replay path). */
+export interface AgentDto {
+  id: string
+  startSiteId: string
+  goalSiteId: string
+  colorIndex: number
+  pathSiteIds: string[]
+}
+
+/** One agent's position on one tick. */
+export interface Position {
+  agentId: string
+  siteId: string
+  x: number
+  y: number
+  state: RunState
+}
+
+/** One tick of the replay: where every agent is. */
+export interface Frame {
+  tick: number
+  positions: Position[]
+}
+
+/** The replay timeline: one frame per tick. */
+export interface Timeline {
+  tickCount: number
+  frames: Frame[]
+}
+
+/** Aggregate run statistics. */
+export interface Stats {
+  ticks: number
+  collisions: number
+  arrived: number
+  replans: number
+  status: RunStatus
+  collisionTick: number | null
+  collisionAgentIds: string[] | null
+}
+
+/** The full result of one simulation run. */
+export interface SimulationResult {
+  field: FieldDto
+  agents: AgentDto[]
+  timeline: Timeline
+  stats: Stats
+}

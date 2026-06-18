@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+ * Dispatcher's console — design tokens as CSS variables.
+ * Tailwind theme mirrors these (tailwind.config.js); both stay in lock-step.
+ * ------------------------------------------------------------------------- */
+:root {
+  --sr-base: #0b1220;
+  --sr-panel: #141c2b;
+  --sr-hairline: #25324a;
+  --sr-text-primary: #c7d2e2;
+  --sr-text-muted: #6b7a93;
+  --sr-accent: #ffb020; /* warm amber */
+  --sr-danger: #ff5c5c; /* collision / warning */
+
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--sr-base);
+  color: var(--sr-text-primary);
+  font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Visible keyboard focus everywhere (quality floor). */
+:where(button, a, input, [tabindex], [role='slider']):focus-visible {
+  outline: 2px solid var(--sr-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Mono utility class — telemetry numbers, coordinates, tick counters. */
+.font-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom scrollbars to match the console. */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--sr-hairline);
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Respect reduced-motion globally: kill ambient transitions/animations. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Subtle collision ring pulse for the field + telemetry banner. */
+@keyframes sr-collision-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.sr-collision-pulse {
+  animation: sr-collision-pulse 1.1s ease-in-out infinite;
+}

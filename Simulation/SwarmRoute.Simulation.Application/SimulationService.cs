@@ -1,0 +1,193 @@
+using Microsoft.Extensions.DependencyInjection;
+using SwarmRoute.Coordination.Application;
+using SwarmRoute.EventBus.Extensions;
+using SwarmRoute.Map.Application.Contract.Services;
+using SwarmRoute.PathPlanning.Infra.CrossCutting.IoC;
+using SwarmRoute.TrafficControl.Infra.CrossCutting.IoC;
+
+namespace SwarmRoute.Simulation.Application;
+
+/// <summary>
+/// Default <see cref="ISimulationService"/>. Builds a grid field, assigns each AGV a distinct start and a
+/// distinct goal with a seeded RNG (reproducible), constructs a fresh per-request in-memory engine (the same
+/// wiring as the integration test host — so concurrent runs never share the singleton <c>ReservationTable</c>),
+/// runs the <see cref="FleetLoopDriver"/> to completion, and maps the result to a <see cref="SimulationResultDto"/>.
+/// </summary>
+public sealed class SimulationService : ISimulationService
+{
+    /// <summary>Fixed RNG seed used when the request omits one — keeps a seedless request reproducible.</summary>
+    public const int DefaultSeed = 1469;
+
+    private readonly GridFieldFactory _gridFactory;
+    private readonly FleetLoopDriver _loopDriver;
+
+    public SimulationService(GridFieldFactory gridFactory, FleetLoopDriver loopDriver)
+    {
+        _gridFactory = gridFactory ?? throw new ArgumentNullException(nameof(gridFactory));
+        _loopDriver = loopDriver ?? throw new ArgumentNullException(nameof(loopDriver));
+    }
+
+    /// <inheritdoc />
+    public async Task<SimulationResultDto> RunAsync(SimulationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        Validate(request);
+
+        // 1. Build the grid field (graph + render metadata).
+        var field = _gridFactory.BuildGrid(request.Width, request.Height);
+
+        // 2. Assign distinct starts and distinct goals. Shuffling all cells and taking two disjoint blocks
+        //    ([0..k) starts, [k..2k) goals) guarantees every start != its goal AND all starts/goals are
+        //    distinct, given the validated invariant Width*Height >= 2*AgvCount.
+        var rng = new Random(request.Seed ?? DefaultSeed);
+        var shuffled = Shuffle(field.Sites.Select(s => s.Id).ToList(), rng);
+
+        var agentSpecs = new List<FleetAgentSpec>(request.AgvCount);
+        for (var i = 0; i < request.AgvCount; i++)
+        {
+            var start = shuffled[i];
+            var goal = shuffled[request.AgvCount + i];
+            agentSpecs.Add(new FleetAgentSpec($"agv-{i + 1}", start, goal, Priority: i));
+        }
+
+        // 3. Wire a fresh REAL engine for THIS request (isolation between concurrent runs).
+        await using var engine = BuildEngine(field.Graph, out var roadmapId, out var cycle);
+
+        // 4. Run the closed loop to completion, recording the timeline.
+        var maxTicks = MaxTicks(request);
+        var loop = await _loopDriver
+            .RunToCompletionAsync(cycle, roadmapId, field.Graph, agentSpecs, maxTicks, cancellationToken)
+            .ConfigureAwait(false);
+
+        // 5. Map to the transport DTO.
+        return Map(field, agentSpecs, loop);
+    }
+
+    private static void Validate(SimulationRequest request)
+    {
+        if (request.Width < 1)
+            throw new ArgumentException($"Width must be >= 1 (was {request.Width}).", nameof(request));
+        if (request.Height < 1)
+            throw new ArgumentException($"Height must be >= 1 (was {request.Height}).", nameof(request));
+        if (request.AgvCount < 1)
+            throw new ArgumentException($"AgvCount must be >= 1 (was {request.AgvCount}).", nameof(request));
+
+        var capacity = (long)request.Width * request.Height;
+        var required = 2L * request.AgvCount;
+        if (capacity < required)
+            throw new ArgumentException(
+                $"Grid is too small for the fleet: Width*Height ({request.Width}x{request.Height} = {capacity}) " +
+                $"must be >= 2*AgvCount ({required}) so every AGV gets a distinct start and a distinct goal.",
+                nameof(request));
+    }
+
+    /// <summary>
+    /// A sound upper bound on ticks: even if the whole-path reservation serialises agents one-at-a-time, each
+    /// traverses at most <c>Width+Height</c> CPs, so <c>(Width+Height)*(AgvCount+1)</c> plus slack always
+    /// converges for a valid request.
+    /// </summary>
+    private static int MaxTicks(SimulationRequest request)
+        => ((request.Width + request.Height) * (request.AgvCount + 1)) + 50;
+
+    /// <summary>
+    /// Builds a per-request DI container wiring the REAL services exactly like <c>CoordinationTestHost.Build</c>:
+    /// <c>AddLogging + AddEventBus + in-memory IRoadmapQueryService + PathPlanning + TrafficControl (after
+    /// PathPlanning, so its ReservationService overrides IReservationQuery) + AddCoordination</c>. Returns the
+    /// provider (caller disposes) and resolves the cycle + the roadmap id the graph is registered under.
+    /// </summary>
+    private static ServiceProvider BuildEngine(
+        Map.Domain.ValueObjects.RoadmapGraph graph,
+        out Guid roadmapId,
+        out IFleetCoordinationCycle cycle)
+    {
+        roadmapId = Guid.NewGuid();
+        var services = new ServiceCollection();
+
+        services.AddLogging();
+
+        // Event bus (real in-memory integration dispatch).
+        services.AddEventBus();
+
+        // Map read seam — graph-backed, no DB.
+        services.AddSingleton<IRoadmapQueryService>(new InMemoryRoadmapQueryService(roadmapId, graph));
+
+        // PathPlanning (IPathPlanner + NullReservationQuery).
+        PathPlanningNativeInjectorBootStrapper.RegisterServices(services);
+
+        // TrafficControl AFTER PathPlanning so ReservationService overrides IReservationQuery (last wins).
+        TrafficControlNativeInjectorBootStrapper.RegisterServices(services);
+
+        // Coordination cycle (no hosted loop — we drive RunCycleAsync directly).
+        services.AddCoordination();
+
+        var provider = services.BuildServiceProvider();
+        cycle = provider.GetRequiredService<IFleetCoordinationCycle>();
+        return provider;
+    }
+
+    private static SimulationResultDto Map(
+        GridField field,
+        IReadOnlyList<FleetAgentSpec> specs,
+        FleetLoopResult loop)
+    {
+        var positionById = field.Sites.ToDictionary(s => s.Id, s => (X: (double)s.X, Y: (double)s.Y), StringComparer.Ordinal);
+
+        var sites = field.Sites
+            .Select(s => new SiteDto(s.Id, s.X, s.Y, s.Type.ToString()))
+            .ToList();
+
+        var lanes = new List<LaneDto>();
+        foreach (var v in field.Graph.Vertices)
+            foreach (var n in field.Graph.Neighbours(v))
+                lanes.Add(new LaneDto(RoadmapGraphLaneId(v, n), v, n));
+
+        var fieldDto = new FieldDto(field.Width, field.Height, sites, lanes);
+
+        var agents = specs
+            .Select((s, i) => new AgentDto(
+                s.Id,
+                s.StartSiteId,
+                s.GoalSiteId,
+                ColorIndex: i,
+                PathSiteIds: loop.PerAgentRoute.TryGetValue(s.Id, out var route) ? route : new[] { s.StartSiteId }))
+            .ToList();
+
+        var frames = loop.Frames
+            .Select(f => new FrameDto(
+                f.Tick,
+                f.Positions
+                    .Select(p =>
+                    {
+                        var pos = positionById.TryGetValue(p.SiteId, out var xy) ? xy : (X: 0d, Y: 0d);
+                        return new PositionDto(p.AgentId, p.SiteId, pos.X, pos.Y, p.State.ToString());
+                    })
+                    .ToList()))
+            .ToList();
+
+        var timeline = new TimelineDto(loop.Frames.Count, frames);
+
+        var stats = new StatsDto(
+            loop.Stats.Ticks,
+            loop.Stats.Collisions,
+            loop.Stats.Arrived,
+            loop.Stats.Replans,
+            loop.Stats.Status.ToString(),
+            loop.Collision?.Tick,
+            loop.Collision?.AgentIds);
+
+        return new SimulationResultDto(fieldDto, agents, timeline, stats);
+    }
+
+    private static string RoadmapGraphLaneId(string from, string to) => $"{from}-{to}";
+
+    /// <summary>Deterministic Fisher–Yates shuffle driven by the seeded RNG (in-place on a copy).</summary>
+    private static List<string> Shuffle(List<string> items, Random rng)
+    {
+        for (var i = items.Count - 1; i > 0; i--)
+        {
+            var j = rng.Next(i + 1);
+            (items[i], items[j]) = (items[j], items[i]);
+        }
+        return items;
+    }
+}

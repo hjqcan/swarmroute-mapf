@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <!-- Shared kernel (ResourceRef / SpaceTimePath). -->
+    <ProjectReference Include="..\..\Shared\SwarmRoute.SpatioTemporal.Kernel\SwarmRoute.SpatioTemporal.Kernel.csproj" />
+    <ProjectReference Include="..\..\Shared\SwarmRoute.EventBus\SwarmRoute.EventBus.csproj" />
+
+    <!-- Map: Domain (RoadmapGraph + MapSite/MapLine/MapPosition) + Application.Contract (IRoadmapQueryService). -->
+    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Domain\SwarmRoute.Map.Domain.csproj" />
+    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Application.Contract\SwarmRoute.Map.Application.Contract.csproj" />
+
+    <!-- The REAL engine: PathPlanning + TrafficControl bootstrappers (wired per request). -->
+    <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Domain\SwarmRoute.PathPlanning.Domain.csproj" />
+    <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Infra.CrossCutting.IoC\SwarmRoute.PathPlanning.Infra.CrossCutting.IoC.csproj" />
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Domain.Shared\SwarmRoute.TrafficControl.Domain.Shared.csproj" />
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Application.Contract\SwarmRoute.TrafficControl.Application.Contract.csproj" />
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Infra.CrossCutting.IoC\SwarmRoute.TrafficControl.Infra.CrossCutting.IoC.csproj" />
+
+    <!-- Coordination cycle (IFleetCoordinationCycle). -->
+    <ProjectReference Include="..\..\Coordination\SwarmRoute.Coordination.Application\SwarmRoute.Coordination.Application.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

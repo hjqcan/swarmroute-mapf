@@ -1,0 +1,55 @@
+{
+  "app.title": "多 AGV 路径调度台",
+  "app.subtitle": "仿真 · 验证 · 回放",
+
+  "controls.title": "运行参数",
+  "controls.fieldSize": "场地尺寸",
+  "controls.width": "场地宽度",
+  "controls.height": "场地高度",
+  "controls.agvCount": "AGV 数量",
+  "controls.seed": "随机种子",
+  "controls.seedPlaceholder": "可选",
+  "controls.shuffle": "随机",
+  "controls.run": "运行",
+  "controls.running": "运行中…",
+  "controls.hint": "格点为控制点，方向边为车道。运行后引擎将驱动 AGV 无碰撞抵达各自目标。",
+
+  "playback.play": "播放",
+  "playback.pause": "暂停",
+  "playback.restart": "重播",
+  "playback.tick": "节拍",
+  "playback.speed": "速度",
+  "playback.frameOf": "{current} / {total}",
+
+  "field.empty.title": "尚未运行仿真",
+  "field.empty.hint": "在左侧设置参数后点击「运行」。",
+  "field.start": "起点 A",
+  "field.goal": "终点 B",
+
+  "ribbon.title": "时空预约带",
+  "ribbon.subtitle": "谁 · 在何处 · 何时 —— 这是「无碰撞」的依据",
+  "ribbon.axisTick": "节拍 →",
+  "ribbon.axisAgent": "AGV",
+  "ribbon.empty": "运行后显示各 AGV 随节拍占用的控制点。",
+
+  "telemetry.title": "运行遥测",
+  "telemetry.status.completed.title": "无碰撞",
+  "telemetry.status.completed.desc": "全部 AGV 已抵达目标，未发生控制点冲突。",
+  "telemetry.status.collision.title": "检测到碰撞",
+  "telemetry.status.collision.desc": "第 {tick} 节拍，AGV {agents} 争用同一控制点。",
+  "telemetry.status.didNotConverge.title": "未收敛",
+  "telemetry.status.didNotConverge.desc": "在节拍上限内未能让全部 AGV 抵达目标。",
+  "telemetry.metrics": "指标",
+  "telemetry.metric.ticks": "节拍数",
+  "telemetry.metric.arrived": "已抵达 / 总数",
+  "telemetry.metric.collisions": "碰撞数",
+  "telemetry.metric.replans": "重规划次数",
+  "telemetry.agents": "AGV 列表",
+  "telemetry.empty": "运行后显示状态与各 AGV 明细。",
+
+  "state.Waiting": "等待",
+  "state.Moving": "行进",
+  "state.Arrived": "已达",
+
+  "lang.toggle": "English"
+}

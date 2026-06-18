@@ -1,11 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
-using SwarmRoute.Coordination.Application;
 using SwarmRoute.Integration.Tests.TestSupport;
 using SwarmRoute.Map.Domain.ValueObjects;
-using SwarmRoute.SpatioTemporal.Kernel;
+using SwarmRoute.Simulation.Application;
 using SwarmRoute.TrafficControl.Application.Contract.Services;
 using Xunit;
-using Xunit.Sdk;
 
 namespace SwarmRoute.Integration.Tests;
 
@@ -20,107 +18,30 @@ namespace SwarmRoute.Integration.Tests;
 /// </list>
 /// v0 model: whole-path spatial reservation (the planner is space-only); the loop serialises contenders and
 /// they progress as holders release behind them.
+/// <para>
+/// The run-to-completion loop itself now lives in production code — <see cref="FleetLoopDriver"/> (the
+/// Simulation API drives the same loop for its replay timeline). These tests exercise that extracted driver and
+/// assert the liveness / safety / no-leak invariants over it (DRY: one validated loop, two callers).
+/// </para>
 /// </summary>
 public sealed class ClosedLoopIntegrationTests
 {
-    private sealed class SimAgent(string id, string start, string goal, int priority)
-    {
-        public string Id { get; } = id;
-        public string Start { get; } = start;
-        public string Goal { get; } = goal;
-        public int Priority { get; } = priority;
-
-        public bool EnRoute { get; set; }
-        public bool Done { get; set; }
-        public IReadOnlyList<string> CpRoute { get; set; } = Array.Empty<string>();
-        public IReadOnlyList<ResourceRef> AllResources { get; set; } = Array.Empty<ResourceRef>();
-        public int Idx { get; set; }
-
-        public string CurrentCp => CpRoute[Idx];
-    }
-
-    private sealed record LoopOutcome(int Ticks, int MaxConcurrentEnRoute);
+    private static readonly FleetLoopDriver Driver = new();
 
     /// <summary>
-    /// Runs the closed loop to completion. Each tick: (1) plan+reserve every idle agent via the real cycle;
-    /// (2) advance each en-route agent one CP, releasing the CP+lane it left behind (and everything on arrival);
-    /// (3) assert no two en-route agents share a CP. Throws if the loop doesn't close within <paramref name="maxTicks"/>.
+    /// Runs the extracted closed-loop driver to completion over the host's real cycle, then asserts the core
+    /// invariants: every agent arrived (liveness) and there were zero collisions (safety). The driver throws if
+    /// it fails to converge within <paramref name="maxTicks"/> or detects a collision, so reaching here already
+    /// means the loop closed safely.
     /// </summary>
-    private static async Task<LoopOutcome> RunToCompletionAsync(
-        CoordinationTestHost host, List<SimAgent> fleet, int maxTicks)
+    private static async Task<FleetLoopResult> RunToCompletionAsync(
+        CoordinationTestHost host, IReadOnlyList<FleetAgentSpec> fleet, int maxTicks)
     {
-        var tick = 0;
-        var maxConcurrent = 0;
+        var result = await Driver.RunToCompletionAsync(host.Cycle, host.RoadmapId, host.Graph, fleet, maxTicks);
 
-        while (fleet.Any(a => !a.Done))
-        {
-            if (++tick > maxTicks)
-                throw new XunitException(
-                    $"Closed loop did not converge within {maxTicks} ticks (likely livelock/deadlock). " +
-                    $"Pending: {string.Join(", ", fleet.Where(a => !a.Done).Select(a => $"{a.Id}@{(a.EnRoute ? a.CurrentCp : a.Start)}->{a.Goal}"))}");
-
-            // (1) Plan + reserve every agent that still needs right-of-way.
-            var pending = fleet
-                .Where(a => !a.Done && !a.EnRoute)
-                .Select(a => new AgentGoal(a.Id, a.Start, a.Goal, a.Priority))
-                .ToList();
-
-            if (pending.Count > 0)
-            {
-                var report = await host.Cycle.RunCycleAsync(host.RoadmapId, pending);
-                foreach (var r in report.Results.Where(r => r is { Reserved: true, Path: not null }))
-                {
-                    var ag = fleet.Single(a => a.Id == r.AgentId);
-                    ag.EnRoute = true;
-                    ag.Idx = 0;
-                    ag.CpRoute = r.Path!.Cells
-                        .Where(c => c.Resource.Kind == ResourceKind.CP)
-                        .Select(c => c.Resource.Id)
-                        .ToList();
-                    ag.AllResources = r.Path!.Cells.Select(c => c.Resource).Distinct().ToList();
-                    Assert.Equal(ag.Start, ag.CpRoute[0]);
-                    Assert.Equal(ag.Goal, ag.CpRoute[^1]);
-                }
-            }
-
-            // (2) Move each en-route agent one CP forward, releasing what it leaves behind.
-            foreach (var ag in fleet.Where(a => a is { EnRoute: true, Done: false }).ToList())
-            {
-                if (ag.Idx < ag.CpRoute.Count - 1)
-                {
-                    var fromCp = ag.CpRoute[ag.Idx];
-                    var toCp = ag.CpRoute[ag.Idx + 1];
-                    ag.Idx++;
-                    await host.Cycle.ReleaseAsync(ag.Id,
-                    [
-                        RoadmapGraph.SiteRef(fromCp),
-                        new ResourceRef(ResourceKind.Lane, $"{fromCp}-{toCp}"),
-                    ]);
-                }
-
-                if (ag.Idx >= ag.CpRoute.Count - 1)
-                {
-                    // Arrived: hand back everything still held (goal CP + any remainder) — no leak.
-                    ag.Done = true;
-                    ag.EnRoute = false;
-                    await host.Cycle.ReleaseAsync(ag.Id, ag.AllResources);
-                }
-            }
-
-            // (3) Safety: no two still-moving agents on the same control point this tick.
-            var occupied = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var ag in fleet.Where(a => a.EnRoute))
-            {
-                Assert.False(
-                    occupied.TryGetValue(ag.CurrentCp, out var other),
-                    $"COLLISION at CP '{ag.CurrentCp}' on tick {tick}: '{ag.Id}' and '{other}'.");
-                occupied[ag.CurrentCp] = ag.Id;
-            }
-
-            maxConcurrent = Math.Max(maxConcurrent, fleet.Count(a => a.EnRoute));
-        }
-
-        return new LoopOutcome(tick, maxConcurrent);
+        Assert.Equal(0, result.Stats.Collisions);
+        Assert.Equal(fleet.Count, result.Stats.Arrived);
+        return result;
     }
 
     private static void AssertNoLeasesLeak(CoordinationTestHost host)
@@ -138,15 +59,15 @@ public sealed class ClosedLoopIntegrationTests
     {
         // Two disjoint corridors on one chain A-B-C | D-E-F (no shared resource).
         using var host = CoordinationTestHost.Build(FakeRoadmapQueryService.Chain("A", "B", "C", "D", "E", "F"));
-        var fleet = new List<SimAgent>
+        var fleet = new List<FleetAgentSpec>
         {
-            new("agv-1", "A", "C", priority: 0),
-            new("agv-2", "D", "F", priority: 1),
+            new("agv-1", "A", "C", Priority: 0),
+            new("agv-2", "D", "F", Priority: 1),
         };
 
         var outcome = await RunToCompletionAsync(host, fleet, maxTicks: 20);
 
-        Assert.All(fleet, a => Assert.True(a.Done, $"{a.Id} never reached {a.Goal}"));
+        Assert.Equal(fleet.Count, outcome.Stats.Arrived);
         Assert.True(outcome.MaxConcurrentEnRoute >= 2, "independent agents should move concurrently");
         AssertNoLeasesLeak(host);
     }
@@ -163,15 +84,15 @@ public sealed class ClosedLoopIntegrationTests
             ("W", "C0"), ("C0", "E"), ("N", "C0"), ("C0", "S"));
         using var host = CoordinationTestHost.Build(graph);
 
-        var fleet = new List<SimAgent>
+        var fleet = new List<FleetAgentSpec>
         {
-            new("agv-1", "W", "E", priority: 0),
-            new("agv-2", "N", "S", priority: 1),
+            new("agv-1", "W", "E", Priority: 0),
+            new("agv-2", "N", "S", Priority: 1),
         };
 
         var outcome = await RunToCompletionAsync(host, fleet, maxTicks: 30);
 
-        Assert.All(fleet, a => Assert.True(a.Done, $"{a.Id} never reached {a.Goal}"));
+        Assert.Equal(fleet.Count, outcome.Stats.Arrived);
         AssertNoLeasesLeak(host);
     }
 
@@ -185,17 +106,17 @@ public sealed class ClosedLoopIntegrationTests
             ("W", "C0"), ("C0", "E"), ("N", "C0"), ("C0", "C1"), ("C1", "Sx"), ("W2", "C1"), ("C1", "E2"));
         using var host = CoordinationTestHost.Build(graph);
 
-        var fleet = new List<SimAgent>
+        var fleet = new List<FleetAgentSpec>
         {
-            new("agv-1", "W", "E", priority: 0),    // through C0
-            new("agv-2", "N", "Sx", priority: 1),   // through C0 then C1
-            new("agv-3", "W2", "E2", priority: 2),  // through C1
-            new("agv-4", "E", "W", priority: 3),    // through C0, opposite agv-1 (ends at W, agv-1's start — free by then)
+            new("agv-1", "W", "E", Priority: 0),    // through C0
+            new("agv-2", "N", "Sx", Priority: 1),   // through C0 then C1
+            new("agv-3", "W2", "E2", Priority: 2),  // through C1
+            new("agv-4", "E", "W", Priority: 3),    // through C0, opposite agv-1 (ends at W, agv-1's start — free by then)
         };
 
         var outcome = await RunToCompletionAsync(host, fleet, maxTicks: 60);
 
-        Assert.All(fleet, a => Assert.True(a.Done, $"{a.Id} never reached {a.Goal}"));
+        Assert.Equal(fleet.Count, outcome.Stats.Arrived);
         AssertNoLeasesLeak(host);
     }
 }

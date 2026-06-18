@@ -8,7 +8,7 @@
 
   <ItemGroup>
     <!-- DTO mapping is hand-written (record DTOs), so no AutoMapper dependency here. -->
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
   </ItemGroup>
 
   <PropertyGroup>
