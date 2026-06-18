@@ -20,6 +20,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SwarmRoute.TrafficControl.Domain\SwarmRoute.TrafficControl.Domain.csproj" />
+    <ProjectReference Include="..\SwarmRoute.TrafficControl.Application\SwarmRoute.TrafficControl.Application.csproj" />
+    <ProjectReference Include="..\SwarmRoute.TrafficControl.Application.Contract\SwarmRoute.TrafficControl.Application.Contract.csproj" />
+    <ProjectReference Include="..\SwarmRoute.TrafficControl.Infra.BackgroundJobs\SwarmRoute.TrafficControl.Infra.BackgroundJobs.csproj" />
   </ItemGroup>
 
 </Project>

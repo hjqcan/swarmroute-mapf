@@ -4,6 +4,12 @@
     <ProjectReference Include="..\SwarmRoute.TrafficControl.Application\SwarmRoute.TrafficControl.Application.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Hangfire recurring jobs for this context (scheduling is wired in the Host later). -->
+    <PackageReference Include="Hangfire.Core" Version="1.8.21" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.1" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <LangVersion>latest</LangVersion>

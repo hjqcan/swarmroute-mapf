@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\SwarmRoute.SpatioTemporal.Kernel\SwarmRoute.SpatioTemporal.Kernel.csproj" />
     <ProjectReference Include="..\..\Shared\SwarmRoute.Domain.Abstractions\SwarmRoute.Domain.Abstractions.csproj" />
+    <ProjectReference Include="..\..\Shared\SwarmRoute.StateMachine.Core\SwarmRoute.StateMachine.Core.csproj" />
     <ProjectReference Include="..\..\lib\NetDevPack\src\NetDevPack\NetDevPack.csproj" />
     <ProjectReference Include="..\SwarmRoute.TrafficControl.Domain.Shared\SwarmRoute.TrafficControl.Domain.Shared.csproj" />
   </ItemGroup>

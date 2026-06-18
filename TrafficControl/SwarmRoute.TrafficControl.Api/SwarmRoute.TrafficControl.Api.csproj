@@ -13,6 +13,8 @@
   <ItemGroup>
     <ProjectReference Include="..\SwarmRoute.TrafficControl.Application.Contract\SwarmRoute.TrafficControl.Application.Contract.csproj" />
     <ProjectReference Include="..\SwarmRoute.TrafficControl.Infra.CrossCutting.IoC\SwarmRoute.TrafficControl.Infra.CrossCutting.IoC.csproj" />
+    <!-- In-process domain-event dispatcher used by BaseDbContext.Commit(); mirrors how Host wires AddEventBus. -->
+    <ProjectReference Include="..\..\Shared\SwarmRoute.EventBus\SwarmRoute.EventBus.csproj" />
   </ItemGroup>
 
 </Project>
