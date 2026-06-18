@@ -36,7 +36,6 @@ export default function ReservationRibbon() {
   const playing = useSimStore((s) => s.playing)
   const setCursor = useSimStore((s) => s.setCursor)
   const setPlaying = useSimStore((s) => s.setPlaying)
-  const rafRef = useRef<number | null>(null)
 
   // Per-result derived data (stable across animation frames).
   const model = useMemo(() => {
@@ -194,25 +193,24 @@ export default function ReservationRibbon() {
     ctx.fill()
   }, [result, model, size, reduced])
 
-  // Animate the playhead while playing; otherwise draw once on change.
+  // While playing: one persistent RAF loop that sweeps the playhead. draw() reads the
+  // LIVE store cursor, so this must NOT depend on `cursor` — depending on it would tear
+  // the loop down and reschedule on every advance (~60×/s), cancelling the in-flight
+  // draw before it paints and freezing the playhead until playback stops.
   useEffect(() => {
-    if (rafRef.current != null) {
-      cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
-    }
-    if (playing) {
-      const loop = () => {
-        draw()
-        rafRef.current = requestAnimationFrame(loop)
-      }
-      rafRef.current = requestAnimationFrame(loop)
-    } else {
+    if (!playing) return
+    let raf = requestAnimationFrame(function loop() {
       draw()
-    }
-    return () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
-    }
+      raf = requestAnimationFrame(loop)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [playing, draw])
+
+  // While paused: repaint once whenever the cursor (scrub), size, result or motion
+  // preference changes, so scrubbing moves the playhead.
+  useEffect(() => {
+    if (playing) return
+    draw()
   }, [playing, draw, cursor])
 
   // Click / drag to scrub.

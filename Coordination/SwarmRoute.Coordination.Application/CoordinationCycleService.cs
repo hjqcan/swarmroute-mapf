@@ -66,6 +66,7 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
     public async Task<CycleReport> RunCycleAsync(
         Guid roadmapId,
         IReadOnlyCollection<AgentGoal> goals,
+        IReadOnlySet<ResourceRef>? blockedResources = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(goals);
@@ -88,7 +89,7 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
         foreach (var goal in ordered)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            results.Add(await PlanAndReserveAsync(roadmapId, graph, goal, cycleReleaseTimeMs, cancellationToken)
+            results.Add(await PlanAndReserveAsync(roadmapId, graph, goal, cycleReleaseTimeMs, blockedResources, cancellationToken)
                 .ConfigureAwait(false));
         }
 
@@ -100,10 +101,15 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
         RoadmapGraph graph,
         AgentGoal goal,
         long releaseTimeMs,
+        IReadOnlySet<ResourceRef>? blockedResources,
         CancellationToken cancellationToken)
     {
         // TrafficControl: current reservation view (re-read each attempt so the planner sees the latest state).
-        var pruned = new HashSet<ResourceRef>();
+        // Seed the prune set with the statically-blocked resources (parked vehicles) so every plan this cycle
+        // routes around them — the agent's own start/goal are never blocked (the planner skips those).
+        var pruned = blockedResources is { Count: > 0 }
+            ? new HashSet<ResourceRef>(blockedResources)
+            : new HashSet<ResourceRef>();
 
         SpaceTimePath? lastPath = null;
         string? lastFailure = null;

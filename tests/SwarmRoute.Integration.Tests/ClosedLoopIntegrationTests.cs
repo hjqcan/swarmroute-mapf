@@ -29,15 +29,27 @@ public sealed class ClosedLoopIntegrationTests
     private static readonly FleetLoopDriver Driver = new();
 
     /// <summary>
+    /// Builds a test host whose coordination cycle reads a tick-driven <see cref="ManualFleetClock"/> (the same
+    /// wiring the Simulation API uses), so reservation intervals and execution ticks share one axis. The driver
+    /// advances this clock each tick.
+    /// </summary>
+    private static CoordinationTestHost BuildHost(RoadmapGraph graph, out ManualFleetClock clock)
+    {
+        clock = new ManualFleetClock();
+        return CoordinationTestHost.Build(graph, clock: clock);
+    }
+
+    /// <summary>
     /// Runs the extracted closed-loop driver to completion over the host's real cycle, then asserts the core
-    /// invariants: every agent arrived (liveness) and there were zero collisions (safety). The driver throws if
-    /// it fails to converge within <paramref name="maxTicks"/> or detects a collision, so reaching here already
-    /// means the loop closed safely.
+    /// invariants: every agent arrived (liveness) and there were zero collisions (safety). The executor's
+    /// right-of-way gate makes collisions impossible by construction, so reaching here means the loop closed
+    /// safely and live.
     /// </summary>
     private static async Task<FleetLoopResult> RunToCompletionAsync(
-        CoordinationTestHost host, IReadOnlyList<FleetAgentSpec> fleet, int maxTicks)
+        CoordinationTestHost host, ManualFleetClock clock, IReadOnlyList<FleetAgentSpec> fleet, int maxTicks)
     {
-        var result = await Driver.RunToCompletionAsync(host.Cycle, host.RoadmapId, host.Graph, fleet, maxTicks);
+        var result = await Driver.RunToCompletionAsync(
+            host.Cycle, host.RoadmapId, host.Graph, fleet, maxTicks, advanceClock: clock.SetTick);
 
         Assert.Equal(0, result.Stats.Collisions);
         Assert.Equal(fleet.Count, result.Stats.Arrived);
@@ -58,14 +70,14 @@ public sealed class ClosedLoopIntegrationTests
     public async Task ClosedLoop_IndependentAgents_AllReachGoals_InParallel_NoCollision_NoLeak()
     {
         // Two disjoint corridors on one chain A-B-C | D-E-F (no shared resource).
-        using var host = CoordinationTestHost.Build(FakeRoadmapQueryService.Chain("A", "B", "C", "D", "E", "F"));
+        using var host = BuildHost(FakeRoadmapQueryService.Chain("A", "B", "C", "D", "E", "F"), out var clock);
         var fleet = new List<FleetAgentSpec>
         {
             new("agv-1", "A", "C", Priority: 0),
             new("agv-2", "D", "F", Priority: 1),
         };
 
-        var outcome = await RunToCompletionAsync(host, fleet, maxTicks: 20);
+        var outcome = await RunToCompletionAsync(host, clock, fleet, maxTicks: 20);
 
         Assert.Equal(fleet.Count, outcome.Stats.Arrived);
         Assert.True(outcome.MaxConcurrentEnRoute >= 2, "independent agents should move concurrently");
@@ -82,7 +94,7 @@ public sealed class ClosedLoopIntegrationTests
         var graph = FakeRoadmapQueryService.Graph(
             ["W", "E", "N", "S", "C0"],
             ("W", "C0"), ("C0", "E"), ("N", "C0"), ("C0", "S"));
-        using var host = CoordinationTestHost.Build(graph);
+        using var host = BuildHost(graph, out var clock);
 
         var fleet = new List<FleetAgentSpec>
         {
@@ -90,33 +102,38 @@ public sealed class ClosedLoopIntegrationTests
             new("agv-2", "N", "S", Priority: 1),
         };
 
-        var outcome = await RunToCompletionAsync(host, fleet, maxTicks: 30);
+        var outcome = await RunToCompletionAsync(host, clock, fleet, maxTicks: 30);
 
         Assert.Equal(fleet.Count, outcome.Stats.Arrived);
         AssertNoLeasesLeak(host);
     }
 
-    // ── Closed loop C: a denser fleet (4 agents, two crossing pairs) still converges ─────────────────────
+    // ── Closed loop C: a denser fleet (4 agents rotating around a grid's perimeter) still converges ──────
     [Fact]
-    public async Task ClosedLoop_FourAgents_TwoCrossingPairs_AllReachGoals_NoCollision_NoLeak()
+    public async Task ClosedLoop_FourAgents_PerimeterRotation_AllReachGoals_NoCollision_NoLeak()
     {
-        // Two stacked intersections sharing centres C0 and C1:  W-C0-E , N-C0-C1-Sx , and W2-C1-E2.
-        var graph = FakeRoadmapQueryService.Graph(
-            ["W", "E", "N", "C0", "C1", "Sx", "W2", "E2"],
-            ("W", "C0"), ("C0", "E"), ("N", "C0"), ("C0", "C1"), ("C1", "Sx"), ("W2", "C1"), ("C1", "E2"));
-        using var host = CoordinationTestHost.Build(graph);
+        // Four agents rotate one quarter-turn around a 4×4 grid's perimeter (a 4-cycle: each agent's start is
+        // the previous agent's goal). Each follows one edge of the square through otherwise-empty cells, so the
+        // shared corners are used at different ticks and there are no head-on swaps — a scenario the v0
+        // shortest-path planner can solve under the executor's right-of-way gate. (The earlier hand-built
+        // intersection had agv-1 W→E and agv-4 E→W swapping through a single vertex with no siding: genuinely
+        // unsolvable for a shortest-path planner, so it is not a fair convergence test.)
+        var graph = new GridFieldFactory().BuildGrid(4, 4).Graph;
+        using var host = BuildHost(graph, out var clock);
 
+        string Cell(int r, int c) => GridFieldFactory.SiteId(r, c);
         var fleet = new List<FleetAgentSpec>
         {
-            new("agv-1", "W", "E", Priority: 0),    // through C0
-            new("agv-2", "N", "Sx", Priority: 1),   // through C0 then C1
-            new("agv-3", "W2", "E2", Priority: 2),  // through C1
-            new("agv-4", "E", "W", Priority: 3),    // through C0, opposite agv-1 (ends at W, agv-1's start — free by then)
+            new("agv-1", Cell(0, 0), Cell(0, 3), Priority: 0), // top row, west → east
+            new("agv-2", Cell(0, 3), Cell(3, 3), Priority: 1), // right column, north → south
+            new("agv-3", Cell(3, 3), Cell(3, 0), Priority: 2), // bottom row, east → west
+            new("agv-4", Cell(3, 0), Cell(0, 0), Priority: 3), // left column, south → north
         };
 
-        var outcome = await RunToCompletionAsync(host, fleet, maxTicks: 60);
+        var outcome = await RunToCompletionAsync(host, clock, fleet, maxTicks: 80);
 
         Assert.Equal(fleet.Count, outcome.Stats.Arrived);
+        Assert.True(outcome.MaxConcurrentEnRoute >= 2, "perimeter agents should move concurrently");
         AssertNoLeasesLeak(host);
     }
 }

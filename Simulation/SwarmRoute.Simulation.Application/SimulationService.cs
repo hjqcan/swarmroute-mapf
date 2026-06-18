@@ -52,10 +52,13 @@ public sealed class SimulationService : ISimulationService
         // 3. Get a fresh REAL engine for THIS request (isolation between concurrent runs).
         await using var engine = _engineFactory.Create(field.Graph);
 
-        // 4. Run the closed loop to completion, recording the timeline.
+        // 4. Run the closed loop to completion, recording the timeline. The driver advances the engine's tick
+        //    clock each tick so reservation intervals share the executor's axis (no wall-clock drift).
         var maxTicks = MaxTicks(request);
         var loop = await _loopDriver
-            .RunToCompletionAsync(engine.Cycle, engine.RoadmapId, field.Graph, agentSpecs, maxTicks, cancellationToken)
+            .RunToCompletionAsync(
+                engine.Cycle, engine.RoadmapId, field.Graph, agentSpecs, maxTicks,
+                advanceClock: engine.Clock.SetTick, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
         // 5. Map to the transport DTO.
@@ -81,12 +84,14 @@ public sealed class SimulationService : ISimulationService
     }
 
     /// <summary>
-    /// A sound upper bound on ticks: even if the whole-path reservation serialises agents one-at-a-time, each
-    /// traverses at most <c>Width+Height</c> CPs, so <c>(Width+Height)*(AgvCount+1)</c> plus slack always
-    /// converges for a valid request.
+    /// A generous upper bound on ticks. Even if the whole-path reservation serialises agents one-at-a-time and
+    /// the executor's right-of-way gate makes trailing vehicles wait a tick per congested cell, each agent
+    /// traverses at most <c>Width+Height</c> CPs; <c>(Width+Height)*(AgvCount+1)*2</c> plus slack leaves ample
+    /// room to converge. A run that still hits this bound is reported as <c>DidNotConverge</c> (a real standoff),
+    /// never silently truncated.
     /// </summary>
     private static int MaxTicks(SimulationRequest request)
-        => ((request.Width + request.Height) * (request.AgvCount + 1)) + 50;
+        => ((request.Width + request.Height) * (request.AgvCount + 1) * 2) + 100;
 
     private static SimulationResultDto Map(
         GridField field,

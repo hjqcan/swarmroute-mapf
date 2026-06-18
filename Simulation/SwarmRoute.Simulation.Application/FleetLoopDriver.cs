@@ -73,31 +73,37 @@ public sealed record FleetLoopResult(
 /// roadmap id, its <see cref="RoadmapGraph"/> and a fleet of <see cref="FleetAgentSpec"/>s, it drives the REAL
 /// engine and records a tick-by-tick timeline:
 /// <list type="number">
+///   <item><description><b>Tick clock</b>: advance the fleet clock to the current tick so every interval reserved
+///     this cycle is on the same axis the executor moves on (one tick = one CP hop).</description></item>
 ///   <item><description><b>Plan + reserve</b> every idle agent via <see cref="IFleetCoordinationCycle.RunCycleAsync"/>
 ///     (deterministic priority order). Newly-reserved agents become en route at their start CP.</description></item>
-///   <item><description><b>Advance</b> each en-route agent one CP, awaiting <see cref="IFleetCoordinationCycle.ReleaseAsync"/>
-///     to hand back the CP+lane it left behind; on arrival it releases all its path resources (no leak).</description></item>
+///   <item><description><b>Advance</b> each en-route agent at most one CP, through a right-of-way gate: it enters
+///     the next CP only if no vehicle occupies it this tick (else it waits), awaiting
+///     <see cref="IFleetCoordinationCycle.ReleaseAsync"/> to hand back the CP+lane it left behind; on arrival it
+///     releases all its path resources (no leak).</description></item>
 ///   <item><description><b>Record</b> a frame for the tick (every agent's CP + motion state).</description></item>
-///   <item><description><b>Check safety</b>: if two agents holding right-of-way share a CP on a tick, that is a
-///     collision — the run stops with <see cref="FleetLoopStatus.CollisionDetected"/> (the colliding frame is
-///     still recorded so a viewer can show exactly where it happened).</description></item>
+///   <item><description><b>Check safety</b> (defensive): assert no two agents holding right-of-way share a CP.
+///     With the gate this can no longer happen; if it ever did it would be reported via
+///     <see cref="FleetLoopStatus.CollisionDetected"/> (the frame is recorded) as a regression signal.</description></item>
 /// </list>
-/// Deterministic given deterministic inputs (no wall-clock / RNG here). This driver is a <b>verifier</b>: it
-/// does NOT throw on collision or non-convergence — those are real outcomes it reports via
-/// <see cref="FleetLoopResult.Stats"/> so callers (sim API, frontend) can surface them. It throws only on an
-/// internal invariant breach (a reserved path that doesn't run start→goal).
-/// <para><b>Fidelity note:</b> agents advance one CP per tick (lockstep), independent of the reserved
-/// space-time intervals. The reservation table time-separates agents by interval; lockstep execution does not
-/// honour that timing, so under density it can surface a collision the time-model considered separated. That is
-/// a faithful signal of the v0 gap (placeholder schedule, no execution-time feedback) — to be closed by v1
-/// (SIPP + schedule-faithful execution).</para>
+/// Deterministic given deterministic inputs (the tick clock removes the wall-clock dependence). This driver is a
+/// <b>verifier</b>: it does NOT throw on a standoff — non-convergence is reported via
+/// <see cref="FleetLoopResult.Stats"/> (<see cref="FleetLoopStatus.DidNotConverge"/>) so callers (sim API,
+/// frontend) can surface it. It throws only on an internal invariant breach (a reserved path that doesn't run
+/// start→goal).
+/// <para><b>Collision-freedom.</b> Two layers guarantee it: the reservation table coordinates <em>who plans
+/// through which CP and when</em> (interval-exclusive leases), and the executor's right-of-way gate is the final
+/// stop-and-wait so a vehicle never enters an occupied CP. A pathological standoff therefore degrades to
+/// <see cref="FleetLoopStatus.DidNotConverge"/>, never a crash. The gate is conservative (a trailing vehicle
+/// waits one tick for the cell ahead to clear); v1's SIPP planner will tighten throughput by routing in time.</para>
 /// </summary>
 public sealed class FleetLoopDriver
 {
     private sealed class RunAgent(FleetAgentSpec spec)
     {
         public string Id { get; } = spec.Id;
-        public string Start { get; } = spec.StartSiteId;
+        /// <summary>The current planning origin — the original start, or the CP it was re-routed from.</summary>
+        public string Start { get; set; } = spec.StartSiteId;
         public string Goal { get; } = spec.GoalSiteId;
         public int Priority { get; } = spec.Priority;
 
@@ -108,7 +114,7 @@ public sealed class FleetLoopDriver
         public int Idx { get; set; }
         public int Replans { get; set; }
 
-        /// <summary>Where the agent physically sits this tick: current CP if en route/arrived, else its start.</summary>
+        /// <summary>Where the agent physically sits this tick: current CP if en route/arrived, else its origin.</summary>
         public string Position => EnRoute || Done ? CpRoute[Idx] : Start;
 
         public AgentMotionState State => Done ? AgentMotionState.Arrived
@@ -117,10 +123,11 @@ public sealed class FleetLoopDriver
     }
 
     /// <summary>
-    /// Runs the closed loop, recording a frame per tick, until every agent arrives, a collision is detected, or
-    /// the tick budget is exhausted. The fleet is processed in a stable order so a given input always produces
-    /// the same timeline.
+    /// Runs the closed loop, recording a frame per tick, until every agent arrives or the tick budget is
+    /// exhausted. The fleet is processed in a stable order so a given input always produces the same timeline.
     /// </summary>
+    /// <param name="advanceClock">Sets the fleet clock to the current tick at the start of each tick (the sim
+    /// passes its <see cref="ManualFleetClock"/>'s setter); when null the engine's own clock is left untouched.</param>
     /// <exception cref="ArgumentNullException">If <paramref name="cycle"/>, <paramref name="graph"/> or <paramref name="agents"/> is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException">If <paramref name="maxTicks"/> &lt; 1.</exception>
     /// <exception cref="FleetLoopException">Only on an internal invariant breach (reserved path not start→goal).</exception>
@@ -130,6 +137,7 @@ public sealed class FleetLoopDriver
         RoadmapGraph graph,
         IReadOnlyCollection<FleetAgentSpec> agents,
         int maxTicks,
+        Action<long>? advanceClock = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(cycle);
@@ -150,6 +158,10 @@ public sealed class FleetLoopDriver
         var maxConcurrent = 0;
         var status = FleetLoopStatus.Completed;
         FleetCollisionInfo? collision = null;
+
+        // Control points occupied by parked (arrived) vehicles. Fed to the planner each cycle as obstacles so the
+        // rest of the fleet routes AROUND finished agents instead of stalling behind them at the executor gate.
+        var parkedCells = new HashSet<string>(StringComparer.Ordinal);
 
         // Record the initial state (tick 0): every agent waiting at its start CP, before any movement. This
         // gives a viewer a frame where the fleet sits at its origins, so playback visibly departs from A (the
@@ -174,6 +186,11 @@ public sealed class FleetLoopDriver
 
             tick++;
 
+            // Advance the fleet clock to this tick BEFORE planning, so every interval reserved this cycle is
+            // expressed in tick units (the axis the executor below advances on). This is what couples the
+            // reservation table's interval collision-freedom to actual execution.
+            advanceClock?.Invoke(tick);
+
             // (1) Plan + reserve every agent that still needs right-of-way.
             var pending = fleet
                 .Where(a => !a.Done && !a.EnRoute)
@@ -182,7 +199,10 @@ public sealed class FleetLoopDriver
 
             if (pending.Count > 0)
             {
-                var report = await cycle.RunCycleAsync(roadmapId, pending, cancellationToken).ConfigureAwait(false);
+                var blocked = parkedCells.Count == 0
+                    ? null
+                    : parkedCells.Select(RoadmapGraph.SiteRef).ToHashSet();
+                var report = await cycle.RunCycleAsync(roadmapId, pending, blocked, cancellationToken).ConfigureAwait(false);
                 foreach (var r in report.Results)
                 {
                     var ag = fleet.Single(a => a.Id == r.AgentId);
@@ -207,14 +227,65 @@ public sealed class FleetLoopDriver
                 }
             }
 
-            // (2) Move each en-route agent one CP forward, releasing what it leaves behind.
-            foreach (var ag in fleet.Where(a => a is { EnRoute: true, Done: false }).ToList())
+            // (2) Advance each en-route agent at most one CP forward — with an execution-time right-of-way gate:
+            //     "if a vehicle is on the next control point, you wait." A move is taken only when the target CP
+            //     is empty this tick AND not already claimed by a higher-priority mover; otherwise the agent
+            //     holds position (keeping its leases) and retries next tick. This makes a same-CP collision
+            //     impossible by construction — the reservation table coordinates *who plans through where*, and
+            //     this gate is the final guarantee at the executor.
+            //
+            //     `occupantNow` = which agent physically sits on each CP at the start of the tick (pending agents
+            //     wait on their origin, en-route on their current CP, arrived on their goal CP). `claimedNext` =
+            //     the CPs that will be occupied after this tick; non-movers (pending/arrived) keep their CP so a
+            //     mover can never step onto one. Conservative (a trailing agent waits one tick for the cell ahead
+            //     to clear), which trades a little throughput for a hard no-collision guarantee.
+            //
+            //     Liveness: if the blocker on the next CP is a *parked* (arrived) vehicle, waiting would never
+            //     clear — so instead the agent drops its reservation and rejoins planning from its current CP
+            //     (a re-route). Next cycle the planner routes it around the parked cell (which is now in
+            //     `parkedCells`). A transient blocker (a moving/waiting vehicle) just makes it wait one tick.
+            var occupantNow = fleet.ToDictionary(a => a.Position, a => a, StringComparer.Ordinal);
+            var claimedNext = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var a in fleet.Where(a => !(a.EnRoute && !a.Done)))
+                claimedNext.Add(a.Position);
+
+            foreach (var ag in fleet.Where(a => a is { EnRoute: true, Done: false }))
             {
-                if (ag.Idx < ag.CpRoute.Count - 1)
+                var fromCp = ag.CpRoute[ag.Idx];
+                var atGoalAlready = ag.Idx >= ag.CpRoute.Count - 1;
+
+                if (!atGoalAlready)
                 {
-                    var fromCp = ag.CpRoute[ag.Idx];
                     var toCp = ag.CpRoute[ag.Idx + 1];
+                    var blockedByMover = claimedNext.Contains(toCp);
+                    var occupant = occupantNow.GetValueOrDefault(toCp);
+
+                    if (occupant is { Done: true })
+                    {
+                        // Permanent obstacle (parked vehicle) ahead — re-route: release this path and rejoin
+                        // planning from where we stand. `parkedCells` already lists the obstacle, so the next
+                        // plan avoids it.
+                        ag.Replans++;
+                        var held = ag.AllResources;
+                        ag.EnRoute = false;
+                        ag.Start = fromCp;
+                        ag.CpRoute = new[] { fromCp };
+                        ag.Idx = 0;
+                        ag.AllResources = Array.Empty<ResourceRef>();
+                        claimedNext.Add(fromCp);
+                        await cycle.ReleaseAsync(ag.Id, held, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    // Right-of-way gate: enter only if the next CP is free this tick and unclaimed by a prior mover.
+                    if (blockedByMover || occupant is not null)
+                    {
+                        claimedNext.Add(fromCp); // wait: hold the current CP (and all leases).
+                        continue;
+                    }
+
                     ag.Idx++;
+                    claimedNext.Add(toCp);
                     await cycle.ReleaseAsync(ag.Id,
                     [
                         RoadmapGraph.SiteRef(fromCp),
@@ -224,9 +295,12 @@ public sealed class FleetLoopDriver
 
                 if (ag.Idx >= ag.CpRoute.Count - 1)
                 {
-                    // Arrived: hand back everything still held (goal CP + any remainder) — no leak.
+                    // Arrived: hand back everything still held (goal CP + any remainder) — no leak — and mark the
+                    // goal CP as a parked obstacle so the rest of the fleet routes around it.
                     ag.Done = true;
                     ag.EnRoute = false;
+                    claimedNext.Add(ag.Position);
+                    parkedCells.Add(ag.Position);
                     await cycle.ReleaseAsync(ag.Id, ag.AllResources, cancellationToken).ConfigureAwait(false);
                 }
             }

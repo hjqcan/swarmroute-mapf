@@ -32,7 +32,6 @@ export default function FieldCanvas() {
   const playing = useSimStore((s) => s.playing)
 
   const lookup = useMemo(() => (result ? buildSiteLookup(result) : null), [result])
-  const rafRef = useRef<number | null>(null)
 
   // A single-frame paint. Reads the live cursor from the store so the RAF loop
   // always paints the current playback position.
@@ -201,38 +200,34 @@ export default function FieldCanvas() {
     }
   }, [result, lookup, size, reduced])
 
-  // Playing: schedule draw() on RAF. Paused: draw once per cursor/size/result change.
+  // While playing: one persistent RAF loop that repaints every frame. It reads the
+  // LIVE store cursor inside draw(), so it must NOT depend on `cursor` — adding cursor
+  // here would tear the loop down and reschedule it on every advance (~60×/s), and the
+  // teardown cancels the in-flight draw before it paints, freezing the field on the
+  // first frame until playback stops. Depend only on [playing, draw].
   useEffect(() => {
-    if (rafRef.current != null) {
-      cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
-    }
-
-    if (playing) {
-      const loop = () => {
-        draw()
-        rafRef.current = requestAnimationFrame(loop)
-      }
-      rafRef.current = requestAnimationFrame(loop)
-    } else {
-      // Single paint for the paused / scrub / collision-flash-frozen case. If a
-      // collision flash is showing while paused, keep a slow blink alive.
+    if (!playing) return
+    let raf = requestAnimationFrame(function loop() {
       draw()
-      const collisionIdx = result ? collisionFrameIndex(result) : null
-      const showingCollision = collisionIdx != null && cursor >= collisionIdx - 0.001
-      if (showingCollision && !reduced) {
-        const loop = () => {
-          draw()
-          rafRef.current = requestAnimationFrame(loop)
-        }
-        rafRef.current = requestAnimationFrame(loop)
-      }
-    }
+      raf = requestAnimationFrame(loop)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [playing, draw])
 
-    return () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
-    }
+  // While paused: repaint once whenever the cursor (scrub), size, result or motion
+  // preference changes. If we're parked on/after the collision tick, keep a slow blink
+  // alive so the contended control point stays legible while stopped.
+  useEffect(() => {
+    if (playing) return
+    draw()
+    const collisionIdx = result ? collisionFrameIndex(result) : null
+    const showingCollision = collisionIdx != null && cursor >= collisionIdx - 0.001
+    if (!showingCollision || reduced) return
+    let raf = requestAnimationFrame(function loop() {
+      draw()
+      raf = requestAnimationFrame(loop)
+    })
+    return () => cancelAnimationFrame(raf)
   }, [playing, draw, cursor, result, reduced])
 
   return (

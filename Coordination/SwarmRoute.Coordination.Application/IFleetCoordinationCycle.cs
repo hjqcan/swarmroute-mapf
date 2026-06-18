@@ -16,9 +16,13 @@ public interface IFleetCoordinationCycle
     /// processed in ascending <see cref="AgentGoal.Priority"/> then ordinal agent id, so the same inputs always
     /// serialize the same way.
     /// </summary>
+    /// <param name="blockedResources">Resources to treat as permanently unavailable this cycle — e.g. control
+    /// points occupied by parked/completed vehicles. Every plan routes around them (added to the planner's
+    /// blacklist), so the fleet flows past finished agents instead of stalling behind them. Null = none.</param>
     Task<CycleReport> RunCycleAsync(
         Guid roadmapId,
         IReadOnlyCollection<AgentGoal> goals,
+        IReadOnlySet<SwarmRoute.SpatioTemporal.Kernel.ResourceRef>? blockedResources = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>

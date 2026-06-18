@@ -96,7 +96,7 @@ public sealed class FleetCoordinationLoop : BackgroundService
         {
             using var scope = _scopeFactory.CreateScope();
             var cycle = scope.ServiceProvider.GetRequiredService<IFleetCoordinationCycle>();
-            return await cycle.RunCycleAsync(roadmapId.Value, goals, cancellationToken).ConfigureAwait(false);
+            return await cycle.RunCycleAsync(roadmapId.Value, goals, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

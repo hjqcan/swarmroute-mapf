@@ -21,4 +21,10 @@ public interface ISimulationEngine : IAsyncDisposable
 
     /// <summary>The coordination cycle that drives planning and reservation for this engine.</summary>
     IFleetCoordinationCycle Cycle { get; }
+
+    /// <summary>
+    /// The tick clock the driver advances each tick. It is the SAME instance the engine's coordination cycle
+    /// reads for reservation timing, so reserved intervals and execution ticks share one axis.
+    /// </summary>
+    ManualFleetClock Clock { get; }
 }
