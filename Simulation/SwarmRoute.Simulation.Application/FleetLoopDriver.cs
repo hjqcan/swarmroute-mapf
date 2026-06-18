@@ -308,9 +308,17 @@ public sealed class FleetLoopDriver
 
             if (pending.Count > 0)
             {
-                var blocked = parkedCells.Count == 0
+                // Feed physical occupancy that is NOT represented by an active lease back into planning.
+                // En-route agents still hold reservations, so TrafficControl already protects them. Parked
+                // vehicles and waiting agents do not rely on active leases, but they still occupy their CP.
+                // The planner exempts each agent's own start/goal, so adding every waiting Position does not
+                // prevent that agent from departing its current CP.
+                var physicallyBlockedCells = parkedCells
+                    .Concat(fleet.Where(a => !a.EnRoute && !a.Done).Select(a => a.Position))
+                    .ToHashSet(StringComparer.Ordinal);
+                var blocked = physicallyBlockedCells.Count == 0
                     ? null
-                    : parkedCells.Select(RoadmapGraph.SiteRef).ToHashSet();
+                    : physicallyBlockedCells.Select(RoadmapGraph.SiteRef).ToHashSet();
                 var report = await cycle.RunCycleAsync(roadmapId, pending, blocked, cancellationToken).ConfigureAwait(false);
                 foreach (var r in report.Results)
                 {

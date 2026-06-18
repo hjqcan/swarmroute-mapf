@@ -44,6 +44,10 @@ public sealed class TrafficCoordinatorAppService : ITrafficCoordinatorAppService
             throw new ArgumentException("agentId must be provided.", nameof(agentId));
 
         var outcome = _allocator.Allocate(_table, path, agentId);
+        if (outcome == AllocationOutcome.Granted)
+            SwarmRouteMetrics.ReservationGrants.Add(1);
+        else
+            SwarmRouteMetrics.ReservationDenials.Add(1);
         _logger.LogDebug("TryReserve agent={AgentId} cells={Cells} -> {Outcome}", agentId, path.Cells.Count, outcome);
         await DrainAndPublishAsync(cancellationToken).ConfigureAwait(false);
         return outcome;
@@ -64,6 +68,7 @@ public sealed class TrafficCoordinatorAppService : ITrafficCoordinatorAppService
         ArgumentNullException.ThrowIfNull(passedResources);
 
         var freed = _table.ReleaseBehind(agentId, passedResources);
+        SwarmRouteMetrics.ReservationReleases.Add(1);
         _logger.LogDebug("Release agent={AgentId} passed={Passed} -> freed={Freed}", agentId, passedResources.Count, freed.Count);
         await DrainAndPublishAsync(cancellationToken).ConfigureAwait(false);
     }

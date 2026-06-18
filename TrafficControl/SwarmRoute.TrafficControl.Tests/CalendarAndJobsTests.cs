@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NetDevPack.Messaging;
+using SwarmRoute.Domain.Abstractions.EventBus;
 using SwarmRoute.SpatioTemporal.Kernel;
 using SwarmRoute.TrafficControl.Domain.Aggregates;
 using SwarmRoute.TrafficControl.Domain.Services;
@@ -12,6 +14,16 @@ public class CalendarAndJobsTests
     private sealed class FixedClock : IFleetClock
     {
         public long NowMs { get; set; }
+    }
+
+    private sealed class CapturingPublisher : IIntegrationEventPublisher
+    {
+        public List<Event> Published { get; } = [];
+        public Task PublishAsync(IEnumerable<Event> domainEvents, CancellationToken cancellationToken = default)
+        {
+            Published.AddRange(domainEvents);
+            return Task.CompletedTask;
+        }
     }
 
     [Fact]
@@ -65,5 +77,24 @@ public class CalendarAndJobsTests
 
         // An AllocationContendedEvent was raised.
         Assert.Contains(table.DomainEvents!, e => e.GetType().Name == "AllocationContendedEvent");
+    }
+
+    [Fact]
+    public async Task StaleRequestEscalationJob_RunAsync_DrainsAndPublishesContendedEvents()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        table.TryGrant(Path(Cell(Cp("S1"), 0, 100)), "AGV-A");
+        table.TryGrant(Path(Cell(Cp("S1"), 50, 150)), "AGV-B"); // contended → AGV-B waits
+        table.ClearDomainEvents();
+
+        var publisher = new CapturingPublisher();
+        var job = new StaleRequestEscalationJob(table, NullLogger<StaleRequestEscalationJob>.Instance, publisher);
+
+        await job.RunAsync();
+
+        // The scheduled entry point drains + publishes (fixing the v0 gap where escalation events never
+        // reached the bus), and leaves the table's event buffer empty.
+        Assert.Contains(publisher.Published, e => e.GetType().Name == "AllocationContendedEvent");
+        Assert.True(table.DomainEvents is null || table.DomainEvents.Count == 0);
     }
 }

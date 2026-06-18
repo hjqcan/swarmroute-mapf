@@ -13,8 +13,10 @@
     <RootNamespace>DataStructures</RootNamespace>
     <Nullable>disable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <!-- Vendored third-party code: suppress its (many) analyzer warnings to keep build output clean. -->
-    <NoWarn>$(NoWarn);CS0168;CS0219;CS0414;CS0649;CS8509;CS8524;IDE0005</NoWarn>
+    <!-- Vendored third-party code: opt out of .NET analyzers and suppress its (many) compiler warnings so
+         the first-party build stays warning-clean (WS0). -->
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+    <NoWarn>$(NoWarn);CS0168;CS0219;CS0414;CS0649;CS8509;CS8524;IDE0005;CS0108;CS0114;CS0169;CS0693;CA2200</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

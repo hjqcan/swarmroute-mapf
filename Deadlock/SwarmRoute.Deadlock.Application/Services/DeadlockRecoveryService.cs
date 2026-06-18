@@ -4,6 +4,7 @@ using NetDevPack.Messaging;
 using SwarmRoute.Deadlock.Application.Contract.Services;
 using SwarmRoute.Deadlock.Application.Resolution;
 using SwarmRoute.Domain.Abstractions.EventBus;
+using SwarmRoute.SpatioTemporal.Kernel;
 
 namespace SwarmRoute.Deadlock.Application.Services;
 
@@ -58,6 +59,9 @@ public sealed class DeadlockRecoveryService : IDeadlockRecoveryService
 
         if (events.Count > 0)
             await _integrationEventPublisher.PublishAsync(events, cancellationToken).ConfigureAwait(false);
+
+        if (recovered.Count > 0)
+            SwarmRouteMetrics.DeadlocksResolved.Add(recovered.Count);
 
         return recovered;
     }

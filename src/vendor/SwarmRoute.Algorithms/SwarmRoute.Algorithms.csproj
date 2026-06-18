@@ -13,7 +13,8 @@
     <RootNamespace>AJR.Platform.Algorithms</RootNamespace>
     <Nullable>disable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <NoWarn>$(NoWarn);CS0168;CS0219;CS0414;CS0649;CS8509;CS8524;IDE0005</NoWarn>
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+    <NoWarn>$(NoWarn);CS0168;CS0219;CS0414;CS0649;CS8509;CS8524;IDE0005;CS0108;CS0114;CS0169;CS0693;CA2200</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

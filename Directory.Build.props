@@ -12,9 +12,13 @@
     net10.0. Every SwarmRoute project declares net10.0 in its own csproj.
   -->
   <PropertyGroup>
-    <LangVersion>latest</LangVersion>
+    <LangVersion>14.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- WS0: .NET analyzers on at the latest level (warnings, not errors — the only outstanding warnings are
+         in the vendored algorithms library, which opts out below). -->
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
   </PropertyGroup>
 
 </Project>

@@ -58,6 +58,8 @@ public sealed class DeadlockAppService : IDeadlockAppService
         if (cycles.Count == 0)
             return DeadlockReportDto.Empty;
 
+        SwarmRouteMetrics.DeadlocksDetected.Add(cycles.Count);
+
         var cases = new List<DeadlockCase>(cycles.Count);
         var events = new List<Event>();
         var cycleDtos = new List<DeadlockCycleDto>(cycles.Count);
