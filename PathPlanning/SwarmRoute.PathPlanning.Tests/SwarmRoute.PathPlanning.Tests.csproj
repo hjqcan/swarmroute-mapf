@@ -19,7 +19,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The IoC bootstrapper builds on Microsoft.Extensions.DependencyInjection / WebApplicationBuilder,
+         which live in the ASP.NET Core shared framework; the end-to-end test wires services through it. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\SwarmRoute.PathPlanning.Domain\SwarmRoute.PathPlanning.Domain.csproj" />
+    <ProjectReference Include="..\SwarmRoute.PathPlanning.Application\SwarmRoute.PathPlanning.Application.csproj" />
+    <ProjectReference Include="..\SwarmRoute.PathPlanning.Application.Contract\SwarmRoute.PathPlanning.Application.Contract.csproj" />
+    <ProjectReference Include="..\SwarmRoute.PathPlanning.Infra.CrossCutting.IoC\SwarmRoute.PathPlanning.Infra.CrossCutting.IoC.csproj" />
   </ItemGroup>
 
 </Project>
