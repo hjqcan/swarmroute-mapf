@@ -20,9 +20,8 @@ namespace SwarmRoute.Host.Adapters;
 /// TrafficControl would reject through closure semantics (invariant I1).
 /// </summary>
 /// <remarks>
-/// Returns <c>null</c> when no roadmap is selected or no free avoid/relay site exists; the
-/// <c>AvoidanceDeadlockResolver</c> then escalates (still emitting <c>Deadlock.Case.ResolutionRequested</c>),
-/// matching the architecture's "Deadlock stays a pure analyser, fleet reacts" contract. Selection is
+    /// Returns <c>null</c> when no roadmap is selected or no free avoid/relay site exists; the
+    /// <c>AvoidanceDeadlockResolver</c> then escalates without emitting an executable redirect command. Selection is
 /// deterministic (ordinal site-id order) so a given deadlock resolves the same way every run (no livelock, R6).
 /// </remarks>
 public sealed class MapAvoidancePointSelector : IAvoidancePointSelector

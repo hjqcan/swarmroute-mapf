@@ -4,6 +4,7 @@ using SwarmRoute.Deadlock.Application.Abstractions;
 using SwarmRoute.Deadlock.Application.Resolution;
 using SwarmRoute.Deadlock.Domain.Services;
 using SwarmRoute.EventBus.Extensions;
+using SwarmRoute.Host;
 using SwarmRoute.Host.Adapters;
 using SwarmRoute.Map.Infra.CrossCutting.IoC;
 using SwarmRoute.PathPlanning.Infra.CrossCutting.IoC;
@@ -17,7 +18,7 @@ using DeadlockBootStrapper = SwarmRoute.Deadlock.Infra.CrossCutting.IoC.Deadlock
 // into one running system, in grukirbs order (architecture-design.md §7).
 //
 // Wiring order (ORDER MATTERS):
-//   1. AddEventBus()                              — IDomainEventDispatcher + in-process integration publisher
+//   1. AddEventBus(builder.Configuration)         — IDomainEventDispatcher + in-process or CAP/Rabbit publisher
 //   2. MapNativeInjectorBootStrapper              — topology, RoadmapGraph read seam (DbContext: MapDatabase)
 //   3. PathPlanningNativeInjectorBootStrapper     — IPathPlanner + NullReservationQuery (no DB)
 //   4. TrafficControlNativeInjectorBootStrapper   — AFTER Planning so ReservationService overrides
@@ -45,8 +46,13 @@ builder.Services
 
 builder.Services.AddOpenApi();
 
-// 1. Event bus (in-memory dispatch for dev; CAP + RabbitMQ outbox lands in WS-X).
-builder.Services.AddEventBus();
+// Liveness/readiness endpoint (DoD §8 observability). Built-in checks — the meter
+// SwarmRoute.SpatioTemporal.Kernel.SwarmRouteMetrics
+// already exposes planning-latency / reservation / deadlock instruments for an OpenTelemetry exporter.
+builder.Services.AddHealthChecks();
+
+// 1. Event bus (in-memory for dev/tests; CAP PostgreSQL outbox + RabbitMQ when EventBus:UseInMemory=false).
+builder.Services.AddEventBus(builder.Configuration);
 
 // 2–5. Context composition roots, in dependency order.
 MapNativeInjectorBootStrapper.RegisterServices(builder);
@@ -84,13 +90,22 @@ builder.Services.AddScoped<IClearanceConfirmer, SnapshotClearanceConfirmer>();
 // 7. Coordination cycle + hosted watchdog loop.
 builder.Services.AddCoordination(registerHostedLoop: true);
 
+// 7a. CAP subscriber bridge. Used only when CAP is configured; harmless in the in-process path.
+builder.Services.AddScoped<CapIntegrationEventSubscriber>();
+
 // 7b. Simulation API — the Host supplies the per-request engine factory because it knows Infra bootstrappers
 //     and registration order. The SimulationController lives in this Host assembly and is discovered by
 //     AddControllers() automatically.
 builder.Services.AddScoped<ISimulationEngineFactory, InMemorySimulationEngineFactory>();
 builder.Services.AddSimulation();
 
+// 7c. Runtime background jobs — enabled only when TrafficControlDatabase exists.
+builder.Services.AddSwarmRouteBackgroundJobs(builder.Configuration);
+
 var app = builder.Build();
+
+await app.RunConfiguredMigrationsAsync();
+app.RegisterSwarmRouteRecurringJobs();
 
 if (app.Environment.IsDevelopment())
 {
@@ -102,6 +117,7 @@ app.UseAuthorization();
 
 // 8b. Map (api/maps) + TrafficControl (api/traffic) controllers.
 app.MapControllers();
+app.MapHealthChecks("/health");
 
 app.Run();
 

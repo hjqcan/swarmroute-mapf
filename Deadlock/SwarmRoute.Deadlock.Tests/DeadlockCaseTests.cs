@@ -86,6 +86,27 @@ public class DeadlockCaseTests
     }
 
     [Fact]
+    public void EscalateResolutionFailure_RecordsVictim_AndRaisesEscalatedEvent()
+    {
+        var @case = NewCase();
+
+        @case.EscalateResolutionFailure(
+            "A",
+            ResolutionStrategy.SendToAvoidSite,
+            "avoid-7",
+            "denied");
+
+        Assert.Equal(DeadlockCaseStatus.Escalated, @case.Status);
+        Assert.Equal("A", @case.VictimAgentId);
+        Assert.Equal("avoid-7", @case.SuggestedAvoidTarget);
+
+        var escalated = @case.DomainEvents!.OfType<DeadlockCaseEscalatedEvent>().Single();
+        Assert.Equal("Deadlock.Case.Escalated", escalated.EventName);
+        Assert.Equal("A", escalated.VictimAgentId);
+        Assert.Equal("denied", escalated.Reason);
+    }
+
+    [Fact]
     public void Escalate_AfterResolved_Throws()
     {
         var @case = NewCase();

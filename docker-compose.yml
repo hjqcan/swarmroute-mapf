@@ -1,0 +1,63 @@
+# SwarmRoute MAPF — local infrastructure + host (DoD §7).
+#   docker compose up        → PostgreSQL + RabbitMQ + the SwarmRoute host
+#   then POST http://localhost:8080/api/simulation/run to exercise the M1–M3 closed loop.
+#
+# Map + TrafficControl persist (topology / reservation snapshots) to PostgreSQL; RabbitMQ is the broker the
+# CAP integration-event transport binds to when EventBus:UseInMemory=false. The simulation/closed-loop path
+# itself runs in-process, so the host is usable even before a broker is attached.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: swarmroute
+      POSTGRES_PASSWORD: swarmroute
+      POSTGRES_DB: swarmroute
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U swarmroute"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  host:
+    build:
+      context: .
+      dockerfile: host/SwarmRoute.Host/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__MapDatabase: "Host=postgres;Port=5432;Database=swarmroute_map;Username=swarmroute;Password=swarmroute"
+      ConnectionStrings__TrafficControlDatabase: "Host=postgres;Port=5432;Database=swarmroute_traffic;Username=swarmroute;Password=swarmroute"
+      EventBus__UseInMemory: "false"
+      EventBus__RabbitMq__Host: "rabbitmq"
+      EventBus__RabbitMq__Username: "guest"
+      EventBus__RabbitMq__Password: "guest"
+      RunMigrationsOnStartup: "true"
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:

@@ -195,6 +195,18 @@ npm run dev            # http://localhost:5173  (Vite proxies /api → http://lo
 Set a field size + AGV count, press **运行 (Run)**, and watch each AGV travel A→B along its planned path while
 the **space-time reservation ribbon** shows why no two ever share a control point.
 
+### Run with Docker Compose (PostgreSQL + RabbitMQ)
+```bash
+docker compose up --build      # postgres:16 + rabbitmq:3-management + the host on :8080
+curl -s -XPOST localhost:8080/api/simulation/run -H 'content-type: application/json' \
+     -d '{"width":16,"height":16,"agvCount":12}'
+curl -s localhost:8080/health  # liveness
+```
+PostgreSQL backs the Map + TrafficControl EF paths (topology + reservation snapshots); RabbitMQ is the broker
+the CAP integration-event transport binds to (`EventBus:UseInMemory=false`). The closed-loop/simulation path
+itself is in-memory, so the host is usable with or without the broker. Architecture decisions are recorded in
+[`docs/adr/`](docs/adr/).
+
 ---
 
 ## Status & roadmap

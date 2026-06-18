@@ -60,7 +60,7 @@ public sealed record FleetLoopStats(
 
 /// <summary>The full recorded result of a closed-loop run.</summary>
 /// <param name="Frames">Tick-by-tick timeline (includes the colliding tick when one occurs).</param>
-/// <param name="PerAgentRoute">Per agent: the CP sequence it was actually reserved along.</param>
+/// <param name="PerAgentRoute">Per agent: the CP trail it actually occupied, with consecutive duplicates collapsed.</param>
 /// <param name="Stats">Aggregate stats.</param>
 /// <param name="MaxConcurrentEnRoute">Peak number of simultaneously en-route agents (a liveness/parallelism signal).</param>
 /// <param name="Collision">The first collision's details, or <see langword="null"/> when none occurred.</param>
@@ -122,6 +122,9 @@ public sealed class FleetLoopDriver
         /// instead of its goal, until the case is recovered and the target is cleared.</summary>
         public string? RedirectTarget { get; set; }
 
+        /// <summary>The deadlock case whose redirect this agent is currently enacting.</summary>
+        public Guid? RedirectCaseId { get; set; }
+
         /// <summary>How many distinct deadlock redirects this agent has been given (anti-livelock guard).</summary>
         public int RedirectAttempts { get; set; }
 
@@ -154,8 +157,10 @@ public sealed class FleetLoopDriver
     /// Deadlock context's resolutions: a victim with an active redirect is re-planned from its current CP to the
     /// avoidance site; a recovered victim is restored to its original goal; an escalated (livelock) victim stops
     /// being redirected. When null, deadlock resolution is inert (back-compat with the plain sim/closed-loop tests).</param>
-    /// <param name="recoverTick">Optional per-tick recovery pump (bound to <c>IDeadlockRecoveryService.TryRecoverAllAsync</c>
-    /// by the host/test). Drives <c>ConfirmCleared → Recover → Resolved</c> for open resolutions whose cycle has cleared.</param>
+    /// <param name="recoverTick">Optional per-tick case-recovery pump (bound to
+    /// <c>IDeadlockRecoveryService.TryRecoverAllAsync</c> by the host/test). It marks cases recovered once their
+    /// cycle has cleared; this driver restores the original goal only after the victim is physically holding at
+    /// its avoidance site.</param>
     /// <param name="escalateLivelock">Optional escalation hook (bound to <c>IDeadlockEscalationService.EscalateLivelockAsync</c>):
     /// invoked when the anti-livelock guard fires (a redirect would not strictly reduce the victim's distance to its
     /// original goal, or the attempt cap is hit).</param>
@@ -260,12 +265,33 @@ public sealed class FleetLoopDriver
 
                 foreach (var ag in fleet.Where(a => a.RedirectTarget is not null && !a.Done))
                 {
-                    // Recovered (cycle cleared) or escalated (livelock): stop yielding, restore the real goal.
-                    if (redirects.IsRecovered(ag.Id) || redirects.IsEscalated(ag.Id))
+                    if (!ag.RedirectCaseId.HasValue)
+                        continue;
+
+                    var redirectCaseId = ag.RedirectCaseId.GetValueOrDefault();
+
+                    // Recovered means the deadlock case is clear AND the victim has completed its avoidance
+                    // command. Do not restore the original goal while it is still travelling to the avoid site.
+                    if (redirects.IsRecovered(ag.Id, redirectCaseId))
                     {
-                        if (redirects.IsRecovered(ag.Id))
-                            recoveries++;
+                        if (!ag.HoldingAtAvoidSite)
+                            continue;
+
+                        recoveries++;
                         ag.RedirectTarget = null;
+                        ag.RedirectCaseId = null;
+                        if (redirects is IFleetRedirectAcknowledger acknowledger)
+                            acknowledger.MarkRedirectCompleted(redirectCaseId, ag.Id);
+                        await YieldAndReplanFromCurrentAsync(ag).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    // Escalated (e.g. livelock / failed automatic resolution): stop yielding immediately and let
+                    // the victim re-plan from its current physical position.
+                    if (redirects.IsEscalated(ag.Id, redirectCaseId))
+                    {
+                        ag.RedirectTarget = null;
+                        ag.RedirectCaseId = null;
                         await YieldAndReplanFromCurrentAsync(ag).ConfigureAwait(false);
                     }
                 }
@@ -276,7 +302,8 @@ public sealed class FleetLoopDriver
                     var ag = fleet.FirstOrDefault(a => a.Id == intent.VictimAgentId);
                     if (ag is null || ag.Done)
                         continue;
-                    if (string.Equals(ag.RedirectTarget, intent.AvoidSiteId, StringComparison.Ordinal))
+                    if (ag.RedirectCaseId == intent.CaseId
+                        && string.Equals(ag.RedirectTarget, intent.AvoidSiteId, StringComparison.Ordinal))
                         continue; // already enacting this redirect
 
                     // Anti-livelock: a redirect is allowed only if the victim's distance to its ORIGINAL goal
@@ -295,6 +322,7 @@ public sealed class FleetLoopDriver
                     ag.RedirectAttempts++;
                     redirects_++;
                     ag.RedirectTarget = intent.AvoidSiteId;
+                    ag.RedirectCaseId = intent.CaseId;
                     await YieldAndReplanFromCurrentAsync(ag).ConfigureAwait(false);
                 }
             }
@@ -469,9 +497,27 @@ public sealed class FleetLoopDriver
                 break;
         }
 
+        // Per-agent route = the actual walked trail (A → … → B), reconstructed from the recorded frames by
+        // collapsing consecutive same-CP positions. Using the agent's FINAL reserved leg (a.CpRoute) instead
+        // would drop the earlier segments of any agent that re-planned (reroute-around-parked) or was
+        // redirected (deadlock yield) mid-journey, leaving the canvas polyline detached from its "A" marker —
+        // the "some AGVs have no line" artefact. The trail always begins at the start (frame 0) and ends at the
+        // agent's last position (its goal when arrived).
         var routes = fleet.ToDictionary(
             a => a.Id,
-            a => (IReadOnlyList<string>)(a.CpRoute.Count > 0 ? a.CpRoute.ToList() : new List<string> { a.Start }),
+            a =>
+            {
+                var trail = new List<string>();
+                foreach (var frame in frames)
+                {
+                    var sid = frame.Positions.First(p => p.AgentId == a.Id).SiteId;
+                    if (trail.Count == 0 || !string.Equals(trail[^1], sid, StringComparison.Ordinal))
+                        trail.Add(sid);
+                }
+                if (trail.Count == 0)
+                    trail.Add(a.Start);
+                return (IReadOnlyList<string>)trail;
+            },
             StringComparer.Ordinal);
 
         var stats = new FleetLoopStats(

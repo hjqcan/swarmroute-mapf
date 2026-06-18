@@ -9,12 +9,13 @@ using SwarmRoute.SpatioTemporal.Kernel;
 namespace SwarmRoute.Deadlock.Application.Services;
 
 /// <summary>
-/// Default <see cref="IDeadlockRecoveryService"/>. Iterates the open resolutions in
-/// <see cref="IActiveResolutionRegistry"/> and drives each through <c>IDeadlockResolver.Recover</c> (which
-/// checks <c>IClearanceConfirmer</c> internally). On success it drains the case's domain events and
-/// publishes the integration-flagged subset (<c>Deadlock.Case.Resolved</c>), then closes the registry
-/// entry. Mirrors the publish behaviour of <see cref="DeadlockAppService"/> (the Deadlock context has no
-/// <c>BaseDbContext.Commit()</c> to drain for it).
+    /// Default <see cref="IDeadlockRecoveryService"/>. Iterates the open resolutions in
+    /// <see cref="IActiveResolutionRegistry"/> and drives each through <c>IDeadlockResolver.Recover</c> (which
+    /// checks <c>IClearanceConfirmer</c> internally). On success it drains the case's domain events and
+    /// publishes the integration-flagged subset (<c>Deadlock.Case.Resolved</c>), then closes the registry
+    /// entry. The driver still gates goal restoration on physical arrival at the avoidance site. Mirrors the
+    /// publish behaviour of <see cref="DeadlockAppService"/> (the Deadlock context has no <c>BaseDbContext.Commit()</c>
+    /// to drain for it).
 /// </summary>
 public sealed class DeadlockRecoveryService : IDeadlockRecoveryService
 {

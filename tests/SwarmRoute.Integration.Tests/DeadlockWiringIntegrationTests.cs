@@ -14,7 +14,8 @@ namespace SwarmRoute.Integration.Tests;
 /// M3-lite — deadlock wiring. Feeds a 2-agent circular-wait <see cref="ResourceAllocationGraphSnapshot"/> into
 /// the REAL Deadlock pipeline (<see cref="RagDeadlockDetector"/> + <see cref="AvoidanceDeadlockResolver"/> +
 /// <see cref="DeadlockAppService"/>, wired exactly as <c>DeadlockNativeInjectorBootStrapper</c> does) and
-/// asserts the cycle is detected and a <c>Deadlock.Case.ResolutionRequested</c> integration event is produced.
+/// asserts the cycle is detected and, with standalone null seams, escalated without producing an executable
+/// redirect command.
 /// </summary>
 public sealed class DeadlockWiringIntegrationTests
 {
@@ -40,7 +41,7 @@ public sealed class DeadlockWiringIntegrationTests
     }
 
     [Fact]
-    public async Task M3Lite_TwoAgentCircularWait_IsDetected_AndResolutionRequested()
+    public async Task M3Lite_TwoAgentCircularWait_IsDetected_AndEscalatedWithoutRedirectCommand()
     {
         var (service, publisher) = BuildPipeline();
 
@@ -64,9 +65,11 @@ public sealed class DeadlockWiringIntegrationTests
         var cycle = Assert.Single(report.Cycles);
         Assert.Equal(new[] { "A", "B" }, cycle.AgentIds.OrderBy(a => a).ToArray());
 
-        // A victim was chosen (deterministic) and a resolution was requested on the bus.
+        // A victim was chosen (deterministic). With null resolution seams there is no executable redirect
+        // command, so the case escalates instead of publishing ResolutionRequested.
         Assert.False(string.IsNullOrEmpty(cycle.VictimAgentId));
-        Assert.Contains(publisher.Published, e => e is DeadlockCaseResolutionRequestedEvent);
+        Assert.DoesNotContain(publisher.Published, e => e is DeadlockCaseResolutionRequestedEvent);
+        Assert.Contains(publisher.Published, e => e is DeadlockCaseEscalatedEvent);
     }
 
     [Fact]

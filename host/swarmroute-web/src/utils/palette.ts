@@ -66,7 +66,7 @@ export function withAlpha(hex: string, alpha: number): string {
   return `${hex}${suffix}`
 }
 
-/** Trail colour for an agent (hue at ~18% alpha). */
+/** Trail colour for an agent (hue at ~32% alpha — visible as a distinct planned-path line, still soft). */
 export function trailFor(colorIndex: number): string {
-  return withAlpha(hueFor(colorIndex), 0.18)
+  return withAlpha(hueFor(colorIndex), 0.32)
 }

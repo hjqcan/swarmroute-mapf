@@ -100,7 +100,8 @@ public class DeadlockCase : Entity, IAggregateRoot
 
     /// <summary>
     /// Detected → Resolving. Records the victim + strategy (+ optional suggested avoid target) and raises
-    /// <see cref="DeadlockCaseResolutionRequestedEvent"/> so the fleet acts.
+    /// <see cref="DeadlockCaseResolutionRequestedEvent"/> so the fleet acts. Call this only after all resources
+    /// needed for the command have been reserved; consumers treat the event as executable intent.
     /// </summary>
     public void RequestResolution(
         string victimAgentId,
@@ -110,18 +111,11 @@ public class DeadlockCase : Entity, IAggregateRoot
         if (Status != DeadlockCaseStatus.Detected)
             throw new InvalidOperationException(
                 $"{DeadlockErrorCodes.InvalidTransition}: cannot request resolution from {Status}.");
-        if (string.IsNullOrWhiteSpace(victimAgentId))
-            throw new ArgumentException(DeadlockErrorCodes.NoVictim, nameof(victimAgentId));
-        if (!_agentIds.Contains(victimAgentId.Trim()))
-            throw new ArgumentException(DeadlockErrorCodes.NoVictim, nameof(victimAgentId));
-
-        VictimAgentId = victimAgentId.Trim();
-        Strategy = strategy;
-        SuggestedAvoidTarget = string.IsNullOrWhiteSpace(suggestedAvoidTarget) ? null : suggestedAvoidTarget.Trim();
+        RecordResolutionDecision(victimAgentId, strategy, suggestedAvoidTarget);
         Status = DeadlockCaseStatus.Resolving;
         IncrementStateVersion();
 
-        AddDomainEvent(new DeadlockCaseResolutionRequestedEvent(Id, VictimAgentId, strategy, SuggestedAvoidTarget));
+        AddDomainEvent(new DeadlockCaseResolutionRequestedEvent(Id, VictimAgentId!, strategy, SuggestedAvoidTarget));
     }
 
     /// <summary>
@@ -140,10 +134,35 @@ public class DeadlockCase : Entity, IAggregateRoot
     }
 
     /// <summary>
-    /// Detected/Resolving → Escalated. Used when automatic resolution is not possible (e.g. no avoidance
-    /// site / detour denied). Idempotent if already escalated.
+    /// Detected/Resolving → Escalated. Used when automatic resolution is not possible and no victim was recorded.
+    /// If the case was already resolving, raises <see cref="DeadlockCaseEscalatedEvent"/> so consumers can clear
+    /// any active command for the case. Idempotent if already escalated.
     /// </summary>
     public void Escalate(string? reason = null)
+        => EscalateCore(reason, publishIntegrationEvent: !string.IsNullOrWhiteSpace(VictimAgentId));
+
+    /// <summary>
+    /// Detected/Resolving → Escalated after the resolver selected a victim but could not produce an executable
+    /// command (e.g. no avoidance site or detour reservation denied). Records the decision and raises
+    /// <see cref="DeadlockCaseEscalatedEvent"/> so downstream projections can clean up by case id.
+    /// </summary>
+    public void EscalateResolutionFailure(
+        string victimAgentId,
+        ResolutionStrategy strategy,
+        string? suggestedAvoidTarget = null,
+        string? reason = null)
+    {
+        if (Status == DeadlockCaseStatus.Escalated)
+            return;
+        if (Status == DeadlockCaseStatus.Resolved)
+            throw new InvalidOperationException(
+                $"{DeadlockErrorCodes.InvalidTransition}: cannot escalate from {Status}.");
+
+        RecordResolutionDecision(victimAgentId, strategy, suggestedAvoidTarget);
+        EscalateCore(reason, publishIntegrationEvent: true);
+    }
+
+    private void EscalateCore(string? reason, bool publishIntegrationEvent)
     {
         if (Status is DeadlockCaseStatus.Resolved or DeadlockCaseStatus.Escalated)
         {
@@ -155,6 +174,9 @@ public class DeadlockCase : Entity, IAggregateRoot
 
         Status = DeadlockCaseStatus.Escalated;
         IncrementStateVersion();
+
+        if (publishIntegrationEvent && !string.IsNullOrWhiteSpace(VictimAgentId))
+            AddDomainEvent(new DeadlockCaseEscalatedEvent(Id, VictimAgentId, Kind, reason));
     }
 
     /// <summary>
@@ -173,10 +195,30 @@ public class DeadlockCase : Entity, IAggregateRoot
                 $"{DeadlockErrorCodes.InvalidTransition}: cannot escalate from {Status}.");
 
         Kind = DeadlockKind.Livelock;
-        Status = DeadlockCaseStatus.Escalated;
-        IncrementStateVersion();
+        EscalateCore(reason, publishIntegrationEvent: true);
+    }
 
-        AddDomainEvent(new DeadlockCaseEscalatedEvent(Id, VictimAgentId ?? string.Empty, Kind, reason));
+    private void RecordResolutionDecision(
+        string victimAgentId,
+        ResolutionStrategy strategy,
+        string? suggestedAvoidTarget)
+    {
+        var victim = NormalizeVictim(victimAgentId);
+        VictimAgentId = victim;
+        Strategy = strategy;
+        SuggestedAvoidTarget = string.IsNullOrWhiteSpace(suggestedAvoidTarget) ? null : suggestedAvoidTarget.Trim();
+    }
+
+    private string NormalizeVictim(string victimAgentId)
+    {
+        if (string.IsNullOrWhiteSpace(victimAgentId))
+            throw new ArgumentException(DeadlockErrorCodes.NoVictim, nameof(victimAgentId));
+
+        var victim = victimAgentId.Trim();
+        if (!_agentIds.Contains(victim))
+            throw new ArgumentException(DeadlockErrorCodes.NoVictim, nameof(victimAgentId));
+
+        return victim;
     }
 
     private void IncrementStateVersion()

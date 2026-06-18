@@ -70,7 +70,7 @@ public sealed class DeadlockClosedLoopIntegrationTests
         Assert.True(host.Redirects.TryGetActiveRedirect(victim, out var intent),
             "expected an active redirect for the victim");
         Assert.Equal(AvoidSite, intent.AvoidSiteId);
-        Assert.False(host.Redirects.IsRecovered(victim));
+        Assert.False(host.Redirects.IsRecovered(victim, intent.CaseId));
 
         // 5. The victim yields the contended corridor (releases its held resource — modelling "drove to the
         //    avoid site"), which breaks the circular wait.
@@ -82,7 +82,7 @@ public sealed class DeadlockClosedLoopIntegrationTests
 
         Assert.Contains(victim, recovered);
         Assert.Contains(host.Events.Handled, e => e is DeadlockCaseResolvedEvent);
-        Assert.True(host.Redirects.IsRecovered(victim));
+        Assert.True(host.Redirects.IsRecovered(victim, intent.CaseId));
 
         // 7. Idempotent: a second recovery pump finds nothing more to recover.
         Assert.Empty(await host.Recovery.TryRecoverAllAsync());
@@ -102,12 +102,14 @@ public sealed class DeadlockClosedLoopIntegrationTests
         Assert.Equal(AllocationOutcome.Queued, await traffic.TryReserveAsync(Reservation("r0", 50, 150), "B"));
 
         Assert.Contains(host.Events.Handled, e => e is DeadlockCaseResolutionRequestedEvent);
+        Assert.True(host.Redirects.TryGetActiveRedirect("A", out var intent),
+            "expected an active redirect for the victim");
 
         // The victim has NOT yielded yet → the cycle is still closed → recovery must not complete.
         var recovered = await host.Recovery.TryRecoverAllAsync();
 
         Assert.Empty(recovered);
         Assert.DoesNotContain(host.Events.Handled, e => e is DeadlockCaseResolvedEvent);
-        Assert.False(host.Redirects.IsRecovered("A"));
+        Assert.False(host.Redirects.IsRecovered("A", intent.CaseId));
     }
 }

@@ -43,11 +43,11 @@ public sealed class DeadlockResolutionRequestedConsumer : IIntegrationEventHandl
                 break;
 
             case IDeadlockResolved resolved:
-                _sink.MarkRecovered(resolved.VictimAgentId);
+                _sink.MarkRecovered(resolved.CaseId, resolved.VictimAgentId);
                 break;
 
             case IDeadlockEscalated escalated:
-                _sink.MarkEscalated(escalated.VictimAgentId);
+                _sink.MarkEscalated(escalated.CaseId, escalated.VictimAgentId);
                 break;
         }
 

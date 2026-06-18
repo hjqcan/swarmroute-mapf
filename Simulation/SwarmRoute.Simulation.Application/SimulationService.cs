@@ -58,7 +58,11 @@ public sealed class SimulationService : ISimulationService
         var loop = await _loopDriver
             .RunToCompletionAsync(
                 engine.Cycle, engine.RoadmapId, field.Graph, agentSpecs, maxTicks,
-                advanceClock: engine.Clock.SetTick, cancellationToken: cancellationToken)
+                advanceClock: engine.Clock.SetTick,
+                redirects: engine.Redirects,
+                recoverTick: engine.RecoverTick,
+                escalateLivelock: engine.EscalateLivelock,
+                cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
         // 5. Map to the transport DTO.
@@ -141,7 +145,9 @@ public sealed class SimulationService : ISimulationService
             loop.Stats.Replans,
             loop.Stats.Status.ToString(),
             loop.Collision?.Tick,
-            loop.Collision?.AgentIds);
+            loop.Collision?.AgentIds,
+            loop.Stats.Redirects,
+            loop.Stats.Recoveries);
 
         return new SimulationResultDto(fieldDto, agents, timeline, stats);
     }

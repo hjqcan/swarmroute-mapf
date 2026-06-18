@@ -27,4 +27,10 @@ public static class DeadlockErrorCodes
 
     /// <summary>No victim agent could be selected for the case (e.g. empty cycle set).</summary>
     public const string NoVictim = "Deadlock.AvoidancePlan.NoVictim";
+
+    /// <summary>No valid avoidance site could be selected for the victim.</summary>
+    public const string NoAvoidanceSite = "Deadlock.AvoidancePlan.NoAvoidanceSite";
+
+    /// <summary>TrafficControl denied the reservation needed to route the victim to the avoidance site.</summary>
+    public const string DetourDenied = "Deadlock.AvoidancePlan.DetourDenied";
 }

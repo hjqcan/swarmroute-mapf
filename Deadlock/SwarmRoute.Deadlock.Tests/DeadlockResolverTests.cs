@@ -1,4 +1,5 @@
 using SwarmRoute.Deadlock.Domain.Aggregates;
+using SwarmRoute.Deadlock.Domain.Events;
 using SwarmRoute.Deadlock.Domain.Services;
 using SwarmRoute.Deadlock.Domain.Shared.Enums;
 using SwarmRoute.Deadlock.Domain.ValueObjects;
@@ -80,8 +81,9 @@ public class DeadlockResolverTests
 
         Assert.Equal(AvoidancePlanStep.Aborted, plan.CurrentStep);
         Assert.Equal(DeadlockCaseStatus.Escalated, @case.Status);
-        // Even on escalation, the victim was chosen and resolution was requested.
         Assert.Equal("A", @case.VictimAgentId);
+        Assert.DoesNotContain(@case.DomainEvents!, e => e is DeadlockCaseResolutionRequestedEvent);
+        Assert.Contains(@case.DomainEvents!, e => e is DeadlockCaseEscalatedEvent);
     }
 
     [Fact]
@@ -98,5 +100,10 @@ public class DeadlockResolverTests
 
         Assert.Equal(AvoidancePlanStep.Aborted, plan.CurrentStep);
         Assert.Equal(DeadlockCaseStatus.Escalated, @case.Status);
+        Assert.Equal("A", @case.VictimAgentId);
+        Assert.DoesNotContain(@case.DomainEvents!, e => e is DeadlockCaseResolutionRequestedEvent);
+        var escalated = @case.DomainEvents!.OfType<DeadlockCaseEscalatedEvent>().Single();
+        Assert.Equal("avoid-1", @case.SuggestedAvoidTarget);
+        Assert.Equal("A", escalated.VictimAgentId);
     }
 }

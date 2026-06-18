@@ -87,7 +87,7 @@ public class DeadlockAppServiceTests
     }
 
     [Fact]
-    public async Task Scan_WithoutIntegratedSeams_StillReportsVictim_ViaResolutionRequested()
+    public async Task Scan_WithoutIntegratedSeams_ReportsVictim_AndPublishesEscalatedOnly()
     {
         var publisher = new CapturingIntegrationEventPublisher();
         var svc = BuildService(publisher); // Null seams → escalates, but victim still chosen
@@ -96,6 +96,28 @@ public class DeadlockAppServiceTests
 
         var cycle = Assert.Single(report.Cycles);
         Assert.Equal("A", cycle.VictimAgentId);
-        Assert.Contains(publisher.Published, e => e is DeadlockCaseResolutionRequestedEvent);
+        Assert.DoesNotContain(publisher.Published, e => e is DeadlockCaseResolutionRequestedEvent);
+        Assert.Contains(publisher.Published, e => e is DeadlockCaseEscalatedEvent);
+    }
+
+    [Fact]
+    public async Task Scan_WhenDetourDenied_DoesNotPublishRedirectCommand_AndDoesNotOpenRegistry()
+    {
+        var publisher = new CapturingIntegrationEventPublisher();
+        var registry = new InMemoryActiveResolutionRegistry();
+        var svc = BuildService(
+            publisher,
+            new FixedAvoidancePointSelector("avoid-A"),
+            new NullDetourReservationService(),
+            registry);
+
+        var report = await svc.ScanAsync(SnapshotBuilder.Cycle(2));
+
+        var cycle = Assert.Single(report.Cycles);
+        Assert.Equal("A", cycle.VictimAgentId);
+        Assert.Equal("avoid-A", cycle.SuggestedAvoidTarget);
+        Assert.DoesNotContain(publisher.Published, e => e is DeadlockCaseResolutionRequestedEvent);
+        Assert.Contains(publisher.Published, e => e is DeadlockCaseEscalatedEvent);
+        Assert.Empty(registry.SnapshotOpen());
     }
 }

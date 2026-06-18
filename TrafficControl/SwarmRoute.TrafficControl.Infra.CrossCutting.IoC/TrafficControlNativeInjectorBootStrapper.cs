@@ -90,8 +90,10 @@ public static class TrafficControlNativeInjectorBootStrapper
         // Replan-trigger subscriber (CAP binding wired at integration).
         services.AddSingleton<ReplanTriggerSubscriber>();
 
-        // Hangfire jobs (scheduling/recurring registration wired in the Host).
-        services.AddSingleton<LeaseExpirySweepJob>();
-        services.AddSingleton<StaleRequestEscalationJob>();
+        // Hangfire jobs (scheduling/recurring registration wired in the Host). SCOPED so each job run resolves
+        // in its own scope — StaleRequestEscalationJob consumes the scoped IIntegrationEventPublisher to drain +
+        // publish its escalation events, which a singleton job may not (scope-validation in the host).
+        services.AddScoped<LeaseExpirySweepJob>();
+        services.AddScoped<StaleRequestEscalationJob>();
     }
 }

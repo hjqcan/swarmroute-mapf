@@ -1,0 +1,10 @@
+# Keep the Docker build context lean + deterministic.
+**/bin/
+**/obj/
+**/node_modules/
+host/swarmroute-web/
+third-party/
+.git/
+.github/
+docs/
+*.md

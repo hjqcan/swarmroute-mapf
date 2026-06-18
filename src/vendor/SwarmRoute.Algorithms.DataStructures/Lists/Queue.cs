@@ -139,9 +139,9 @@ namespace AJR.Platform.Algorithms.DataStructures.Lists
                 {
                     _resize(_collection.Length * 2);
                 }
-                catch (OutOfMemoryException ex)
+                catch (OutOfMemoryException)
                 {
-                    throw ex;
+                    throw;
                 }
             }
 

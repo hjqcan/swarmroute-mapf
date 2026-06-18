@@ -17,9 +17,9 @@ namespace SwarmRoute.Deadlock.Application.Services;
 /// <list type="number">
 /// <item><description>detect circular waits from the snapshot (<see cref="IDeadlockDetector"/>);</description></item>
 /// <item><description>open a <see cref="DeadlockCase"/> per cycle (raising <c>Deadlock.Case.Detected</c>);</description></item>
-/// <item><description>run the resolver (<see cref="IDeadlockResolver"/>) which selects a victim and requests
-/// resolution (raising <c>Deadlock.Case.ResolutionRequested</c>) — escalating if no avoidance site is
-/// available;</description></item>
+    /// <item><description>run the resolver (<see cref="IDeadlockResolver"/>) which selects a victim and raises
+    /// <c>Deadlock.Case.ResolutionRequested</c> only after the avoidance command is executable — otherwise it
+    /// escalates the failed automatic resolution;</description></item>
 /// <item><description>publish all accumulated integration events
 /// (<see cref="IIntegrationEventPublisher"/>) and return a <see cref="DeadlockReportDto"/>.</description></item>
 /// </list>
@@ -74,9 +74,8 @@ public sealed class DeadlockAppService : IDeadlockAppService
 
             var deadlockCase = DeadlockCase.Detect(cycle);
 
-            // Select victim + request resolution (and reserve detour if integrated). In a standalone
-            // build the Null seams cause this to escalate, but the victim/strategy + ResolutionRequested
-            // event are still produced.
+            // Select victim + reserve the detour. Only a reserved detour becomes a ResolutionRequested command;
+            // failed automatic resolution escalates instead.
             var plan = await _resolver.SolveAsync(deadlockCase, cancellationToken).ConfigureAwait(false);
 
             // A real resolution (avoid site found + detour reserved) parks the plan at ConfirmCleared. Hand

@@ -9,12 +9,12 @@ namespace SwarmRoute.Coordination.Application.Deadlock;
 /// scoped consumer (which fires synchronously inside the contention publish) and the driver (which reads
 /// between ticks) share one instance.
 /// </summary>
-public sealed class FleetRedirectStore : IFleetRedirectQuery, IFleetRedirectSink
+public sealed class FleetRedirectStore : IFleetRedirectQuery, IFleetRedirectSink, IFleetRedirectAcknowledger
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, RedirectIntent> _active = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _recovered = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _escalated = new(StringComparer.Ordinal);
+    private readonly HashSet<(string VictimAgentId, Guid CaseId)> _recovered = [];
+    private readonly HashSet<(string VictimAgentId, Guid CaseId)> _escalated = [];
 
     /// <inheritdoc />
     public void PublishRedirect(RedirectIntent intent)
@@ -23,32 +23,33 @@ public sealed class FleetRedirectStore : IFleetRedirectQuery, IFleetRedirectSink
         lock (_gate)
         {
             _active[intent.VictimAgentId] = intent;
-            _recovered.Remove(intent.VictimAgentId);
-            _escalated.Remove(intent.VictimAgentId);
+            _recovered.Remove((intent.VictimAgentId, intent.CaseId));
+            _escalated.Remove((intent.VictimAgentId, intent.CaseId));
         }
     }
 
     /// <inheritdoc />
-    public void MarkRecovered(string victimAgentId)
+    public void MarkRecovered(Guid caseId, string victimAgentId)
     {
-        if (string.IsNullOrWhiteSpace(victimAgentId))
+        if (caseId == Guid.Empty || string.IsNullOrWhiteSpace(victimAgentId))
             return;
+        var victim = victimAgentId.Trim();
         lock (_gate)
         {
-            _active.Remove(victimAgentId);
-            _recovered.Add(victimAgentId);
+            _recovered.Add((victim, caseId));
         }
     }
 
     /// <inheritdoc />
-    public void MarkEscalated(string victimAgentId)
+    public void MarkEscalated(Guid caseId, string victimAgentId)
     {
-        if (string.IsNullOrWhiteSpace(victimAgentId))
+        if (caseId == Guid.Empty || string.IsNullOrWhiteSpace(victimAgentId))
             return;
+        var victim = victimAgentId.Trim();
         lock (_gate)
         {
-            _active.Remove(victimAgentId);
-            _escalated.Add(victimAgentId);
+            RemoveActiveIfCaseMatches(victim, caseId);
+            _escalated.Add((victim, caseId));
         }
     }
 
@@ -71,18 +72,38 @@ public sealed class FleetRedirectStore : IFleetRedirectQuery, IFleetRedirectSink
     }
 
     /// <inheritdoc />
-    public bool IsRecovered(string victimAgentId)
+    public bool IsRecovered(string victimAgentId, Guid caseId)
     {
-        if (string.IsNullOrWhiteSpace(victimAgentId))
+        if (caseId == Guid.Empty || string.IsNullOrWhiteSpace(victimAgentId))
             return false;
-        lock (_gate) { return _recovered.Contains(victimAgentId); }
+        lock (_gate) { return _recovered.Contains((victimAgentId.Trim(), caseId)); }
     }
 
     /// <inheritdoc />
-    public bool IsEscalated(string victimAgentId)
+    public bool IsEscalated(string victimAgentId, Guid caseId)
     {
-        if (string.IsNullOrWhiteSpace(victimAgentId))
+        if (caseId == Guid.Empty || string.IsNullOrWhiteSpace(victimAgentId))
             return false;
-        lock (_gate) { return _escalated.Contains(victimAgentId); }
+        lock (_gate) { return _escalated.Contains((victimAgentId.Trim(), caseId)); }
+    }
+
+    /// <inheritdoc />
+    public void MarkRedirectCompleted(Guid caseId, string victimAgentId)
+    {
+        if (caseId == Guid.Empty || string.IsNullOrWhiteSpace(victimAgentId))
+            return;
+        lock (_gate)
+        {
+            RemoveActiveIfCaseMatches(victimAgentId.Trim(), caseId);
+        }
+    }
+
+    private void RemoveActiveIfCaseMatches(string victimAgentId, Guid caseId)
+    {
+        if (_active.TryGetValue(victimAgentId, out var active)
+            && active.CaseId == caseId)
+        {
+            _active.Remove(victimAgentId);
+        }
     }
 }

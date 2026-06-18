@@ -1,8 +1,5 @@
-using System.Collections.Generic;
-using System.Linq;
 using Hangfire;
 using Microsoft.Extensions.Logging;
-using NetDevPack.Messaging;
 using SwarmRoute.Domain.Abstractions.EventBus;
 using SwarmRoute.TrafficControl.Domain.Aggregates;
 
@@ -60,8 +57,7 @@ public sealed class StaleRequestEscalationJob
         if (_publisher is null)
             return;
 
-        var events = _table.DomainEvents?.ToList() ?? new List<Event>();
-        _table.ClearDomainEvents();
+        var events = _table.DrainDomainEvents();
         if (events.Count > 0)
             await _publisher.PublishAsync(events, cancellationToken).ConfigureAwait(false);
     }

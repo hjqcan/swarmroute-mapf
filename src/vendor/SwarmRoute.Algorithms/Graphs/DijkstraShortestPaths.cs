@@ -36,7 +36,7 @@ namespace AJR.Platform.Algorithms.Graphs
                 throw new ArgumentNullException(nameof(source));
 
             if (!graph.HasVertex(source))
-                throw new ArgumentException("The source 【" + source + "】 vertex doesn't belong to graph.");
+                throw new ArgumentException("The source vertex doesn't belong to graph.");
 
             if (graph.Edges.Any(edge => edge.Weight < 0))
                 throw new ArgumentException("Negative edge weight detected.");

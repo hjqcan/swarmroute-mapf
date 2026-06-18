@@ -17,8 +17,8 @@ public interface IDeadlockResolver
     /// <summary>
     /// Builds an <see cref="AvoidancePlan"/> for <paramref name="deadlockCase"/> and runs it through
     /// <c>SelectVictim → SelectAvoidancePoint → ReserveDetour → DispatchToAvoid</c>. The case transitions
-    /// to <c>Resolving</c> (raising <c>Deadlock.Case.ResolutionRequested</c>) when a victim/strategy is
-    /// chosen, or to <c>Escalated</c> if no avoidance site / detour is available. Returns the plan.
+    /// to <c>Resolving</c> (raising <c>Deadlock.Case.ResolutionRequested</c>) only after the detour is reserved,
+    /// or to <c>Escalated</c> if no executable avoidance command is available. Returns the plan.
     /// </summary>
     Task<AvoidancePlan> SolveAsync(
         DeadlockCase deadlockCase,

@@ -31,13 +31,17 @@ namespace AJR.Platform.Algorithms.DataStructures.Lists
 
         /// <summary>
         /// Private helper. Used in Add method.
+        /// Returns a random level for a new node. Level is at least 1.
         /// </summary>
-        /// <returns></returns>
+        /// <returns>A random level between 1 and MaxLevel</returns>
         private int _getNextLevel()
         {
-            int lvl = 0;
+            // BUG FIX: Start at 1, not 0. A node with level 0 would have an empty
+            // Forwards array and would never be linked into the skip list.
+            // See: https://github.com/aalhour/C-Sharp-Algorithms/issues/137
+            int lvl = 1;
 
-            while (_randomizer.NextDouble() < Probability && lvl <= _currentMaxLevel && lvl < MaxLevel)
+            while (_randomizer.NextDouble() < Probability && lvl < _currentMaxLevel && lvl < MaxLevel)
                 ++lvl;
 
             return lvl;
@@ -175,6 +179,15 @@ namespace AJR.Platform.Algorithms.DataStructures.Lists
 
             current = current.Forwards[0];
 
+            // BUG FIX: Don't match the sentinel node (_firstNode).
+            // The sentinel has default(T) as its value, which could match user queries.
+            // See: https://github.com/aalhour/C-Sharp-Algorithms/issues/139
+            if (current == _firstNode)
+            {
+                deleted = default(T);
+                return false;
+            }
+
             // Return default value of T if the item was not found
             if (current.Value.IsEqualTo(item) == false)
             {
@@ -223,6 +236,16 @@ namespace AJR.Platform.Algorithms.DataStructures.Lists
                     current = current.Forwards[i];
 
             current = current.Forwards[0];
+
+            // BUG FIX: Don't match the sentinel node (_firstNode).
+            // The sentinel has default(T) as its value, which could match user queries
+            // (e.g., 0 for int, null for reference types).
+            // See: https://github.com/aalhour/C-Sharp-Algorithms/issues/138
+            if (current == _firstNode)
+            {
+                result = default(T);
+                return false;
+            }
 
             // Return true if we found the element; false otherwise
             if (current.Value.IsEqualTo(item))

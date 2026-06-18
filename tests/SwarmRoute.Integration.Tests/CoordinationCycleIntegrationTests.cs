@@ -215,6 +215,7 @@ public sealed class CoordinationCycleIntegrationTests
         var events = host.Events.Handled;
         Assert.Contains(events, e => e.GetType().Name == "AllocationContendedEvent");
         Assert.Contains(events, e => e is DeadlockCaseDetectedEvent);
-        Assert.Contains(events, e => e is DeadlockCaseResolutionRequestedEvent);
+        Assert.DoesNotContain(events, e => e is DeadlockCaseResolutionRequestedEvent);
+        Assert.Contains(events, e => e is DeadlockCaseEscalatedEvent);
     }
 }

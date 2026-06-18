@@ -366,8 +366,8 @@ namespace AJR.Platform.Algorithms.DataStructures.Lists
         /// <param name="index">Index.</param>
         public virtual void InsertAfter(T dataItem, int index)
         {
-            // Insert at previous index.
-            InsertAt(dataItem, index - 1);
+            // Insert after the specified index.
+            InsertAt(dataItem, index + 1);
         }
 
         /// <summary>

@@ -53,16 +53,14 @@ public sealed class AvoidanceDeadlockResolver : IDeadlockResolver
         plan.AdvanceToSelectAvoidancePoint();
         var avoidSite = _avoidancePointSelector.SelectAvoidancePoint(victim);
 
-        // Transition the case to Resolving with the chosen victim/strategy + suggested avoid target.
-        // This raises Deadlock.Case.ResolutionRequested regardless of whether the detour later succeeds,
-        // so Coordination is always informed of the intended victim.
-        deadlockCase.RequestResolution(victim, ResolutionStrategy.SendToAvoidSite, avoidSite);
-
         if (string.IsNullOrWhiteSpace(avoidSite))
         {
             // No avoidance site available (e.g. standalone Null selector) → escalate.
-            plan.Abort(DeadlockErrorCodes.NoVictim);
-            deadlockCase.Escalate(DeadlockErrorCodes.NoVictim);
+            plan.Abort(DeadlockErrorCodes.NoAvoidanceSite);
+            deadlockCase.EscalateResolutionFailure(
+                victim,
+                ResolutionStrategy.SendToAvoidSite,
+                reason: DeadlockErrorCodes.NoAvoidanceSite);
             return plan;
         }
 
@@ -71,12 +69,20 @@ public sealed class AvoidanceDeadlockResolver : IDeadlockResolver
         // ReserveDetour (collision-free, via TrafficControl seam).
         if (!await _detourReservation.TryReserveDetourAsync(victim, avoidSite, cancellationToken).ConfigureAwait(false))
         {
-            plan.Abort("Deadlock.AvoidancePlan.DetourDenied");
-            deadlockCase.Escalate("Deadlock.AvoidancePlan.DetourDenied");
+            plan.Abort(DeadlockErrorCodes.DetourDenied);
+            deadlockCase.EscalateResolutionFailure(
+                victim,
+                ResolutionStrategy.SendToAvoidSite,
+                avoidSite,
+                DeadlockErrorCodes.DetourDenied);
             return plan;
         }
 
         plan.RecordDetourReserved();
+
+        // Transition the case to Resolving only after the detour reservation succeeds. Downstream consumers
+        // treat Deadlock.Case.ResolutionRequested as an executable redirect command, not a tentative intent.
+        deadlockCase.RequestResolution(victim, ResolutionStrategy.SendToAvoidSite, avoidSite);
 
         // DispatchToAvoid.
         plan.RecordDispatched();

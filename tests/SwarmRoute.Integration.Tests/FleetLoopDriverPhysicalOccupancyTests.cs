@@ -31,6 +31,31 @@ public sealed class FleetLoopDriverPhysicalOccupancyTests
         Assert.Contains(RoadmapGraph.SiteRef("X"), blocked);
     }
 
+    [Fact]
+    public async Task Driver_PerAgentRoute_KeepsWalkedPrefix_WhenReroutingAroundParkedVehicle()
+    {
+        var cycle = new ScriptedRerouteCycle();
+        var driver = new FleetLoopDriver();
+        var graph = FakeRoadmapQueryService.Graph(
+            ["P", "A", "B", "C", "D", "X"],
+            ("P", "A"),
+            ("A", "B"),
+            ("B", "C"),
+            ("A", "D"),
+            ("D", "C"),
+            ("X", "B"));
+        var fleet = new[]
+        {
+            new FleetAgentSpec("blocker", "X", "B", Priority: 0),
+            new FleetAgentSpec("reroute", "P", "C", Priority: 1),
+        };
+
+        var result = await driver.RunToCompletionAsync(cycle, Guid.NewGuid(), graph, fleet, maxTicks: 8);
+
+        Assert.Equal(FleetLoopStatus.Completed, result.Stats.Status);
+        Assert.Equal(["P", "A", "D", "C"], result.PerAgentRoute["reroute"]);
+    }
+
     private sealed class CapturingCycle : IFleetCoordinationCycle
     {
         public List<IReadOnlySet<ResourceRef>?> BlockedResourcesByCycle { get; } = [];
@@ -59,5 +84,54 @@ public sealed class FleetLoopDriverPhysicalOccupancyTests
             IReadOnlyList<ResourceRef> passedResources,
             CancellationToken cancellationToken = default)
             => Task.CompletedTask;
+    }
+
+    private sealed class ScriptedRerouteCycle : IFleetCoordinationCycle
+    {
+        private int _calls;
+
+        public Task<CycleReport> RunCycleAsync(
+            Guid roadmapId,
+            IReadOnlyCollection<AgentGoal> goals,
+            IReadOnlySet<ResourceRef>? blockedResources = null,
+            CancellationToken cancellationToken = default)
+        {
+            _calls++;
+            var results = new List<AgentCycleResult>();
+            foreach (var goal in goals)
+            {
+                IReadOnlyList<string> route = goal.AgentId switch
+                {
+                    "blocker" => new[] { "X", "B" },
+                    "reroute" when _calls == 1 => new[] { "P", "A", "B", "C" },
+                    "reroute" => new[] { "A", "D", "C" },
+                    _ => new[] { goal.FromSiteId, goal.ToSiteId },
+                };
+
+                results.Add(new AgentCycleResult(
+                    goal.AgentId,
+                    Planned: true,
+                    Reserved: true,
+                    Outcome: null,
+                    Attempts: 1,
+                    Path: ToPath(route),
+                    FailureReason: null));
+            }
+
+            return Task.FromResult(new CycleReport(results));
+        }
+
+        public Task ReleaseAsync(
+            string agentId,
+            IReadOnlyList<ResourceRef> passedResources,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        private static SpaceTimePath ToPath(IReadOnlyList<string> route)
+            => new(route
+                .Select((site, i) => new SpaceTimeCell(
+                    RoadmapGraph.SiteRef(site),
+                    new TimeInterval(i, i + 1)))
+                .ToList());
     }
 }

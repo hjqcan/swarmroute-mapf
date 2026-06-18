@@ -54,6 +54,8 @@ public sealed record PositionDto(string AgentId, string SiteId, double X, double
 /// <param name="Status">Run outcome: <c>Completed</c>, <c>CollisionDetected</c>, or <c>DidNotConverge</c>.</param>
 /// <param name="CollisionTick">Tick of the first collision (when <c>Status == CollisionDetected</c>), else null.</param>
 /// <param name="CollisionAgentIds">The agents involved in the first collision, else null.</param>
+/// <param name="Redirects">Total deadlock redirects enacted by the driver.</param>
+/// <param name="Recoveries">Total deadlock recoveries accepted by the driver.</param>
 public sealed record StatsDto(
     int Ticks,
     int Collisions,
@@ -61,4 +63,6 @@ public sealed record StatsDto(
     int Replans,
     string Status,
     int? CollisionTick,
-    IReadOnlyList<string>? CollisionAgentIds);
+    IReadOnlyList<string>? CollisionAgentIds,
+    int Redirects = 0,
+    int Recoveries = 0);
