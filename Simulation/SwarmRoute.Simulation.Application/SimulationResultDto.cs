@@ -24,15 +24,24 @@ public sealed record SiteDto(string Id, double X, double Y, string Type);
 public sealed record LaneDto(string Id, string From, string To);
 
 /// <summary>
-/// One AGV: its id, start/goal control points, a stable colour index for the frontend palette, and the CP
-/// sequence it was actually reserved along (its replay path).
+/// One AGV: its id, start/goal control points, a stable colour index for the frontend palette, the CP
+/// sequence it was actually reserved along (its replay path / occupied trail), and the route it has yet to
+/// travel.
 /// </summary>
+/// <param name="PathSiteIds">The CP trail the AGV actually occupied (history) — for an arrived AGV this ends at the goal.</param>
+/// <param name="RemainingSiteIds">
+/// The route still to be travelled: the shortest roadmap path from where <paramref name="PathSiteIds"/> ends to
+/// the goal (inclusive of both ends, so it joins the trail seamlessly). Empty once the AGV has arrived; for an
+/// AGV that stalled short of its goal (a standoff / <c>DidNotConverge</c>) it is the road ahead — what the
+/// frontend draws so "where is it still trying to go" stays visible.
+/// </param>
 public sealed record AgentDto(
     string Id,
     string StartSiteId,
     string GoalSiteId,
     int ColorIndex,
-    IReadOnlyList<string> PathSiteIds);
+    IReadOnlyList<string> PathSiteIds,
+    IReadOnlyList<string> RemainingSiteIds);
 
 /// <summary>The replay timeline: a frame per tick, each holding every agent's position on that tick.</summary>
 public sealed record TimelineDto(int TickCount, IReadOnlyList<FrameDto> Frames);
@@ -56,6 +65,8 @@ public sealed record PositionDto(string AgentId, string SiteId, double X, double
 /// <param name="CollisionAgentIds">The agents involved in the first collision, else null.</param>
 /// <param name="Redirects">Total deadlock redirects enacted by the driver.</param>
 /// <param name="Recoveries">Total deadlock recoveries accepted by the driver.</param>
+/// <param name="FlowtimeTicks">Sum over arrived AGVs of the tick each reached its goal (a throughput signal;
+/// lower is tighter pipelining).</param>
 public sealed record StatsDto(
     int Ticks,
     int Collisions,
@@ -65,4 +76,5 @@ public sealed record StatsDto(
     int? CollisionTick,
     IReadOnlyList<string>? CollisionAgentIds,
     int Redirects = 0,
-    int Recoveries = 0);
+    int Recoveries = 0,
+    int FlowtimeTicks = 0);

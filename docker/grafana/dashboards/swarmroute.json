@@ -1,0 +1,75 @@
+{
+  "title": "SwarmRoute Fleet",
+  "uid": "swarmroute-fleet",
+  "tags": ["swarmroute", "mapf"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Reservation throughput (per second)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "rate(swarmroute_reservation_grants_total[1m])", "legendFormat": "granted" },
+        { "refId": "B", "expr": "rate(swarmroute_reservation_denials_total[1m])", "legendFormat": "denied/queued" },
+        { "refId": "C", "expr": "rate(swarmroute_reservation_releases_total[1m])", "legendFormat": "released" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Planning latency (ms)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(swarmroute_planning_latency_ms_bucket[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(swarmroute_planning_latency_ms_bucket[5m])))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Orders pending",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "swarmroute_orders_pending", "legendFormat": "pending" },
+        { "refId": "B", "expr": "swarmroute_orders_completed_total", "legendFormat": "completed (window)" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Fleet activity",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "swarmroute_vehicles_busy", "legendFormat": "vehicles busy" },
+        { "refId": "B", "expr": "swarmroute_coordination_active_goals", "legendFormat": "active goals" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Deadlocks (per minute)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "increase(swarmroute_deadlock_detected_total[1m])", "legendFormat": "detected" },
+        { "refId": "B", "expr": "increase(swarmroute_deadlock_resolved_total[1m])", "legendFormat": "resolved" }
+      ]
+    }
+  ]
+}

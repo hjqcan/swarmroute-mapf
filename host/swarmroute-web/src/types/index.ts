@@ -12,12 +12,22 @@ export type RunState = 'Waiting' | 'Moving' | 'Arrived'
 /** Aggregate run outcome — the honest verification verdict. */
 export type RunStatus = 'Completed' | 'CollisionDetected' | 'DidNotConverge'
 
+/**
+ * Which planner the engine runs.
+ * - `Dijkstra` — v0 space-only shortest path; can deadlock in dense fields (two AGVs commit to crossing
+ *   routes and stall forever, reported as DidNotConverge).
+ * - `Sipp` — v1 Safe-Interval Path Planning; reservation-aware (plans in time), so it routes around
+ *   conflicts and converges where Dijkstra deadlocks.
+ */
+export type PlannerKind = 'Dijkstra' | 'Sipp'
+
 /** Inputs to one simulation run. */
 export interface SimulationRequest {
   width: number
   height: number
   agvCount: number
   seed?: number
+  planner?: PlannerKind
 }
 
 /** A single control point on the grid at planar (x=col, y=row). */
@@ -43,13 +53,15 @@ export interface FieldDto {
   lanes: Lane[]
 }
 
-/** One AGV: id, start/goal, stable colour index, and the reserved CP sequence (replay path). */
+/** One AGV: id, start/goal, stable colour index, the reserved CP sequence (replay path / occupied trail),
+ *  and the route it has yet to travel (shortest path from where the trail ends to the goal; [] once arrived). */
 export interface AgentDto {
   id: string
   startSiteId: string
   goalSiteId: string
   colorIndex: number
   pathSiteIds: string[]
+  remainingSiteIds: string[]
 }
 
 /** One agent's position on one tick. */

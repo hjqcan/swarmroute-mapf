@@ -10,6 +10,9 @@
 
     <!-- Coordination cycle (IFleetCoordinationCycle). -->
     <ProjectReference Include="..\..\Coordination\SwarmRoute.Coordination.Application\SwarmRoute.Coordination.Application.csproj" />
+
+    <!-- PathPlanning shared enums (PlannerKind, for per-request planner selection on SimulationRequest). -->
+    <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Domain.Shared\SwarmRoute.PathPlanning.Domain.Shared.csproj" />
   </ItemGroup>
 
   <ItemGroup>

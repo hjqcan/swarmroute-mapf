@@ -92,6 +92,30 @@ export default function FieldCanvas() {
       ctx.stroke()
     }
 
+    /* ---- remaining route to goal (dashed, brighter) ----
+       The road each un-arrived AGV has yet to travel: shortest path from where its trail
+       ends to the goal. It joins the solid trail seamlessly (shared first point) and makes
+       "where is it still trying to go" visible even when the AGV stalled in a standoff.
+       Suppressed with the rest of the agent's route by the same visibility toggle. */
+    ctx.setLineDash([Math.max(4, proj.cell * 0.2), Math.max(3, proj.cell * 0.16)])
+    for (const agent of agents) {
+      if (hiddenPaths.has(agent.id)) continue
+      if (agent.remainingSiteIds.length < 2) continue
+      ctx.strokeStyle = withAlpha(hueFor(agent.colorIndex), 0.85)
+      ctx.lineWidth = Math.max(2, proj.cell * 0.1)
+      ctx.beginPath()
+      agent.remainingSiteIds.forEach((sid, i) => {
+        const s = lookup.byId.get(sid)
+        if (!s) return
+        const px = proj.toX(s.x)
+        const py = proj.toY(s.y)
+        if (i === 0) ctx.moveTo(px, py)
+        else ctx.lineTo(px, py)
+      })
+      ctx.stroke()
+    }
+    ctx.setLineDash([])
+
     /* ---- site nodes ---- */
     for (const s of field.sites) {
       const px = proj.toX(s.x)
@@ -110,6 +134,9 @@ export default function FieldCanvas() {
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     for (const agent of agents) {
+      // A hidden agent's whole route is suppressed — its A/B markers go with its path,
+      // so isolating one AGV leaves only that AGV's start + goal on the field.
+      if (hiddenPaths.has(agent.id)) continue
       const hue = hueFor(agent.colorIndex)
       const start = lookup.byId.get(agent.startSiteId)
       const goal = lookup.byId.get(agent.goalSiteId)

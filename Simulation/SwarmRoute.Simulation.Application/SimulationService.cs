@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 
 namespace SwarmRoute.Simulation.Application;
 
@@ -54,11 +55,16 @@ public sealed class SimulationService : ISimulationService
             agentSpecs.Add(new FleetAgentSpec($"agv-{i + 1}", start, goal, Priority: i));
         }
 
-        // 3. Get a fresh REAL engine for THIS request (isolation between concurrent runs).
-        await using var engine = _engineFactory.Create(field.Graph);
+        // 3. Get a fresh REAL engine for THIS request (isolation between concurrent runs), planning with the
+        //    requested planner.
+        await using var engine = _engineFactory.Create(field.Graph, request.Planner);
 
         // 4. Run the closed loop to completion, recording the timeline. The driver advances the engine's tick
-        //    clock each tick so reservation intervals share the executor's axis (no wall-clock drift).
+        //    clock each tick so reservation intervals share the executor's axis (no wall-clock drift). SIPP plans
+        //    a faithful schedule → execute it faithfully; Dijkstra's spatial locks → the v0 greedy gate.
+        var executionMode = request.Planner == PlannerKind.Sipp
+            ? FleetExecutionMode.ScheduleFaithful
+            : FleetExecutionMode.Greedy;
         var maxTicks = MaxTicks(request);
         var loop = await _loopDriver
             .RunToCompletionAsync(
@@ -67,6 +73,7 @@ public sealed class SimulationService : ISimulationService
                 redirects: engine.Redirects,
                 recoverTick: engine.RecoverTick,
                 escalateLivelock: engine.EscalateLivelock,
+                executionMode: executionMode,
                 log: msg => _logger.LogWarning("[standoff] {Detail}", msg),
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
@@ -122,12 +129,24 @@ public sealed class SimulationService : ISimulationService
         var fieldDto = new FieldDto(field.Width, field.Height, sites, lanes);
 
         var agents = specs
-            .Select((s, i) => new AgentDto(
-                s.Id,
-                s.StartSiteId,
-                s.GoalSiteId,
-                ColorIndex: i,
-                PathSiteIds: loop.PerAgentRoute.TryGetValue(s.Id, out var route) ? route : new[] { s.StartSiteId }))
+            .Select((s, i) =>
+            {
+                var trail = loop.PerAgentRoute.TryGetValue(s.Id, out var route) ? route : new[] { s.StartSiteId };
+
+                // The route still to be travelled: shortest roadmap path from where the occupied trail ends to
+                // the goal. For an arrived AGV the trail already ends at the goal so this is empty; for one that
+                // stalled short (a standoff / DidNotConverge) it is the road ahead the frontend draws.
+                var lastCp = trail.Count > 0 ? trail[^1] : s.StartSiteId;
+                IReadOnlyList<string> remaining = Array.Empty<string>();
+                if (!string.Equals(lastCp, s.GoalSiteId, StringComparison.Ordinal))
+                {
+                    var forward = field.Graph.ShortestPath(lastCp, s.GoalSiteId);
+                    if (forward is { Count: > 1 })
+                        remaining = forward;
+                }
+
+                return new AgentDto(s.Id, s.StartSiteId, s.GoalSiteId, ColorIndex: i, PathSiteIds: trail, RemainingSiteIds: remaining);
+            })
             .ToList();
 
         var frames = loop.Frames
@@ -153,7 +172,8 @@ public sealed class SimulationService : ISimulationService
             loop.Collision?.Tick,
             loop.Collision?.AgentIds,
             loop.Stats.Redirects,
-            loop.Stats.Recoveries);
+            loop.Stats.Recoveries,
+            loop.Stats.FlowtimeTicks);
 
         return new SimulationResultDto(fieldDto, agents, timeline, stats);
     }

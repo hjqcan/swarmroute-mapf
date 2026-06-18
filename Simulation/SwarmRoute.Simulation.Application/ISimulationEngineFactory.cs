@@ -1,6 +1,7 @@
 using SwarmRoute.Coordination.Application;
 using SwarmRoute.Coordination.Application.Deadlock;
 using SwarmRoute.Map.Domain.ValueObjects;
+using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 
 namespace SwarmRoute.Simulation.Application;
 
@@ -10,8 +11,12 @@ namespace SwarmRoute.Simulation.Application;
 /// </summary>
 public interface ISimulationEngineFactory
 {
-    /// <summary>Creates a fresh engine over <paramref name="graph"/>. The caller owns disposal.</summary>
-    ISimulationEngine Create(RoadmapGraph graph);
+    /// <summary>
+    /// Creates a fresh engine over <paramref name="graph"/>, planning with <paramref name="planner"/>. The
+    /// per-request engine has its own isolated container, so the planner choice is contained to this run (no
+    /// shared global state). The caller owns disposal.
+    /// </summary>
+    ISimulationEngine Create(RoadmapGraph graph, PlannerKind planner = PlannerKind.Dijkstra);
 }
 
 /// <summary>A disposable simulation engine instance with its own coordination/traffic state.</summary>

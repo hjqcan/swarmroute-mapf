@@ -10,6 +10,8 @@ using SwarmRoute.Domain.Abstractions.EventBus;
 using SwarmRoute.EventBus.Extensions;
 using SwarmRoute.Map.Application.Contract.Services;
 using SwarmRoute.Map.Domain.ValueObjects;
+using SwarmRoute.PathPlanning.Domain.Planners;
+using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 using SwarmRoute.PathPlanning.Infra.CrossCutting.IoC;
 using SwarmRoute.SpatioTemporal.Kernel;
 using SwarmRoute.TrafficControl.Application.Contract.Services;
@@ -47,7 +49,8 @@ public sealed class CoordinationTestHost : IDisposable
         RoadmapGraph graph,
         IFleetClock? clock = null,
         IResourceTopology? topology = null,
-        string? avoidSite = null)
+        string? avoidSite = null,
+        PlannerKind planner = PlannerKind.Dijkstra)
     {
         var roadmapId = Guid.NewGuid();
         var services = new ServiceCollection();
@@ -60,7 +63,9 @@ public sealed class CoordinationTestHost : IDisposable
         // 2. Map read seam — supplied by a graph-backed fake (production uses RoadmapGraphProvider + EF).
         services.AddSingleton<IRoadmapQueryService>(new FakeRoadmapQueryService(roadmapId, graph));
 
-        // 3. PathPlanning (IPathPlanner + NullReservationQuery).
+        // 3. PathPlanning (SelectablePathPlanner + NullReservationQuery). Pre-register the planner choice so the
+        //    bootstrapper's TryAddSingleton<PlannerOptions> defers to it (Dijkstra baseline vs SIPP for A/B).
+        services.AddSingleton(new PlannerOptions { Default = planner });
         PathPlanningNativeInjectorBootStrapper.RegisterServices(services);
 
         // 4. TrafficControl AFTER PathPlanning so ReservationService overrides IReservationQuery.

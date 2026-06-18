@@ -9,6 +9,8 @@ using SwarmRoute.Deadlock.Infra.CrossCutting.IoC;
 using SwarmRoute.EventBus.Extensions;
 using SwarmRoute.Map.Application.Contract.Services;
 using SwarmRoute.Map.Domain.ValueObjects;
+using SwarmRoute.PathPlanning.Domain.Planners;
+using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 using SwarmRoute.PathPlanning.Infra.CrossCutting.IoC;
 using SwarmRoute.Simulation.Application;
 using SwarmRoute.SpatioTemporal.Kernel;
@@ -23,7 +25,7 @@ namespace SwarmRoute.Host.Adapters;
 /// </summary>
 public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
 {
-    public ISimulationEngine Create(RoadmapGraph graph)
+    public ISimulationEngine Create(RoadmapGraph graph, PlannerKind planner = PlannerKind.Dijkstra)
     {
         ArgumentNullException.ThrowIfNull(graph);
 
@@ -34,6 +36,10 @@ public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
         services.AddEventBus();
         services.AddSingleton<IRoadmapQueryService>(new InMemoryRoadmapQueryService(roadmapId, graph));
 
+        // Select the planner for THIS run. Pre-registered before the PathPlanning bootstrapper, whose
+        // TryAddSingleton<PlannerOptions> then defers to this instance — so the isolated container's
+        // SelectablePathPlanner dispatches to Dijkstra or SIPP per request, with no shared global state.
+        services.AddSingleton(new PlannerOptions { Default = planner });
         PathPlanningNativeInjectorBootStrapper.RegisterServices(services);
         TrafficControlNativeInjectorBootStrapper.RegisterServices(services);
         DeadlockNativeInjectorBootStrapper.RegisterServices(services);

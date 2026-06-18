@@ -38,6 +38,25 @@ public enum FleetLoopStatus
     DidNotConverge
 }
 
+/// <summary>How the executor advances en-route agents through their reserved CP route.</summary>
+public enum FleetExecutionMode
+{
+    /// <summary>
+    /// v0 behaviour: advance at most one CP per tick through a conservative right-of-way gate (enter the next CP
+    /// only if it is empty this tick). Pairs with the space-only Dijkstra planner, whose intervals are spatial
+    /// locks rather than a faithful schedule.
+    /// </summary>
+    Greedy,
+
+    /// <summary>
+    /// v1 behaviour: advance each agent to the next CP exactly at its planned arrival tick (the CP cell's
+    /// interval start on the unified <c>HopMs</c> axis). Pairs with the SIPP planner, whose schedule is
+    /// interval-exclusive by construction — so honouring it is collision-free (back-to-back following on
+    /// touching half-open intervals), and the defensive same-CP safety check stays as a regression net.
+    /// </summary>
+    ScheduleFaithful
+}
+
 /// <summary>One agent's recorded position on one tick.</summary>
 public sealed record FleetTickPosition(string AgentId, string SiteId, AgentMotionState State);
 
@@ -55,8 +74,12 @@ public sealed record FleetCollisionInfo(int Tick, string SiteId, IReadOnlyList<s
 /// <param name="Replans">Total prune-and-replan retries observed across the run.</param>
 /// <param name="Redirects">Total deadlock redirects enacted (victims sent to an avoidance site).</param>
 /// <param name="Recoveries">Total deadlock recoveries (victims restored to their original goal after the cycle cleared).</param>
+/// <param name="FlowtimeTicks">Sum over arrived agents of the tick at which each reached its goal (lower is
+/// better throughput). A schedule-faithful run that pipelines tightly accrues less flowtime than a greedy run
+/// that holds trailing vehicles a tick per congested cell.</param>
 public sealed record FleetLoopStats(
-    FleetLoopStatus Status, int Ticks, int Collisions, int Arrived, int Replans, int Redirects = 0, int Recoveries = 0);
+    FleetLoopStatus Status, int Ticks, int Collisions, int Arrived, int Replans, int Redirects = 0, int Recoveries = 0,
+    int FlowtimeTicks = 0);
 
 /// <summary>The full recorded result of a closed-loop run.</summary>
 /// <param name="Frames">Tick-by-tick timeline (includes the colliding tick when one occurs).</param>
@@ -114,6 +137,13 @@ public sealed class FleetLoopDriver
         public bool EnRoute { get; set; }
         public bool Done { get; set; }
         public IReadOnlyList<string> CpRoute { get; set; } = Array.Empty<string>();
+
+        /// <summary>Parallel to <see cref="CpRoute"/>: the planned fleet-clock tick at which the agent is
+        /// scheduled to arrive at each CP (the CP cell's interval start). Consumed only in
+        /// <see cref="FleetExecutionMode.ScheduleFaithful"/>; left empty under greedy execution and after a
+        /// reset (the agent is then not en route, so the executor never reads it until it re-plans).</summary>
+        public IReadOnlyList<long> CpEntryTicks { get; set; } = Array.Empty<long>();
+
         public IReadOnlyList<ResourceRef> AllResources { get; set; } = Array.Empty<ResourceRef>();
         public int Idx { get; set; }
         public int Replans { get; set; }
@@ -169,6 +199,9 @@ public sealed class FleetLoopDriver
     /// <param name="escalateLivelock">Optional escalation hook (bound to <c>IDeadlockEscalationService.EscalateLivelockAsync</c>):
     /// invoked when the anti-livelock guard fires (a redirect would not strictly reduce the victim's distance to its
     /// original goal, or the attempt cap is hit).</param>
+    /// <param name="executionMode">How en-route agents advance: <see cref="FleetExecutionMode.Greedy"/> (v0
+    /// right-of-way gate, the default so existing callers/tests keep v0 behaviour) or
+    /// <see cref="FleetExecutionMode.ScheduleFaithful"/> (follow the SIPP-planned per-CP arrival ticks).</param>
     /// <exception cref="ArgumentNullException">If <paramref name="cycle"/>, <paramref name="graph"/> or <paramref name="agents"/> is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException">If <paramref name="maxTicks"/> &lt; 1.</exception>
     /// <exception cref="FleetLoopException">Only on an internal invariant breach (reserved path not start→goal).</exception>
@@ -182,6 +215,7 @@ public sealed class FleetLoopDriver
         IFleetRedirectQuery? redirects = null,
         Func<CancellationToken, Task<IReadOnlyCollection<string>>>? recoverTick = null,
         Func<string, CancellationToken, Task>? escalateLivelock = null,
+        FleetExecutionMode executionMode = FleetExecutionMode.Greedy,
         Action<string>? log = null,
         CancellationToken cancellationToken = default)
     {
@@ -212,6 +246,7 @@ public sealed class FleetLoopDriver
         var maxConcurrent = 0;
         var redirects_ = 0;
         var recoveries = 0;
+        var flowtimeTicks = 0;
         var status = FleetLoopStatus.Completed;
         FleetCollisionInfo? collision = null;
 
@@ -240,6 +275,7 @@ public sealed class FleetLoopDriver
             ag.EnRoute = false;
             ag.Start = here;
             ag.CpRoute = new[] { here };
+            ag.CpEntryTicks = Array.Empty<long>();
             ag.Idx = 0;
             ag.AllResources = Array.Empty<ResourceRef>();
         }
@@ -369,10 +405,10 @@ public sealed class FleetLoopDriver
                     {
                         ag.EnRoute = true;
                         ag.Idx = 0;
-                        ag.CpRoute = r.Path!.Cells
-                            .Where(c => c.Resource.Kind == ResourceKind.CP)
-                            .Select(c => c.Resource.Id)
-                            .ToList();
+                        var cpCells = r.Path!.Cells.Where(c => c.Resource.Kind == ResourceKind.CP).ToList();
+                        ag.CpRoute = cpCells.Select(c => c.Resource.Id).ToList();
+                        // Schedule-faithful execution reads each CP's planned arrival tick from the same cells.
+                        ag.CpEntryTicks = cpCells.Select(c => c.Interval.StartMs).ToList();
                         ag.AllResources = r.Path!.Cells.Select(c => c.Resource).Distinct().ToList();
 
                         if (ag.CpRoute.Count == 0 || ag.CpRoute[0] != ag.Start || ag.CpRoute[^1] != ag.EffectiveGoal)
@@ -405,6 +441,15 @@ public sealed class FleetLoopDriver
             foreach (var a in fleet.Where(a => !(a.EnRoute && !a.Done)))
                 claimedNext.Add(a.Position);
 
+            // Schedule-faithful: resolve up front which agents step this tick, so the committed moves keep every
+            // end-position distinct — a follower may take a cell its leader vacates this same tick (back-to-back
+            // pipelining), but nobody steps onto a cell a non-moving vehicle holds (a waiting/parked vehicle holds
+            // no reservation, so the schedule can't have accounted for it). Null in greedy mode, where the
+            // per-agent right-of-way gate below decides instead.
+            var scheduledAdvance = executionMode == FleetExecutionMode.ScheduleFaithful
+                ? ResolveScheduleFaithfulAdvances(fleet, tick, parkedCells)
+                : null;
+
             foreach (var ag in fleet.Where(a => a is { EnRoute: true, Done: false }))
             {
                 var fromCp = ag.CpRoute[ag.Idx];
@@ -413,19 +458,25 @@ public sealed class FleetLoopDriver
                 if (!atGoalAlready)
                 {
                     var toCp = ag.CpRoute[ag.Idx + 1];
-                    var blockedByMover = claimedNext.Contains(toCp);
                     var occupant = occupantNow.GetValueOrDefault(toCp);
 
-                    if (occupant is { Done: true })
+                    // Permanent obstacle ahead is decided by `parkedCells` (the authoritative set of cells a
+                    // vehicle has parked on), NOT by occupantNow[toCp].Done: occupantNow holds live agent
+                    // references captured at tick-start, and an agent that vacates toCp this tick and parks
+                    // elsewhere would make that stale reference read Done — a false "obstacle". parkedCells only
+                    // ever holds a cell while a vehicle truly sits parked on it.
+                    if (parkedCells.Contains(toCp))
                     {
-                        // Permanent obstacle (parked vehicle) ahead — re-route: release this path and rejoin
-                        // planning from where we stand. `parkedCells` already lists the obstacle, so the next
-                        // plan avoids it.
+                        // Re-route: release this path and rejoin planning from where we stand. `parkedCells`
+                        // already lists the obstacle, so the next plan avoids it. A liveness fallback in BOTH
+                        // modes: SIPP routes around parked cells at plan time, but a vehicle can park AFTER this
+                        // agent was planned.
                         ag.Replans++;
                         var held = ag.AllResources;
                         ag.EnRoute = false;
                         ag.Start = fromCp;
                         ag.CpRoute = new[] { fromCp };
+                        ag.CpEntryTicks = Array.Empty<long>();
                         ag.Idx = 0;
                         ag.AllResources = Array.Empty<ResourceRef>();
                         claimedNext.Add(fromCp);
@@ -433,28 +484,36 @@ public sealed class FleetLoopDriver
                         continue;
                     }
 
-                    // Right-of-way gate: enter only if the next CP is free this tick and unclaimed by a prior mover.
-                    if (blockedByMover || occupant is not null)
-                    {
-                        claimedNext.Add(fromCp); // wait: hold the current CP (and all leases).
-                        ag.BlockedTicks++;
+                    // The advance decision is the ONLY thing the execution mode forks.
+                    var advance = scheduledAdvance is not null
+                        // Schedule-faithful: step iff the up-front resolution granted this agent a move this tick.
+                        ? scheduledAdvance.Contains(ag.Id)
+                        // Greedy (v0) right-of-way gate: enter only if the next CP is free this tick AND unclaimed
+                        // by a prior mover. Conservative — a trailing vehicle waits one tick for the cell ahead.
+                        : !claimedNext.Contains(toCp) && occupant is null;
 
-                        // Surface a physical standoff (logged once, when the streak crosses the threshold). The
-                        // reservation table considered these agents interval-separated; lockstep execution (one
-                        // CP/tick) makes them meet, so no Allocation.Contended fires and RAG detection never sees
-                        // it — this log is how that gap becomes visible.
-                        if (log is not null && ag.BlockedTicks == standoffLogThreshold)
+                    if (!advance)
+                    {
+                        claimedNext.Add(fromCp); // hold the current CP (and all leases) this tick.
+
+                        // Standoff diagnostics are a greedy-gate concern only: in schedule-faithful mode a
+                        // non-advancing tick is a planned wait, not a physical deadlock the table couldn't see.
+                        if (executionMode == FleetExecutionMode.Greedy)
                         {
-                            var occName = occupant?.Id ?? "(higher-priority mover)";
-                            var mutualSwap = occupant is { EnRoute: true, Done: false }
-                                && occupant.Idx + 1 < occupant.CpRoute.Count
-                                && string.Equals(occupant.CpRoute[occupant.Idx + 1], fromCp, StringComparison.Ordinal);
-                            log(
-                                $"standoff@tick{tick}: {ag.Id} stalled {ag.BlockedTicks}+ ticks at {fromCp} wanting {toCp}; " +
-                                $"blocked by {occName}" +
-                                (mutualSwap ? $" which wants {fromCp} back -> HEAD-ON SWAP {ag.Id}<->{occName}" : string.Empty) +
-                                $" (goal {ag.Goal}; redirects so far={redirects_}). " +
-                                "Not a RAG cycle: both hold granted reservations, so deadlock detection won't fire.");
+                            ag.BlockedTicks++;
+                            if (log is not null && ag.BlockedTicks == standoffLogThreshold)
+                            {
+                                var occName = occupant?.Id ?? "(higher-priority mover)";
+                                var mutualSwap = occupant is { EnRoute: true, Done: false }
+                                    && occupant.Idx + 1 < occupant.CpRoute.Count
+                                    && string.Equals(occupant.CpRoute[occupant.Idx + 1], fromCp, StringComparison.Ordinal);
+                                log(
+                                    $"standoff@tick{tick}: {ag.Id} stalled {ag.BlockedTicks}+ ticks at {fromCp} wanting {toCp}; " +
+                                    $"blocked by {occName}" +
+                                    (mutualSwap ? $" which wants {fromCp} back -> HEAD-ON SWAP {ag.Id}<->{occName}" : string.Empty) +
+                                    $" (goal {ag.Goal}; redirects so far={redirects_}). " +
+                                    "Not a RAG cycle: both hold granted reservations, so deadlock detection won't fire.");
+                            }
                         }
                         continue;
                     }
@@ -489,6 +548,7 @@ public sealed class FleetLoopDriver
                         ag.EnRoute = false;
                         claimedNext.Add(here);
                         parkedCells.Add(here);
+                        flowtimeTicks += tick; // this agent reached its goal at this tick
                         await cycle.ReleaseAsync(ag.Id, ag.AllResources, cancellationToken).ConfigureAwait(false);
                     }
                 }
@@ -558,9 +618,79 @@ public sealed class FleetLoopDriver
             Arrived: fleet.Count(a => a.Done),
             Replans: fleet.Sum(a => a.Replans),
             Redirects: redirects_,
-            Recoveries: recoveries);
+            Recoveries: recoveries,
+            FlowtimeTicks: flowtimeTicks);
 
         return new FleetLoopResult(frames, routes, stats, maxConcurrent, collision);
+    }
+
+    /// <summary>
+    /// Schedule-faithful advance resolution: returns the ids of en-route agents that step to their next CP this
+    /// tick. An agent is a <i>candidate</i> when its planned arrival tick for the next CP has come (and the cell
+    /// ahead is not a parked vehicle it must re-route around). Candidates are then pruned to a set whose post-move
+    /// positions are all distinct: a candidate may follow a leader into the cell the leader vacates this same tick
+    /// (back-to-back), but never step onto a cell a non-moving vehicle holds, and two candidates never take the
+    /// same cell. Resolution iterates to a fixpoint, so revoking a blocked leader correctly blocks its follower in
+    /// the next pass. The SIPP schedule is interval-exclusive, so in normal operation every candidate is granted;
+    /// the pruning is a defensive guarantee that keeps execution collision-free even if reality diverges from the
+    /// plan (a delayed or re-routed vehicle), with block (3) reporting any residual breach.
+    /// </summary>
+    private static HashSet<string> ResolveScheduleFaithfulAdvances(
+        IReadOnlyList<RunAgent> fleet, long tick, IReadOnlySet<string> parkedCells)
+    {
+        var target = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var ag in fleet)
+        {
+            if (ag is not { EnRoute: true, Done: false })
+                continue;
+            if (ag.Idx >= ag.CpRoute.Count - 1)
+                continue; // at goal: parks, does not step
+            if (ag.CpEntryTicks.Count != ag.CpRoute.Count)
+                continue; // no schedule attached (e.g. just reset): do not step
+            if (tick < ag.CpEntryTicks[ag.Idx + 1])
+                continue; // planned wait this tick
+
+            var to = ag.CpRoute[ag.Idx + 1];
+            if (parkedCells.Contains(to))
+                continue; // parked vehicle ahead: the main loop re-routes this agent rather than advancing it
+
+            target[ag.Id] = to;
+        }
+
+        var granted = new HashSet<string>(target.Keys, StringComparer.Ordinal);
+        var ordered = fleet
+            .Where(a => target.ContainsKey(a.Id))
+            .OrderBy(a => a.Priority)
+            .ThenBy(a => a.Id, StringComparer.Ordinal)
+            .ToList();
+
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+
+            // Cells held after this tick by anyone NOT advancing (non-movers + revoked movers keep their CP).
+            var blocked = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var a in fleet)
+                if (!granted.Contains(a.Id))
+                    blocked.Add(a.Position);
+
+            var claimed = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var a in ordered)
+            {
+                if (!granted.Contains(a.Id))
+                    continue;
+                var to = target[a.Id];
+                // Revoke if the target is held by a stayer, or already claimed by a higher-priority mover.
+                if (blocked.Contains(to) || !claimed.Add(to))
+                {
+                    granted.Remove(a.Id);
+                    changed = true;
+                }
+            }
+        }
+
+        return granted;
     }
 }
 

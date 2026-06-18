@@ -1,10 +1,13 @@
-# SwarmRoute MAPF — local infrastructure + host (DoD §7).
-#   docker compose up        → PostgreSQL + RabbitMQ + the SwarmRoute host
-#   then POST http://localhost:8080/api/simulation/run to exercise the M1–M3 closed loop.
+# SwarmRoute MAPF — local infrastructure + host + observability (DoD §7/§8).
+#   docker compose up   → PostgreSQL + RabbitMQ + the SwarmRoute host + Prometheus + Grafana
+#   then: POST http://localhost:8080/api/orders {"destination":"r5c5"}  (autonomous dispatcher demo)
+#         http://localhost:8080/status        — live fleet/loop snapshot
+#         http://localhost:8080/metrics       — Prometheus exposition
+#         http://localhost:3000               — Grafana (anonymous, the SwarmRoute Fleet dashboard)
 #
-# Map + TrafficControl persist (topology / reservation snapshots) to PostgreSQL; RabbitMQ is the broker the
-# CAP integration-event transport binds to when EventBus:UseInMemory=false. The simulation/closed-loop path
-# itself runs in-process, so the host is usable even before a broker is attached.
+# Map + TrafficControl persist (reservation snapshots) to PostgreSQL; RabbitMQ is the broker the CAP
+# integration-event transport binds to when EventBus:UseInMemory=false. The host runs the autonomous dispatcher
+# fleet (Dispatcher:Enabled) over an in-memory demo roadmap so the loop + metrics have data out of the box.
 services:
   postgres:
     image: postgres:16
@@ -56,8 +59,36 @@ services:
       EventBus__RabbitMq__Username: "guest"
       EventBus__RabbitMq__Password: "guest"
       RunMigrationsOnStartup: "true"
+      # Autonomous dispatcher demo fleet (Track B) so the lifelong loop + metrics have live data.
+      Dispatcher__Enabled: "true"
+      Dispatcher__GridWidth: "8"
+      Dispatcher__GridHeight: "8"
+      Dispatcher__VehicleCount: "6"
     ports:
       - "8080:8080"
+
+  prometheus:
+    image: prom/prometheus:latest
+    depends_on:
+      - host
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    depends_on:
+      - prometheus
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
 
 volumes:
   pgdata:

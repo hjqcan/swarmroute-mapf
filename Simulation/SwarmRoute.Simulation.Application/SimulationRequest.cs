@@ -1,3 +1,5 @@
+using SwarmRoute.PathPlanning.Domain.Shared.Enums;
+
 namespace SwarmRoute.Simulation.Application;
 
 /// <summary>
@@ -12,4 +14,15 @@ namespace SwarmRoute.Simulation.Application;
 /// Optional seed for the start/goal assignment RNG. When omitted a fixed default is used so a given request is
 /// reproducible.
 /// </param>
-public sealed record SimulationRequest(int Width, int Height, int AgvCount, int? Seed = null);
+/// <param name="Planner">
+/// Which planner to run for this request: <see cref="PlannerKind.Dijkstra"/> (v0 baseline, paired with greedy
+/// execution) or <see cref="PlannerKind.Sipp"/> (v1 reservation-aware planner, paired with schedule-faithful
+/// execution). Defaults to <see cref="PlannerKind.Dijkstra"/> so the same seed can be A/B-compared by flipping
+/// only this field. (Frontend toggle is deferred — this is the backend contract.)
+/// </param>
+public sealed record SimulationRequest(
+    int Width,
+    int Height,
+    int AgvCount,
+    int? Seed = null,
+    PlannerKind Planner = PlannerKind.Dijkstra);

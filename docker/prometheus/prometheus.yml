@@ -1,0 +1,10 @@
+# Prometheus scrape config for the SwarmRoute host's OpenTelemetry Prometheus exporter (/metrics).
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: swarmroute-host
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host:8080"]

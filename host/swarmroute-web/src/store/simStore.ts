@@ -6,11 +6,13 @@ import type { SimulationRequest, SimulationResult } from '@/types'
 
 export type PlaybackSpeed = 0.5 | 1 | 2 | 4
 
-/** Default form parameters for a run. */
+/** Default form parameters for a run. Defaults to the SIPP planner: it is reservation-aware and
+ *  converges where the v0 Dijkstra planner can deadlock in dense fields (switchable in the control rail). */
 export const DEFAULT_PARAMS: SimulationRequest = {
   width: 10,
   height: 8,
   agvCount: 6,
+  planner: 'Sipp',
 }
 
 export interface SimState {
@@ -25,9 +27,9 @@ export interface SimState {
   error: string | null
   run: () => Promise<void>
 
-  /* ---- per-agent path visibility on the field (ids whose planned path is hidden) ---- */
+  /* ---- per-agent route visibility on the field (ids whose route is hidden) ---- */
   hiddenPaths: Set<string>
-  /** Toggle one agent's planned-path polyline on the field. */
+  /** Toggle one agent's route on the field (its planned-path polyline + A/B markers). */
   togglePath: (agentId: string) => void
 
   /* ---- playback (a "frame cursor" is a float index into timeline.frames) ---- */
@@ -71,8 +73,8 @@ export const useSimStore = create<SimState>()(
             loading: false,
             error: null,
             cursor: 0,
-            // A fresh run starts with every path visible again.
-            hiddenPaths: new Set(),
+            // hiddenPaths is intentionally preserved across runs: a re-run keeps each
+            // AGV's shown/hidden choice so the operator stays focused on the same AGVs.
             // Auto-play a successful run so the verification is immediately visible.
             playing: result.timeline.frames.length > 1,
           })

@@ -1,7 +1,8 @@
-import { Button, InputNumber, Slider } from 'antd'
+import { Button, InputNumber, Segmented, Slider } from 'antd'
 import { Dices, Play, Loader2 } from 'lucide-react'
 import { useIntl } from 'react-intl'
 import { useSimStore } from '@/store/simStore'
+import type { PlannerKind } from '@/types'
 
 const FIELD_MIN = 4
 const FIELD_MAX = 24
@@ -62,6 +63,33 @@ export default function ControlRail() {
           onChange={(v) => setParam('agvCount', v)}
         />
       </Field>
+
+      {/* Planner: v0 Dijkstra (space-only — can deadlock when dense) vs v1 SIPP (reservation-aware,
+          plans in time — converges where Dijkstra stalls). Defaults to SIPP; flip to Dijkstra to
+          reproduce a standoff and watch the stuck AGVs' forward routes on the field. */}
+      <div>
+        <div className="mb-1.5 flex items-baseline justify-between">
+          <label className="text-sm text-text-muted">
+            {intl.formatMessage({ id: 'controls.planner' })}
+          </label>
+          <span className="font-mono text-xs text-text-muted">
+            {intl.formatMessage({
+              id: (params.planner ?? 'Sipp') === 'Dijkstra'
+                ? 'controls.planner.dijkstraTag'
+                : 'controls.planner.sippTag',
+            })}
+          </span>
+        </div>
+        <Segmented
+          block
+          value={params.planner ?? 'Sipp'}
+          onChange={(v) => setParam('planner', v as PlannerKind)}
+          options={[
+            { label: 'SIPP', value: 'Sipp' },
+            { label: 'Dijkstra', value: 'Dijkstra' },
+          ]}
+        />
+      </div>
 
       {/* Seed (optional) + shuffle */}
       <div>

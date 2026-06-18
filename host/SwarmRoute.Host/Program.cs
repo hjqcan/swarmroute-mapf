@@ -1,5 +1,10 @@
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using OpenTelemetry.Metrics;
 using SwarmRoute.Coordination.Application;
+using SwarmRoute.PathPlanning.Domain.Planners;
+using SwarmRoute.PathPlanning.Domain.Shared.Enums;
+using SwarmRoute.SpatioTemporal.Kernel;
 using SwarmRoute.Deadlock.Application.Abstractions;
 using SwarmRoute.Deadlock.Application.Resolution;
 using SwarmRoute.Deadlock.Domain.Services;
@@ -41,21 +46,40 @@ var builder = WebApplication.CreateBuilder(args);
 // controllers are discovered (they live outside the Host entry assembly).
 builder.Services
     .AddControllers()
+    // Bind/emit enums by name (e.g. SimulationRequest.Planner = "Sipp" | "Dijkstra"), not by ordinal.
+    .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()))
     .AddApplicationPart(typeof(SwarmRoute.Map.Api.Controllers.MapsController).Assembly)
     .AddApplicationPart(typeof(SwarmRoute.TrafficControl.Api.Controllers.TrafficController).Assembly);
 
 builder.Services.AddOpenApi();
 
-// Liveness/readiness endpoint (DoD §8 observability). Built-in checks — the meter
-// SwarmRoute.SpatioTemporal.Kernel.SwarmRouteMetrics
-// already exposes planning-latency / reservation / deadlock instruments for an OpenTelemetry exporter.
-builder.Services.AddHealthChecks();
+// Liveness/readiness endpoint (DoD §8 observability) + the coordination-loop status check.
+builder.Services.AddHealthChecks()
+    .AddCheck<SwarmRoute.Host.CoordinationHealthCheck>("coordination", tags: ["live"]);
+
+// OpenTelemetry metrics → Prometheus scrape endpoint (/metrics). Subscribes to the fleet meter
+// (SwarmRouteMetrics: planning latency, reservation grants/denials/releases, deadlock detect/resolve — all
+// emitted by the live coordination loop) plus ASP.NET Core + .NET runtime instrumentation.
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics => metrics
+        .AddMeter(SwarmRouteMetrics.MeterName)
+        .AddAspNetCoreInstrumentation()
+        .AddRuntimeInstrumentation()
+        .AddPrometheusExporter());
 
 // 1. Event bus (in-memory for dev/tests; CAP PostgreSQL outbox + RabbitMQ when EventBus:UseInMemory=false).
 builder.Services.AddEventBus(builder.Configuration);
 
 // 2–5. Context composition roots, in dependency order.
 MapNativeInjectorBootStrapper.RegisterServices(builder);
+
+// Staged rollout: which planner the autonomous host loop uses. Defaults to the v0 Dijkstra baseline; flip to
+// SIPP at the final stage via configuration ("Planning:DefaultPlanner": "Sipp"). Pre-registered so PathPlanning's
+// TryAddSingleton<PlannerOptions> defers to it. (The Simulation A/B path overrides this per request.)
+builder.Services.AddSingleton(new PlannerOptions
+{
+    Default = builder.Configuration.GetValue("Planning:DefaultPlanner", PlannerKind.Dijkstra)
+});
 PathPlanningNativeInjectorBootStrapper.RegisterServices(builder);
 TrafficControlNativeInjectorBootStrapper.RegisterServices(builder); // after Planning → IReservationQuery override wins
 DeadlockBootStrapper.RegisterServices(builder);
@@ -99,6 +123,12 @@ builder.Services.AddScoped<CapIntegrationEventSubscriber>();
 builder.Services.AddScoped<ISimulationEngineFactory, InMemorySimulationEngineFactory>();
 builder.Services.AddSimulation();
 
+// 7b'. Autonomous dispatcher demo fleet (Track B), opt-in via Dispatcher:Enabled. When on, it overrides the
+//      DB-backed IRoadmapQueryService + inert goal source with an in-memory grid + dispatcher so the lifelong
+//      FleetCoordinationLoop drives a real order→assign→plan→reserve→complete loop with no database. Must run
+//      after the Map bootstrapper and the goal-source registration above (it replaces both).
+builder.AddSwarmRouteDispatcher();
+
 // 7c. Runtime background jobs — enabled only when TrafficControlDatabase exists.
 builder.Services.AddSwarmRouteBackgroundJobs(builder.Configuration);
 
@@ -118,6 +148,10 @@ app.UseAuthorization();
 // 8b. Map (api/maps) + TrafficControl (api/traffic) controllers.
 app.MapControllers();
 app.MapHealthChecks("/health");
+
+// 8c. Observability surface (Track C): Prometheus scrape endpoint + a human/JSON status snapshot.
+app.MapPrometheusScrapingEndpoint(); // GET /metrics
+app.MapGet("/status", (IServiceProvider sp) => Results.Ok(SwarmRoute.Host.StatusSnapshot.Build(sp)));
 
 app.Run();
 

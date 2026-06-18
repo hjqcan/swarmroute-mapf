@@ -1,0 +1,10 @@
+# Loads dashboards from the mounted folder so the SwarmRoute Fleet dashboard appears automatically.
+apiVersion: 1
+providers:
+  - name: SwarmRoute
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
