@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Domain\SwarmRoute.PathPlanning.Domain.csproj" />
     <ProjectReference Include="..\SwarmRoute.TrafficControl.Domain\SwarmRoute.TrafficControl.Domain.csproj" />
     <ProjectReference Include="..\SwarmRoute.TrafficControl.Application.Contract\SwarmRoute.TrafficControl.Application.Contract.csproj" />
   </ItemGroup>

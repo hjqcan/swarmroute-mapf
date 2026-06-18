@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\SwarmRoute.PathPlanning.Domain\SwarmRoute.PathPlanning.Domain.csproj" />
     <ProjectReference Include="..\SwarmRoute.PathPlanning.Application.Contract\SwarmRoute.PathPlanning.Application.Contract.csproj" />
+    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Application.Contract\SwarmRoute.Map.Application.Contract.csproj" />
   </ItemGroup>
 
   <ItemGroup>

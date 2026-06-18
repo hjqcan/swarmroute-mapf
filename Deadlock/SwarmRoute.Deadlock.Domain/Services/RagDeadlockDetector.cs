@@ -65,13 +65,13 @@ public sealed class RagDeadlockDetector : IDeadlockDetector
         HashSet<string> cyclicAgents)
     {
         // resource -> owning agents (any agent, restricted later to cyclic for edges)
-        var ownersByResource = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        foreach (var (agentId, resourceId) in rag.Owns)
+        var ownersByResource = new Dictionary<ResourceRef, List<string>>();
+        foreach (var (agentId, resource) in rag.Owns)
         {
-            if (!ownersByResource.TryGetValue(resourceId, out var owners))
+            if (!ownersByResource.TryGetValue(resource, out var owners))
             {
                 owners = [];
-                ownersByResource[resourceId] = owners;
+                ownersByResource[resource] = owners;
             }
             owners.Add(agentId);
         }
@@ -81,11 +81,11 @@ public sealed class RagDeadlockDetector : IDeadlockDetector
         foreach (var agent in cyclicAgents)
             adjacency[agent] = new SortedSet<string>(StringComparer.Ordinal);
 
-        foreach (var (agentId, resourceId) in rag.Waits)
+        foreach (var (agentId, resource) in rag.Waits)
         {
             if (!cyclicAgents.Contains(agentId))
                 continue;
-            if (!ownersByResource.TryGetValue(resourceId, out var owners))
+            if (!ownersByResource.TryGetValue(resource, out var owners))
                 continue;
             foreach (var owner in owners)
             {

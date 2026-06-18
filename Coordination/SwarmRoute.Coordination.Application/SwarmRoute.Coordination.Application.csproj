@@ -3,13 +3,19 @@
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\SwarmRoute.SpatioTemporal.Kernel\SwarmRoute.SpatioTemporal.Kernel.csproj" />
     <ProjectReference Include="..\..\Map\SwarmRoute.Map.Application.Contract\SwarmRoute.Map.Application.Contract.csproj" />
+    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Domain\SwarmRoute.Map.Domain.csproj" />
     <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Application.Contract\SwarmRoute.PathPlanning.Application.Contract.csproj" />
+    <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Domain\SwarmRoute.PathPlanning.Domain.csproj" />
     <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Application.Contract\SwarmRoute.TrafficControl.Application.Contract.csproj" />
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Domain.Shared\SwarmRoute.TrafficControl.Domain.Shared.csproj" />
     <ProjectReference Include="..\..\Deadlock\SwarmRoute.Deadlock.Application.Contract\SwarmRoute.Deadlock.Application.Contract.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.1" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -21,8 +21,22 @@ public sealed class DijkstraPathPlannerTests
     private PlanResult Plan(RoadmapGraph graph, string from, string to, long release = 0)
         => _planner.Plan(graph, new PlanRequest(Roadmap, "AGV-1", from, to, release), _reservations);
 
+    private PlanResult Plan(
+        RoadmapGraph graph,
+        string from,
+        string to,
+        long release,
+        IEnumerable<ResourceRef> blacklist)
+        => _planner.Plan(
+            graph,
+            new PlanRequest(Roadmap, "AGV-1", from, to, release, blacklistedResources: blacklist),
+            _reservations);
+
     private static List<string> SitesOf(SpaceTimePath path)
         => path.Cells.Where(c => c.Resource.Kind == ResourceKind.CP).Select(c => c.Resource.Id).ToList();
+
+    private static List<string> LanesOf(SpaceTimePath path)
+        => path.Cells.Where(c => c.Resource.Kind == ResourceKind.Lane).Select(c => c.Resource.Id).ToList();
 
     [Fact]
     public void Linear_chain_returns_the_only_path()
@@ -140,35 +154,78 @@ public sealed class DijkstraPathPlannerTests
         Assert.True(result.Success);
         var cells = result.Path!.Cells;
 
-        // Four cells (A,B,C,D).
-        Assert.Equal(4, cells.Count);
+        // Four CP cells plus three directed Lane cells.
+        Assert.Equal(7, cells.Count);
 
         // First cell starts exactly at the release time.
         Assert.Equal(5000, cells[0].Interval.StartMs);
 
-        for (var i = 0; i < cells.Count; i++)
+        var cpCells = cells.Where(c => c.Resource.Kind == ResourceKind.CP).ToList();
+        for (var i = 0; i < cpCells.Count; i++)
         {
             // Each interval is non-degenerate (Start < End) under half-open semantics.
-            Assert.True(cells[i].Interval.StartMs < cells[i].Interval.EndMs,
+            Assert.True(cpCells[i].Interval.StartMs < cpCells[i].Interval.EndMs,
                 $"cell {i} must have positive duration");
 
             if (i > 0)
             {
                 // Contiguous + strictly advancing: next starts exactly where the previous ended,
                 // so no two cells overlap (touching endpoints do not overlap under [start,end)).
-                Assert.Equal(cells[i - 1].Interval.EndMs, cells[i].Interval.StartMs);
-                Assert.False(cells[i - 1].Interval.Overlaps(cells[i].Interval));
+                Assert.Equal(cpCells[i - 1].Interval.EndMs, cpCells[i].Interval.StartMs);
+                Assert.False(cpCells[i - 1].Interval.Overlaps(cpCells[i].Interval));
             }
         }
 
         // Move-cell durations equal the scaled edge weights (1000, 2000, 3000).
-        Assert.Equal(1000, cells[0].Interval.Duration);
-        Assert.Equal(2000, cells[1].Interval.Duration);
-        Assert.Equal(3000, cells[2].Interval.Duration);
+        Assert.Equal(1000, cpCells[0].Interval.Duration);
+        Assert.Equal(2000, cpCells[1].Interval.Duration);
+        Assert.Equal(3000, cpCells[2].Interval.Duration);
+        Assert.Equal(new[] { "A-B", "B-C", "C-D" }, LanesOf(result.Path!));
 
         // Total distance == sum of edge weights == graph DistanceTo.
         Assert.Equal(6000L, result.Cost!.DistanceUnits);
         Assert.Equal(graph.DistanceTo("A", "D")!.Value, result.Cost!.DistanceUnits);
+    }
+
+    [Fact]
+    public void Timeline_includes_directed_lane_cells_for_each_edge()
+    {
+        var graph = new RoadmapGraphBuilder().Edge("A", "B").Edge("B", "C").Build();
+
+        var result = Plan(graph, "A", "C");
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "A", "B", "C" }, SitesOf(result.Path!));
+        Assert.Equal(new[] { "A-B", "B-C" }, LanesOf(result.Path!));
+    }
+
+    [Fact]
+    public void Blacklisted_intermediate_site_is_pruned_from_dijkstra()
+    {
+        var graph = new RoadmapGraphBuilder()
+            .Edge("A", "B", 1.0).Edge("B", "D", 1.0)
+            .Edge("A", "C", 2.0).Edge("C", "D", 2.0)
+            .Build();
+
+        var result = Plan(graph, "A", "D", 0, new[] { RoadmapGraph.SiteRef("B") });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "A", "C", "D" }, SitesOf(result.Path!));
+    }
+
+    [Fact]
+    public void Blacklisted_lane_is_pruned_from_dijkstra()
+    {
+        var graph = new RoadmapGraphBuilder()
+            .Edge("A", "B", 1.0).Edge("B", "D", 1.0)
+            .Edge("A", "C", 2.0).Edge("C", "D", 2.0)
+            .Build();
+
+        var result = Plan(graph, "A", "D", 0, new[] { RoadmapGraph.LaneRef("A", "B") });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "A", "C", "D" }, SitesOf(result.Path!));
+        Assert.DoesNotContain("A-B", LanesOf(result.Path!));
     }
 
     [Fact]

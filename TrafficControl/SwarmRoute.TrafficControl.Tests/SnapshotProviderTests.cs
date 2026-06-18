@@ -22,11 +22,11 @@ public class SnapshotProviderTests
         var snapshot = provider.GetSnapshot();
 
         // Owns: (AGV-A,S1) and (AGV-B,S2).
-        Assert.Contains(("AGV-A", "S1"), snapshot.Owns);
-        Assert.Contains(("AGV-B", "S2"), snapshot.Owns);
+        Assert.Contains(("AGV-A", Cp("S1")), snapshot.Owns);
+        Assert.Contains(("AGV-B", Cp("S2")), snapshot.Owns);
 
         // Waits: (AGV-A,S2).
-        Assert.Contains(("AGV-A", "S2"), snapshot.Waits);
+        Assert.Contains(("AGV-A", Cp("S2")), snapshot.Waits);
     }
 
     [Fact]
@@ -46,9 +46,22 @@ public class SnapshotProviderTests
         table.TryGrant(Path(Cell(Cp("S1"), 0, 100)), "AGV-A");
 
         var provider = new TrafficControlSnapshotProvider(table);
-        Assert.Contains(("AGV-A", "S1"), provider.GetSnapshot().Owns);
+        Assert.Contains(("AGV-A", Cp("S1")), provider.GetSnapshot().Owns);
 
         table.ReleaseAll("AGV-A");
-        Assert.DoesNotContain(("AGV-A", "S1"), provider.GetSnapshot().Owns);
+        Assert.DoesNotContain(("AGV-A", Cp("S1")), provider.GetSnapshot().Owns);
+    }
+
+    [Fact]
+    public void Snapshot_preserves_resource_kind()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        table.TryGrant(Path(Cell(Cp("S1"), 0, 100)), "AGV-A");
+        table.TryGrant(Path(Cell(Lane("S1"), 100, 200)), "AGV-B");
+
+        var snapshot = new TrafficControlSnapshotProvider(table).GetSnapshot();
+
+        Assert.Contains(("AGV-A", Cp("S1")), snapshot.Owns);
+        Assert.Contains(("AGV-B", Lane("S1")), snapshot.Owns);
     }
 }

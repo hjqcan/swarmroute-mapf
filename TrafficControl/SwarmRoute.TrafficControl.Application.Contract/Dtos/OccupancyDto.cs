@@ -1,3 +1,5 @@
+using SwarmRoute.SpatioTemporal.Kernel;
+
 namespace SwarmRoute.TrafficControl.Application.Contract.Dtos;
 
 /// <summary>
@@ -14,11 +16,13 @@ public sealed record OccupancyDto(
 
 /// <summary>Operator-facing view of a contended (queued) reservation request.</summary>
 /// <param name="AgentId">The waiting agent.</param>
+/// <param name="ResourceKind">The kind of resource being waited on.</param>
 /// <param name="ResourceId">The resource being waited on.</param>
 /// <param name="HadWaitedTimeSeconds">Accumulated wait time (aged for fairness).</param>
 /// <param name="Priority">The request's scheduling priority.</param>
 public sealed record ContendedRequestDto(
     string AgentId,
+    ResourceKind ResourceKind,
     string ResourceId,
     int HadWaitedTimeSeconds,
     int Priority);

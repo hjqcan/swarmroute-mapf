@@ -83,6 +83,20 @@ public class ReservationTableTests
         Assert.Equal(AllocationOutcome.Granted, table.TryGrant(CpPath(300, 100, "X1", "S2", "X3"), "AGV-B"));
     }
 
+    [Fact]
+    public void Reversed_lane_overlap_is_queued_as_same_physical_edge_conflict()
+    {
+        var table = new ReservationTable(EmptyTopology);
+
+        Assert.Equal(AllocationOutcome.Granted, table.TryGrant(Path(Cell(Lane("A-B"), 0, 100)), "AGV-A"));
+
+        var outcome = table.TryGrant(Path(Cell(Lane("B-A"), 50, 150)), "AGV-B");
+
+        Assert.Equal(AllocationOutcome.Queued, outcome);
+        Assert.DoesNotContain(table.ActiveLeases, l => l.AgentId == "AGV-B");
+        Assert.Contains(table.ContendedRequests, r => r.AgentId == "AGV-B" && r.Resource == Lane("B-A"));
+    }
+
     // ---- Release-no-leak regression: ParentBlock + interference closure freed ----
 
     [Fact]
@@ -157,6 +171,29 @@ public class ReservationTableTests
     }
 
     [Fact]
+    public void FreeIntervals_treats_reversed_lane_as_busy()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        table.TryGrant(Path(Cell(Lane("B-A"), 100, 200)), "AGV-A");
+
+        var free = table.FreeIntervals(Lane("A-B"));
+
+        Assert.False(table.IsFree(Lane("A-B"), T(150, 160)));
+        Assert.Contains(free, s => s.Interval.StartMs == 0 && s.Interval.EndMs == 100);
+        Assert.Contains(free, s => s.Interval.StartMs == 200 && s.Interval.EndMs == long.MaxValue);
+    }
+
+    [Fact]
+    public void IsFreeForExcept_treats_reversed_lane_as_busy()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        table.TryGrant(Path(Cell(Lane("B-A"), 0, 100)), "AGV-A");
+
+        Assert.False(table.IsFreeForExcept(Lane("A-B"), T(50, 60), "AGV-B"));
+        Assert.True(table.IsFreeForExcept(Lane("A-B"), T(100, 120), "AGV-B"));
+    }
+
+    [Fact]
     public void StateVersion_increments_on_every_mutation()
     {
         var table = new ReservationTable(EmptyTopology);
@@ -183,6 +220,44 @@ public class ReservationTableTests
         Assert.Equal(Cp("S1"), evicted[0].Resource);
         Assert.Single(table.ActiveLeases);
         Assert.Equal(Cp("S2"), table.ActiveLeases[0].Resource);
+    }
+
+    [Fact]
+    public void ReleaseBehind_prunes_contended_requests_that_are_no_longer_blocked()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        table.TryGrant(Path(Cell(Cp("S1"), 0, 100)), "AGV-A");
+        table.TryGrant(Path(Cell(Cp("S1"), 50, 150)), "AGV-B");
+        Assert.Contains(table.ContendedRequests, r => r.AgentId == "AGV-B" && r.Resource == Cp("S1"));
+
+        table.ReleaseBehind("AGV-A", new[] { Cp("S1") });
+
+        Assert.DoesNotContain(table.ContendedRequests, r => r.AgentId == "AGV-B" && r.Resource == Cp("S1"));
+    }
+
+    [Fact]
+    public void Refresh_prunes_expired_contended_requests()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        table.TryGrant(Path(Cell(Cp("S1"), 0, 100)), "AGV-A");
+        table.TryGrant(Path(Cell(Cp("S1"), 50, 150)), "AGV-B");
+        Assert.Contains(table.ContendedRequests, r => r.AgentId == "AGV-B");
+
+        table.Refresh(nowMs: 200);
+
+        Assert.DoesNotContain(table.ContendedRequests, r => r.AgentId == "AGV-B");
+    }
+
+    [Fact]
+    public void RecordContention_is_idempotent_for_same_agent_resource_and_window()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        var request = new ReservationRequest("AGV-A", Cp("S1"), DateTime.UtcNow, 1, 0, T(0, 100), priority: 0);
+
+        table.RecordContention(request);
+        table.RecordContention(request);
+
+        Assert.Single(table.ContendedRequests);
     }
 
     [Fact]

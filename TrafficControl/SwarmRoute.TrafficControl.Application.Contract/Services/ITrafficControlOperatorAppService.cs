@@ -14,7 +14,8 @@ public interface ITrafficControlOperatorAppService
 
     /// <summary>
     /// Force-releases the leases described by <paramref name="request"/> (specific resources + closure, or all
-    /// of the agent's leases when none are specified). Returns the number of leases freed.
+    /// of the agent's leases when none are specified), publishes release events, and returns the number of
+    /// leases freed.
     /// </summary>
-    int ManualUnlock(ManualUnlockRequest request);
+    Task<int> ManualUnlockAsync(ManualUnlockRequest request, CancellationToken cancellationToken = default);
 }

@@ -119,7 +119,7 @@ public sealed class ReservationTable : Entity, IAggregateRoot
                     continue;
                 }
 
-                if (!IsFreeFor(resource, interval, agentId))
+                if (FindBlockingLease(resource, interval, agentId) is not null)
                 {
                     contended = true;
                     RecordContended(resource, agentId, interval, priority);
@@ -139,6 +139,7 @@ public sealed class ReservationTable : Entity, IAggregateRoot
             foreach (var (resource, interval) in requestedCells)
                 Insert(new ResourceLease(resource, agentId, interval, LeaseState.Reserved));
 
+            PruneSatisfiedContendedRequests();
             Touch();
             AddDomainEvent(new ReservationGrantedEvent(Id, agentId, requestedCells.Count));
             return AllocationOutcome.Granted;
@@ -174,10 +175,13 @@ public sealed class ReservationTable : Entity, IAggregateRoot
 
             var freed = RemoveWhere(agentId, lease => toRelease.Contains(lease.Resource));
 
-            if (freed.Count > 0)
+            var pruned = PruneSatisfiedContendedRequests();
+
+            if (freed.Count > 0 || pruned > 0)
             {
                 Touch();
-                AddDomainEvent(new ReservationReleasedEvent(Id, agentId, freed.Count, partial: true));
+                if (freed.Count > 0)
+                    AddDomainEvent(new ReservationReleasedEvent(Id, agentId, freed.Count, partial: true));
             }
 
             return freed;
@@ -194,12 +198,14 @@ public sealed class ReservationTable : Entity, IAggregateRoot
         {
             var freed = RemoveWhere(agentId, _ => true);
             // Drop the agent's contended requests as well — it no longer waits on anything.
-            _contended.RemoveAll(r => string.Equals(r.AgentId, agentId, StringComparison.Ordinal));
+            var pruned = _contended.RemoveAll(r => string.Equals(r.AgentId, agentId, StringComparison.Ordinal));
+            pruned += PruneSatisfiedContendedRequests();
 
-            if (freed.Count > 0)
+            if (freed.Count > 0 || pruned > 0)
             {
                 Touch();
-                AddDomainEvent(new ReservationReleasedEvent(Id, agentId, freed.Count, partial: false));
+                if (freed.Count > 0)
+                    AddDomainEvent(new ReservationReleasedEvent(Id, agentId, freed.Count, partial: false));
             }
 
             return freed;
@@ -222,7 +228,11 @@ public sealed class ReservationTable : Entity, IAggregateRoot
             var result = new List<SafeInterval>();
             long cursor = 0;
 
-            if (_byResource.TryGetValue(resource, out var leases) && leases.Count > 0)
+            var leases = LeasesConflictingWith(resource)
+                .OrderBy(l => l.Interval.StartMs)
+                .ToList();
+
+            if (leases.Count > 0)
             {
                 // leases kept sorted by start; walk them merging overlaps to find gaps.
                 long coveredEnd = long.MinValue;
@@ -267,9 +277,7 @@ public sealed class ReservationTable : Entity, IAggregateRoot
     {
         lock (_sync)
         {
-            if (!_byResource.TryGetValue(resource, out var leases))
-                return true;
-            return !leases.Any(l => l.Interval.Overlaps(interval));
+            return !LeasesConflictingWith(resource).Any(l => l.Interval.Overlaps(interval));
         }
     }
 
@@ -307,7 +315,9 @@ public sealed class ReservationTable : Entity, IAggregateRoot
                 evicted.AddRange(removed);
             }
 
-            if (evicted.Count > 0)
+            var pruned = PruneSatisfiedContendedRequests(nowMs);
+
+            if (evicted.Count > 0 || pruned > 0)
                 Touch();
 
             return evicted;
@@ -320,8 +330,8 @@ public sealed class ReservationTable : Entity, IAggregateRoot
         ArgumentNullException.ThrowIfNull(request);
         lock (_sync)
         {
-            _contended.Add(request);
-            Touch();
+            if (AddOrKeepContended(request))
+                Touch();
         }
     }
 
@@ -332,7 +342,9 @@ public sealed class ReservationTable : Entity, IAggregateRoot
         lock (_sync)
         {
             _contended.Clear();
-            _contended.AddRange(requests);
+            foreach (var request in requests)
+                AddOrKeepContended(request);
+            PruneSatisfiedContendedRequests();
             Touch();
         }
     }
@@ -350,6 +362,10 @@ public sealed class ReservationTable : Entity, IAggregateRoot
 
         lock (_sync)
         {
+            var pruned = PruneSatisfiedContendedRequests();
+            if (pruned > 0)
+                Touch();
+
             if (_contended.Count == 0)
                 return 0;
 
@@ -392,10 +408,7 @@ public sealed class ReservationTable : Entity, IAggregateRoot
     /// <summary>True when no <em>other</em> agent holds <paramref name="resource"/> over an overlapping window.</summary>
     private bool IsFreeFor(ResourceRef resource, TimeInterval interval, string agentId)
     {
-        if (!_byResource.TryGetValue(resource, out var leases))
-            return true;
-
-        foreach (var lease in leases)
+        foreach (var lease in LeasesConflictingWith(resource))
         {
             if (!string.Equals(lease.AgentId, agentId, StringComparison.Ordinal)
                 && lease.Interval.Overlaps(interval))
@@ -407,17 +420,16 @@ public sealed class ReservationTable : Entity, IAggregateRoot
     private void Insert(ResourceLease lease)
     {
         // Invariant guard: never insert a conflicting lease.
-        if (_byResource.TryGetValue(lease.Resource, out var existing))
+        foreach (var other in LeasesConflictingWith(lease.Resource))
         {
-            foreach (var other in existing)
-            {
-                if (lease.ConflictsWith(other))
-                    throw new InvalidOperationException(
-                        $"{TrafficControlErrorCodes.ConflictingLease}: {lease.Resource.Kind}:{lease.Resource.Id} " +
-                        $"already held by {other.AgentId} over an overlapping interval.");
-            }
+            if (!string.Equals(lease.AgentId, other.AgentId, StringComparison.Ordinal)
+                && lease.Interval.Overlaps(other.Interval))
+                throw new InvalidOperationException(
+                    $"{TrafficControlErrorCodes.ConflictingLease}: {lease.Resource.Kind}:{lease.Resource.Id} " +
+                    $"conflicts with {other.Resource.Kind}:{other.Resource.Id} held by {other.AgentId} over an overlapping interval.");
         }
-        else
+
+        if (!_byResource.TryGetValue(lease.Resource, out var existing))
         {
             existing = new List<ResourceLease>();
             _byResource[lease.Resource] = existing;
@@ -469,15 +481,71 @@ public sealed class ReservationTable : Entity, IAggregateRoot
 
     private void RecordContended(ResourceRef resource, string agentId, TimeInterval interval, int priority)
     {
-        _contended.Add(new ReservationRequest(
+        AddOrKeepContended(new ReservationRequest(
             agentId,
-            resource.Id,
+            resource,
             DateTime.UtcNow,
             estimateTime: (int)Math.Max(0, interval.Duration / 1000),
             hadWaitedTime: 0,
             requested: interval,
             priority: priority));
     }
+
+    private ResourceLease? FindBlockingLease(ResourceRef resource, TimeInterval interval, string agentId)
+        => LeasesConflictingWith(resource)
+            .FirstOrDefault(lease =>
+                !string.Equals(lease.AgentId, agentId, StringComparison.Ordinal)
+                && lease.Interval.Overlaps(interval));
+
+    private IEnumerable<ResourceLease> LeasesConflictingWith(ResourceRef resource)
+    {
+        foreach (var (heldResource, leases) in _byResource)
+        {
+            if (!ResourcesConflict(resource, heldResource))
+                continue;
+
+            foreach (var lease in leases)
+                yield return lease;
+        }
+    }
+
+    private static bool ResourcesConflict(ResourceRef a, ResourceRef b)
+        => a.Equals(b) || IsReversedLane(a, b);
+
+    private static bool IsReversedLane(ResourceRef a, ResourceRef b)
+    {
+        if (a.Kind != ResourceKind.Lane || b.Kind != ResourceKind.Lane)
+            return false;
+
+        var dashA = a.Id.IndexOf('-');
+        var dashB = b.Id.IndexOf('-');
+        if (dashA <= 0 || dashB <= 0)
+            return false;
+
+        var aStart = a.Id.AsSpan(0, dashA);
+        var aEnd = a.Id.AsSpan(dashA + 1);
+        var bStart = b.Id.AsSpan(0, dashB);
+        var bEnd = b.Id.AsSpan(dashB + 1);
+
+        return aStart.SequenceEqual(bEnd) && aEnd.SequenceEqual(bStart);
+    }
+
+    private bool AddOrKeepContended(ReservationRequest request)
+    {
+        if (_contended.Any(existing =>
+                string.Equals(existing.AgentId, request.AgentId, StringComparison.Ordinal)
+                && existing.Resource.Equals(request.Resource)
+                && existing.Requested.Equals(request.Requested)))
+            return false;
+
+        _contended.Add(request);
+        return true;
+    }
+
+    private int PruneSatisfiedContendedRequests(long? nowMs = null)
+        => _contended.RemoveAll(request =>
+            (nowMs is not null && request.Requested.EndMs <= nowMs.Value)
+            || IsFreeFor(request.Resource, request.Requested, request.AgentId));
 
     private void Touch()
     {

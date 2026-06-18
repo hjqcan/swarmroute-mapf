@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shared kernel + event-bus (real AddEventBus). -->
+    <ProjectReference Include="..\..\Shared\SwarmRoute.SpatioTemporal.Kernel\SwarmRoute.SpatioTemporal.Kernel.csproj" />
+    <ProjectReference Include="..\..\Shared\SwarmRoute.Domain.Abstractions\SwarmRoute.Domain.Abstractions.csproj" />
+    <ProjectReference Include="..\..\Shared\SwarmRoute.EventBus\SwarmRoute.EventBus.csproj" />
+
+    <!-- Map: only Domain (RoadmapGraph + entities) and Application.Contract (IRoadmapQueryService).
+         No Infra.Data → no Postgres dependency; the test supplies a graph-backed IRoadmapQueryService. -->
+    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Domain\SwarmRoute.Map.Domain.csproj" />
+    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Application.Contract\SwarmRoute.Map.Application.Contract.csproj" />
+
+    <!-- The REAL PathPlanning + TrafficControl + Deadlock services via their IServiceCollection bootstrappers. -->
+    <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Domain\SwarmRoute.PathPlanning.Domain.csproj" />
+    <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Infra.CrossCutting.IoC\SwarmRoute.PathPlanning.Infra.CrossCutting.IoC.csproj" />
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Domain\SwarmRoute.TrafficControl.Domain.csproj" />
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Domain.Shared\SwarmRoute.TrafficControl.Domain.Shared.csproj" />
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Application.Contract\SwarmRoute.TrafficControl.Application.Contract.csproj" />
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Infra.CrossCutting.IoC\SwarmRoute.TrafficControl.Infra.CrossCutting.IoC.csproj" />
+    <ProjectReference Include="..\..\Deadlock\SwarmRoute.Deadlock.Domain\SwarmRoute.Deadlock.Domain.csproj" />
+    <ProjectReference Include="..\..\Deadlock\SwarmRoute.Deadlock.Application.Contract\SwarmRoute.Deadlock.Application.Contract.csproj" />
+    <ProjectReference Include="..\..\Deadlock\SwarmRoute.Deadlock.Infra.CrossCutting.IoC\SwarmRoute.Deadlock.Infra.CrossCutting.IoC.csproj" />
+
+    <!-- Coordination cycle under test. -->
+    <ProjectReference Include="..\..\Coordination\SwarmRoute.Coordination.Application\SwarmRoute.Coordination.Application.csproj" />
+  </ItemGroup>
+
+</Project>

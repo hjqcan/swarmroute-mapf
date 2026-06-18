@@ -11,12 +11,24 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Context composition roots (each context's *NativeInjectorBootStrapper). -->
     <ProjectReference Include="..\..\Map\SwarmRoute.Map.Infra.CrossCutting.IoC\SwarmRoute.Map.Infra.CrossCutting.IoC.csproj" />
     <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Infra.CrossCutting.IoC\SwarmRoute.PathPlanning.Infra.CrossCutting.IoC.csproj" />
     <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Infra.CrossCutting.IoC\SwarmRoute.TrafficControl.Infra.CrossCutting.IoC.csproj" />
     <ProjectReference Include="..\..\Deadlock\SwarmRoute.Deadlock.Infra.CrossCutting.IoC\SwarmRoute.Deadlock.Infra.CrossCutting.IoC.csproj" />
     <ProjectReference Include="..\..\Coordination\SwarmRoute.Coordination.Application\SwarmRoute.Coordination.Application.csproj" />
     <ProjectReference Include="..\..\Shared\SwarmRoute.EventBus\SwarmRoute.EventBus.csproj" />
+
+    <!-- Api assemblies so their controllers are discovered as MVC application parts. -->
+    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Api\SwarmRoute.Map.Api.csproj" />
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Api\SwarmRoute.TrafficControl.Api.csproj" />
+
+    <!-- Domain/Contract references the Host adapters bind to (Map-backed IResourceTopology + avoidance selector). -->
+    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Domain\SwarmRoute.Map.Domain.csproj" />
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Domain\SwarmRoute.TrafficControl.Domain.csproj" />
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Application.Contract\SwarmRoute.TrafficControl.Application.Contract.csproj" />
+    <ProjectReference Include="..\..\Deadlock\SwarmRoute.Deadlock.Domain\SwarmRoute.Deadlock.Domain.csproj" />
+    <ProjectReference Include="..\..\Deadlock\SwarmRoute.Deadlock.Application\SwarmRoute.Deadlock.Application.csproj" />
   </ItemGroup>
 
 </Project>

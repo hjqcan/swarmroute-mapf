@@ -6,7 +6,7 @@
     <ProjectReference Include="..\..\lib\NetDevPack\src\NetDevPack\NetDevPack.csproj" />
     <ProjectReference Include="..\SwarmRoute.PathPlanning.Domain.Shared\SwarmRoute.PathPlanning.Domain.Shared.csproj" />
     <ProjectReference Include="..\..\src\vendor\SwarmRoute.Algorithms\SwarmRoute.Algorithms.csproj" />
-    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Application.Contract\SwarmRoute.Map.Application.Contract.csproj" />
+    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Domain\SwarmRoute.Map.Domain.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

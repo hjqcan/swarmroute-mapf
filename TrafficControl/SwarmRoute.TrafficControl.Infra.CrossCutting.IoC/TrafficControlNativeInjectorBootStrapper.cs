@@ -78,9 +78,9 @@ public static class TrafficControlNativeInjectorBootStrapper
         services.AddSingleton<IConflictDetector, ConflictDetector>();
 
         // Application services.
-        services.AddSingleton<ITrafficCoordinatorAppService, TrafficCoordinatorAppService>();
+        services.AddScoped<ITrafficCoordinatorAppService, TrafficCoordinatorAppService>();
         services.AddSingleton<ITrafficControlSnapshotProvider, TrafficControlSnapshotProvider>();
-        services.AddSingleton<ITrafficControlOperatorAppService, TrafficControlOperatorAppService>();
+        services.AddScoped<ITrafficControlOperatorAppService, TrafficControlOperatorAppService>();
 
         // *** Override PathPlanning's NullReservationQuery with the live reservation-table-backed query. ***
         // (Host registers PathPlanning first; this later registration wins.)

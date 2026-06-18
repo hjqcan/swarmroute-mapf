@@ -5,7 +5,7 @@ namespace SwarmRoute.TrafficControl.Domain.ValueObjects;
 
 /// <summary>
 /// A request to reserve a single resource, recorded when a grant is contended (denied/queued). Ports
-/// <c>AJR.MAPF.Map.ResourceRequest</c> (<see cref="AgentId"/>, <see cref="ResourceId"/>,
+/// <c>AJR.MAPF.Map.ResourceRequest</c> (<see cref="AgentId"/>, <see cref="Resource"/>,
 /// <see cref="RequestTime"/>, <see cref="EstimateTime"/>, <see cref="HadWaitedTime"/>) and augments it with
 /// the v0+ time-interval machinery (<see cref="Requested"/>) and an explicit <see cref="Priority"/> so the
 /// deterministic right-of-way tie-break has all the inputs it needs.
@@ -27,14 +27,35 @@ public sealed class ReservationRequest : ValueObject
         int hadWaitedTime,
         TimeInterval requested,
         int priority)
+        : this(
+            agentId,
+            new ResourceRef(ResourceKind.CP, resourceId),
+            requestTime,
+            estimateTime,
+            hadWaitedTime,
+            requested,
+            priority)
+    {
+    }
+
+    /// <summary>Creates a contended request for <paramref name="resource"/> by <paramref name="agentId"/>.</summary>
+    /// <exception cref="ArgumentException">Thrown when ids are null/whitespace.</exception>
+    public ReservationRequest(
+        string agentId,
+        ResourceRef resource,
+        DateTime requestTime,
+        int estimateTime,
+        int hadWaitedTime,
+        TimeInterval requested,
+        int priority)
     {
         if (string.IsNullOrWhiteSpace(agentId))
             throw new ArgumentException("Request agentId must be provided.", nameof(agentId));
-        if (string.IsNullOrWhiteSpace(resourceId))
-            throw new ArgumentException("Request resourceId must be provided.", nameof(resourceId));
+        if (string.IsNullOrWhiteSpace(resource.Id))
+            throw new ArgumentException("Request resource id must be provided.", nameof(resource));
 
         AgentId = agentId;
-        ResourceId = resourceId;
+        Resource = new ResourceRef(resource.Kind, resource.Id.Trim());
         RequestTime = requestTime;
         EstimateTime = estimateTime;
         HadWaitedTime = hadWaitedTime;
@@ -45,8 +66,11 @@ public sealed class ReservationRequest : ValueObject
     /// <summary>The requesting agent / vehicle id (ports <c>ResourceRequest.AgentId</c>).</summary>
     public string AgentId { get; }
 
-    /// <summary>The requested resource id (ports <c>ResourceRequest.ResourceId</c>).</summary>
-    public string ResourceId { get; }
+    /// <summary>The requested resource, including its kind so CP/Lane/Block ids cannot collide.</summary>
+    public ResourceRef Resource { get; }
+
+    /// <summary>The requested resource id (ports <c>ResourceRequest.ResourceId</c>); kind lives in <see cref="Resource"/>.</summary>
+    public string ResourceId => Resource.Id;
 
     /// <summary>Wall-clock time the request was made (ports <c>ResourceRequest.RequestTime</c>).</summary>
     public DateTime RequestTime { get; }
@@ -65,12 +89,12 @@ public sealed class ReservationRequest : ValueObject
 
     /// <summary>Returns a copy with <see cref="HadWaitedTime"/> increased by <paramref name="seconds"/> (used by escalation).</summary>
     public ReservationRequest AgedBy(int seconds)
-        => new(AgentId, ResourceId, RequestTime, EstimateTime, HadWaitedTime + seconds, Requested, Priority);
+        => new(AgentId, Resource, RequestTime, EstimateTime, HadWaitedTime + seconds, Requested, Priority);
 
     protected override IEnumerable<object> GetEqualityComponents()
     {
         yield return AgentId;
-        yield return ResourceId;
+        yield return Resource;
         yield return RequestTime;
         yield return EstimateTime;
         yield return HadWaitedTime;

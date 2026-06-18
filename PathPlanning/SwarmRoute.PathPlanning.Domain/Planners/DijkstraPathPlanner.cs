@@ -16,13 +16,13 @@ namespace SwarmRoute.PathPlanning.Domain.Planners;
 /// <remarks>
 /// <para><b>Failure branches (ported from <c>SearchPath</c> returning <c>null</c>):</b> unknown start/goal
 /// vertex, or no route from start to goal → <see cref="PlanResult.Failed(string)"/>.</para>
-/// <para><b>Timeline (v0 is space-only):</b> the path is given a well-formed, strictly monotonic,
-/// non-overlapping timeline by treating each edge's scaled weight as a proxy duration. Starting at
-/// <see cref="PlanRequest.ReleaseTimeMs"/>, cell <c>i</c> occupies <c>[t_i, t_{i+1})</c> where the increment
-/// is the weight of the edge leaving site <c>i</c>; the final (goal) cell is given a unit-length dwell so the
-/// half-open interval is non-degenerate. There is NO time-conflict logic yet — that is v1 SIPP.</para>
+/// <para><b>Timeline:</b> each graph edge contributes a directed Lane cell for the traversal window, and each
+/// site contributes a CP cell. CP and Lane cells for the same movement window intentionally overlap: the v0
+/// model reserves both the point and the segment for safety, while SIPP can later refine exact enter/exit
+/// timing without changing the resource vocabulary.</para>
 /// <para><b>Reservation awareness:</b> v0 accepts the <see cref="IReservationView"/> (so the call site is
-/// wired) but treats every resource as free — it does not consult the view. v1's SIPP planner will.</para>
+/// wired) but does not search safe intervals yet. It does enforce the request's blacklist over CP and Lane
+/// resources. v1's SIPP planner will additionally search the view in time.</para>
 /// </remarks>
 public sealed class DijkstraPathPlanner : IPathPlanner
 {
@@ -46,8 +46,7 @@ public sealed class DijkstraPathPlanner : IPathPlanner
         if (!graph.HasSite(request.ToSiteId))
             return PlanResult.Failed($"[{PathPlanningErrorCodes.UnknownSite}] Goal site '{request.ToSiteId}' is not in roadmap '{request.RoadmapId}'.");
 
-        // Port of CBS.SearchPath: Dijkstra shortest path; null => endpoint blocked / no route.
-        var sites = graph.ShortestPath(request.FromSiteId, request.ToSiteId);
+        var sites = ShortestPath(graph, request);
         if (sites is null || sites.Count == 0)
             return PlanResult.Failed($"[{PathPlanningErrorCodes.NoRoute}] No route from '{request.FromSiteId}' to '{request.ToSiteId}' in roadmap '{request.RoadmapId}'.");
 
@@ -55,10 +54,82 @@ public sealed class DijkstraPathPlanner : IPathPlanner
         return PlanResult.Succeeded(path, cost);
     }
 
+    private static IReadOnlyList<string>? ShortestPath(RoadmapGraph graph, PlanRequest request)
+    {
+        var start = request.FromSiteId;
+        var goal = request.ToSiteId;
+        if (string.Equals(start, goal, StringComparison.Ordinal))
+            return [start];
+
+        var distances = new Dictionary<string, long>(StringComparer.Ordinal)
+        {
+            [start] = 0
+        };
+        var previous = new Dictionary<string, string>(StringComparer.Ordinal);
+        var queue = new PriorityQueue<string, long>();
+        queue.Enqueue(start, 0);
+
+        while (queue.TryDequeue(out var current, out var currentDistance))
+        {
+            if (distances.TryGetValue(current, out var knownDistance) && currentDistance > knownDistance)
+                continue;
+
+            if (string.Equals(current, goal, StringComparison.Ordinal))
+                return Reconstruct(previous, start, goal);
+
+            foreach (var next in graph.Neighbours(current).OrderBy(id => id, StringComparer.Ordinal))
+            {
+                if (IsBlacklistedTransition(request, current, next))
+                    continue;
+
+                var weight = graph.EdgeWeight(current, next) ?? 1;
+                if (weight <= 0)
+                    weight = 1;
+
+                var candidate = currentDistance + weight;
+                if (distances.TryGetValue(next, out var best) && candidate >= best)
+                    continue;
+
+                distances[next] = candidate;
+                previous[next] = current;
+                queue.Enqueue(next, candidate);
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsBlacklistedTransition(PlanRequest request, string fromSiteId, string toSiteId)
+    {
+        if (!string.Equals(toSiteId, request.FromSiteId, StringComparison.Ordinal)
+            && !string.Equals(toSiteId, request.ToSiteId, StringComparison.Ordinal)
+            && (request.IsBlacklisted(toSiteId) || request.IsBlacklisted(RoadmapGraph.SiteRef(toSiteId))))
+            return true;
+
+        return request.IsBlacklisted(RoadmapGraph.LaneRef(fromSiteId, toSiteId));
+    }
+
+    private static IReadOnlyList<string> Reconstruct(
+        IReadOnlyDictionary<string, string> previous,
+        string start,
+        string goal)
+    {
+        var path = new List<string> { goal };
+        var current = goal;
+        while (!string.Equals(current, start, StringComparison.Ordinal))
+        {
+            current = previous[current];
+            path.Add(current);
+        }
+
+        path.Reverse();
+        return path;
+    }
+
     /// <summary>
-    /// Lifts an ordered site sequence into a monotonic, non-overlapping <see cref="SpaceTimePath"/> and its
-    /// <see cref="PlanCost"/>, using cumulative scaled edge weight as a proxy duration from
-    /// <paramref name="releaseTimeMs"/>.
+    /// Lifts an ordered site sequence into a <see cref="SpaceTimePath"/> and its <see cref="PlanCost"/>,
+    /// using cumulative scaled edge weight as a proxy duration from <paramref name="releaseTimeMs"/>. The CP
+    /// and Lane cells for one traversal share the same interval by design.
     /// </summary>
     private static (SpaceTimePath Path, PlanCost Cost) BuildTimeline(
         RoadmapGraph graph,
@@ -88,7 +159,9 @@ public sealed class DijkstraPathPlanner : IPathPlanner
                 weight = 1;
 
             var next = cursor + weight;
-            cells.Add(new SpaceTimeCell(RoadmapGraph.SiteRef(sites[i]), new TimeInterval(cursor, next)));
+            var traversal = new TimeInterval(cursor, next);
+            cells.Add(new SpaceTimeCell(RoadmapGraph.SiteRef(sites[i]), traversal));
+            cells.Add(new SpaceTimeCell(RoadmapGraph.LaneRef(sites[i], sites[i + 1]), traversal));
 
             totalDistance += weight;
             cursor = next;

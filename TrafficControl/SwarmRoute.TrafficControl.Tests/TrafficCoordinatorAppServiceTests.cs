@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NetDevPack.Messaging;
+using SwarmRoute.Domain.Abstractions.EventBus;
 using SwarmRoute.TrafficControl.Application.Contract.Services;
 using SwarmRoute.TrafficControl.Application.Services;
 using SwarmRoute.TrafficControl.Domain.Aggregates;
@@ -10,6 +12,17 @@ namespace SwarmRoute.TrafficControl.Tests;
 
 public class TrafficCoordinatorAppServiceTests
 {
+    private sealed class CapturingPublisher : IIntegrationEventPublisher
+    {
+        public List<Event> Published { get; } = [];
+
+        public Task PublishAsync(IEnumerable<Event> domainEvents, CancellationToken cancellationToken = default)
+        {
+            Published.AddRange(domainEvents);
+            return Task.CompletedTask;
+        }
+    }
+
     private static (ITrafficCoordinatorAppService svc, ReservationTable table) Build(IResourceTopology topology)
     {
         var table = new ReservationTable(topology);
@@ -48,5 +61,21 @@ public class TrafficCoordinatorAppServiceTests
         svc.Release("AGV-A", new[] { Cp("S1") });
 
         Assert.Empty(table.ActiveLeases); // closure fully released, no leak
+    }
+
+    [Fact]
+    public async Task ManualUnlock_drains_and_publishes_release_events()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        table.TryGrant(Path(Cell(Cp("S1"), 0, 100)), "AGV-A");
+        table.ClearDomainEvents();
+        var publisher = new CapturingPublisher();
+        var svc = new TrafficControlOperatorAppService(table, publisher);
+
+        var freed = await svc.ManualUnlockAsync(new("AGV-A", null));
+
+        Assert.Equal(1, freed);
+        Assert.Contains(publisher.Published, e => e.GetType().Name == "ReservationReleasedEvent");
+        Assert.True(table.DomainEvents is null || table.DomainEvents.Count == 0);
     }
 }

@@ -1,6 +1,7 @@
 using SwarmRoute.TrafficControl.Application.Contract.Dtos;
 using SwarmRoute.TrafficControl.Application.Contract.Services;
 using SwarmRoute.TrafficControl.Domain.Aggregates;
+using SwarmRoute.Domain.Abstractions.EventBus;
 
 namespace SwarmRoute.TrafficControl.Application.Services;
 
@@ -11,9 +12,15 @@ namespace SwarmRoute.TrafficControl.Application.Services;
 public sealed class TrafficControlOperatorAppService : ITrafficControlOperatorAppService
 {
     private readonly ReservationTable _table;
+    private readonly IIntegrationEventPublisher? _publisher;
 
-    public TrafficControlOperatorAppService(ReservationTable table)
-        => _table = table ?? throw new ArgumentNullException(nameof(table));
+    public TrafficControlOperatorAppService(
+        ReservationTable table,
+        IIntegrationEventPublisher? publisher = null)
+    {
+        _table = table ?? throw new ArgumentNullException(nameof(table));
+        _publisher = publisher;
+    }
 
     /// <inheritdoc />
     public OccupancyDto GetOccupancy()
@@ -24,14 +31,16 @@ public sealed class TrafficControlOperatorAppService : ITrafficControlOperatorAp
             .ToList();
 
         var contended = _table.ContendedRequests
-            .Select(r => new ContendedRequestDto(r.AgentId, r.ResourceId, r.HadWaitedTime, r.Priority))
+            .Select(r => new ContendedRequestDto(r.AgentId, r.Resource.Kind, r.Resource.Id, r.HadWaitedTime, r.Priority))
             .ToList();
 
         return new OccupancyDto(_table.StateVersion, leases, contended);
     }
 
     /// <inheritdoc />
-    public int ManualUnlock(ManualUnlockRequest request)
+    public async Task<int> ManualUnlockAsync(
+        ManualUnlockRequest request,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (string.IsNullOrWhiteSpace(request.AgentId))
@@ -41,6 +50,20 @@ public sealed class TrafficControlOperatorAppService : ITrafficControlOperatorAp
             ? _table.ReleaseBehind(request.AgentId, request.Resources)
             : _table.ReleaseAll(request.AgentId);
 
+        await DrainAndPublishAsync(cancellationToken).ConfigureAwait(false);
         return freed.Count;
+    }
+
+    private async Task DrainAndPublishAsync(CancellationToken cancellationToken)
+    {
+        var events = _table.DomainEvents;
+        if (events is null || events.Count == 0)
+            return;
+
+        var batch = events.ToList();
+        _table.ClearDomainEvents();
+
+        if (_publisher is not null)
+            await _publisher.PublishAsync(batch, cancellationToken).ConfigureAwait(false);
     }
 }

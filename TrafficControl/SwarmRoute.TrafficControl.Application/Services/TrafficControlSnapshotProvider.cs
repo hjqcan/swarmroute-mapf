@@ -8,8 +8,8 @@ namespace SwarmRoute.TrafficControl.Application.Services;
 /// Builds the immutable <see cref="ResourceAllocationGraphSnapshot"/> the Deadlock context consumes, from the
 /// live singleton <see cref="ReservationTable"/>:
 /// <list type="bullet">
-///   <item><description><c>Owns</c> = one <c>(AgentId, ResourceId)</c> edge per active lease (held resource);</description></item>
-///   <item><description><c>Waits</c> = one <c>(AgentId, ResourceId)</c> edge per queued / contended request.</description></item>
+///   <item><description><c>Owns</c> = one <c>(AgentId, Resource)</c> edge per active lease (held resource);</description></item>
+///   <item><description><c>Waits</c> = one <c>(AgentId, Resource)</c> edge per queued / contended request.</description></item>
 /// </list>
 /// The aggregate's accessors return stable copies, so the snapshot is internally consistent and Deadlock never
 /// holds a TrafficControl lock.
@@ -25,11 +25,11 @@ public sealed class TrafficControlSnapshotProvider : ITrafficControlSnapshotProv
     public ResourceAllocationGraphSnapshot GetSnapshot()
     {
         var owns = _table.ActiveLeases
-            .Select(l => (l.AgentId, l.Resource.Id))
+            .Select(l => (l.AgentId, l.Resource))
             .ToList();
 
         var waits = _table.ContendedRequests
-            .Select(r => (r.AgentId, r.ResourceId))
+            .Select(r => (r.AgentId, r.Resource))
             .ToList();
 
         return new ResourceAllocationGraphSnapshot(owns, waits);

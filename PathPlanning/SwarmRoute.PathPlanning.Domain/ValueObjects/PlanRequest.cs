@@ -1,5 +1,6 @@
 using NetDevPack.Domain;
 using SwarmRoute.PathPlanning.Domain.Shared;
+using SwarmRoute.SpatioTemporal.Kernel;
 
 namespace SwarmRoute.PathPlanning.Domain.ValueObjects;
 
@@ -8,10 +9,9 @@ namespace SwarmRoute.PathPlanning.Domain.ValueObjects;
 /// to <see cref="ToSiteId"/> on roadmap <see cref="RoadmapId"/>, departing no earlier than
 /// <see cref="ReleaseTimeMs"/> (fleet-clock milliseconds)".
 /// <para>
-/// <see cref="BlacklistedSiteIds"/> is an optional set of sites the plan must avoid (e.g. a contended
-/// resource the coordinator asked the planner to route around). v0's Dijkstra planner records it on the
-/// request but does not yet prune the graph by it — full blacklist-aware search arrives with the v1 SIPP
-/// planner / TrafficControl allocator.
+/// <see cref="BlacklistedResources"/> is an optional set of resources the plan must avoid (e.g. a contended
+/// CP or Lane the coordinator asked the planner to route around). <see cref="BlacklistedSiteIds"/> is kept as
+/// a CP-only convenience view for callers that still speak in site ids.
 /// </para>
 /// Mirrors the inputs of <c>CBS.SearchPath(agentId, startSiteId, endSiteId)</c>, lifted into a value object
 /// and extended with the time/blacklist dimensions the first-generation engine lacked.
@@ -19,6 +19,7 @@ namespace SwarmRoute.PathPlanning.Domain.ValueObjects;
 public sealed class PlanRequest : ValueObject
 {
     private readonly HashSet<string> _blacklistedSiteIds;
+    private readonly HashSet<ResourceRef> _blacklistedResources;
 
     /// <summary>
     /// Creates a validated plan request.
@@ -32,7 +33,8 @@ public sealed class PlanRequest : ValueObject
         string fromSiteId,
         string toSiteId,
         long releaseTimeMs = 0,
-        IEnumerable<string>? blacklistedSiteIds = null)
+        IEnumerable<string>? blacklistedSiteIds = null,
+        IEnumerable<ResourceRef>? blacklistedResources = null)
     {
         if (string.IsNullOrWhiteSpace(agentId))
             throw new ArgumentException($"[{PathPlanningErrorCodes.MissingIdentifier}] Agent id must not be empty.", nameof(agentId));
@@ -54,6 +56,24 @@ public sealed class PlanRequest : ValueObject
             : new HashSet<string>(
                 blacklistedSiteIds.Where(id => !string.IsNullOrWhiteSpace(id)).Select(id => id.Trim()),
                 StringComparer.Ordinal);
+
+        _blacklistedResources = new HashSet<ResourceRef>();
+        foreach (var siteId in _blacklistedSiteIds)
+            _blacklistedResources.Add(new ResourceRef(ResourceKind.CP, siteId));
+
+        if (blacklistedResources is not null)
+        {
+            foreach (var resource in blacklistedResources)
+            {
+                if (string.IsNullOrWhiteSpace(resource.Id))
+                    continue;
+
+                var normalized = new ResourceRef(resource.Kind, resource.Id.Trim());
+                _blacklistedResources.Add(normalized);
+                if (normalized.Kind == ResourceKind.CP)
+                    _blacklistedSiteIds.Add(normalized.Id);
+            }
+        }
     }
 
     /// <summary>The roadmap whose graph the plan is computed against.</summary>
@@ -71,11 +91,17 @@ public sealed class PlanRequest : ValueObject
     /// <summary>Earliest departure instant on the fleet clock, in milliseconds. The plan's timeline starts here.</summary>
     public long ReleaseTimeMs { get; }
 
-    /// <summary>Optional set of site ids the plan should avoid (reserved for v1 blacklist-aware search).</summary>
+    /// <summary>Optional set of site ids the plan should avoid.</summary>
     public IReadOnlyCollection<string> BlacklistedSiteIds => _blacklistedSiteIds;
+
+    /// <summary>Optional set of CP/Lane resources the plan should avoid.</summary>
+    public IReadOnlyCollection<ResourceRef> BlacklistedResources => _blacklistedResources;
 
     /// <summary>True when <paramref name="siteId"/> is on the blacklist.</summary>
     public bool IsBlacklisted(string siteId) => _blacklistedSiteIds.Contains(siteId);
+
+    /// <summary>True when <paramref name="resource"/> is on the blacklist.</summary>
+    public bool IsBlacklisted(ResourceRef resource) => _blacklistedResources.Contains(resource);
 
     protected override IEnumerable<object> GetEqualityComponents()
     {
@@ -84,7 +110,9 @@ public sealed class PlanRequest : ValueObject
         yield return FromSiteId;
         yield return ToSiteId;
         yield return ReleaseTimeMs;
-        foreach (var id in _blacklistedSiteIds.OrderBy(id => id, StringComparer.Ordinal))
-            yield return id;
+        foreach (var resource in _blacklistedResources
+                     .OrderBy(r => r.Kind)
+                     .ThenBy(r => r.Id, StringComparer.Ordinal))
+            yield return resource;
     }
 }

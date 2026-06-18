@@ -5,12 +5,8 @@ namespace SwarmRoute.SpatioTemporal.Kernel;
 /// Deadlock context to build its wait-for graph and run cycle detection. TrafficControl produces it;
 /// Deadlock consumes it (never mutating, never holding TrafficControl locks).
 /// </summary>
-/// <param name="Owns">
-/// "Owns" / held edges: agent <c>AgentId</c> currently holds resource <c>ResourceId</c>.
-/// </param>
-/// <param name="Waits">
-/// "Waits" / request edges: agent <c>AgentId</c> is blocked waiting on resource <c>ResourceId</c>.
-/// </param>
+/// <param name="Owns">"Owns" / held edges: agent <c>AgentId</c> currently holds <c>Resource</c>.</param>
+/// <param name="Waits">"Waits" / request edges: agent <c>AgentId</c> is blocked waiting on <c>Resource</c>.</param>
 public sealed record ResourceAllocationGraphSnapshot(
-    IReadOnlyList<(string AgentId, string ResourceId)> Owns,
-    IReadOnlyList<(string AgentId, string ResourceId)> Waits);
+    IReadOnlyList<(string AgentId, ResourceRef Resource)> Owns,
+    IReadOnlyList<(string AgentId, ResourceRef Resource)> Waits);

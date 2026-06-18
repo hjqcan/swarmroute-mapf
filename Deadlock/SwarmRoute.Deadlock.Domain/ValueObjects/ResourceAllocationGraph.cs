@@ -44,22 +44,22 @@ public sealed class ResourceAllocationGraph : ValueObject
     /// <summary>Vertex-name prefix for the (edge-less) "applied for" marker nodes, kept for fidelity.</summary>
     public const string ApplyPrefix = "applySite_";
 
-    private readonly IReadOnlyList<(string AgentId, string ResourceId)> _owns;
-    private readonly IReadOnlyList<(string AgentId, string ResourceId)> _waits;
+    private readonly IReadOnlyList<(string AgentId, ResourceRef Resource)> _owns;
+    private readonly IReadOnlyList<(string AgentId, ResourceRef Resource)> _waits;
 
     private ResourceAllocationGraph(
-        IReadOnlyList<(string AgentId, string ResourceId)> owns,
-        IReadOnlyList<(string AgentId, string ResourceId)> waits)
+        IReadOnlyList<(string AgentId, ResourceRef Resource)> owns,
+        IReadOnlyList<(string AgentId, ResourceRef Resource)> waits)
     {
         _owns = owns;
         _waits = waits;
     }
 
     /// <summary>"Held" edges: agent currently owns resource.</summary>
-    public IReadOnlyList<(string AgentId, string ResourceId)> Owns => _owns;
+    public IReadOnlyList<(string AgentId, ResourceRef Resource)> Owns => _owns;
 
     /// <summary>"Request" edges: agent is blocked waiting on resource.</summary>
-    public IReadOnlyList<(string AgentId, string ResourceId)> Waits => _waits;
+    public IReadOnlyList<(string AgentId, ResourceRef Resource)> Waits => _waits;
 
     /// <summary>An empty graph (no ownership, no waits).</summary>
     public static ResourceAllocationGraph Empty { get; } = new([], []);
@@ -78,22 +78,22 @@ public sealed class ResourceAllocationGraph : ValueObject
         return new ResourceAllocationGraph(owns, waits);
     }
 
-    private static IReadOnlyList<(string AgentId, string ResourceId)> Normalize(
-        IReadOnlyList<(string AgentId, string ResourceId)>? edges,
+    private static IReadOnlyList<(string AgentId, ResourceRef Resource)> Normalize(
+        IReadOnlyList<(string AgentId, ResourceRef Resource)>? edges,
         string paramName)
     {
         if (edges is null || edges.Count == 0)
             return [];
 
-        var result = new List<(string AgentId, string ResourceId)>(edges.Count);
-        foreach (var (agentId, resourceId) in edges)
+        var result = new List<(string AgentId, ResourceRef Resource)>(edges.Count);
+        foreach (var (agentId, resource) in edges)
         {
             if (string.IsNullOrWhiteSpace(agentId))
                 throw new ArgumentException(DeadlockErrorCodes.InvalidAgentId, paramName);
-            if (string.IsNullOrWhiteSpace(resourceId))
+            if (string.IsNullOrWhiteSpace(resource.Id))
                 throw new ArgumentException(DeadlockErrorCodes.InvalidResourceId, paramName);
 
-            result.Add((agentId.Trim(), resourceId.Trim()));
+            result.Add((agentId.Trim(), new ResourceRef(resource.Kind, resource.Id.Trim())));
         }
 
         return result;
@@ -118,42 +118,44 @@ public sealed class ResourceAllocationGraph : ValueObject
         vertices.AddRange(agentIds.Select(a => AgentPrefix + a));
 
         // shared resource vertices that ownership and wait edges pivot on
-        var ownedResourceIds = _owns.Select(e => e.ResourceId).Distinct().ToList();
-        vertices.AddRange(ownedResourceIds.Select(r => ResourcePrefix + r));
+        var ownedResources = _owns.Select(e => e.Resource).Distinct().ToList();
+        vertices.AddRange(ownedResources.Select(r => ResourcePrefix + ResourceKey(r)));
 
         // also add resource vertices for resources that are only waited-on (so wait edges have an endpoint)
-        var waitedResourceIds = _waits.Select(e => e.ResourceId).Distinct();
-        foreach (var r in waitedResourceIds)
+        var waitedResources = _waits.Select(e => e.Resource).Distinct();
+        foreach (var r in waitedResources)
         {
-            var vertex = ResourcePrefix + r;
+            var vertex = ResourcePrefix + ResourceKey(r);
             if (!vertices.Contains(vertex))
                 vertices.Add(vertex);
         }
 
         // applySite_ marker vertices (edge-less, kept for source fidelity / observability)
-        vertices.AddRange(_waits.Select(e => ApplyPrefix + e.ResourceId).Distinct());
+        vertices.AddRange(_waits.Select(e => ApplyPrefix + ResourceKey(e.Resource)).Distinct());
 
         graph.AddVertices(vertices.Distinct().ToList());
 
         // ----- edges -----
         // ownership: resource -> owner agent
-        foreach (var (agentId, resourceId) in _owns)
-            graph.AddEdge(ResourcePrefix + resourceId, AgentPrefix + agentId);
+        foreach (var (agentId, resource) in _owns)
+            graph.AddEdge(ResourcePrefix + ResourceKey(resource), AgentPrefix + agentId);
 
         // wait-for: waiter agent -> resource
-        foreach (var (agentId, resourceId) in _waits)
-            graph.AddEdge(AgentPrefix + agentId, ResourcePrefix + resourceId);
+        foreach (var (agentId, resource) in _waits)
+            graph.AddEdge(AgentPrefix + agentId, ResourcePrefix + ResourceKey(resource));
 
         return graph;
     }
 
+    public static string ResourceKey(ResourceRef resource) => $"{resource.Kind}:{resource.Id}";
+
     protected override IEnumerable<object> GetEqualityComponents()
     {
-        foreach (var edge in _owns.OrderBy(e => e.AgentId).ThenBy(e => e.ResourceId))
-            yield return $"O:{edge.AgentId}->{edge.ResourceId}";
+        foreach (var edge in _owns.OrderBy(e => e.AgentId).ThenBy(e => ResourceKey(e.Resource)))
+            yield return $"O:{edge.AgentId}->{ResourceKey(edge.Resource)}";
         // separator so owns/waits with swapped roles are not considered equal
         yield return "|";
-        foreach (var edge in _waits.OrderBy(e => e.AgentId).ThenBy(e => e.ResourceId))
-            yield return $"W:{edge.AgentId}->{edge.ResourceId}";
+        foreach (var edge in _waits.OrderBy(e => e.AgentId).ThenBy(e => ResourceKey(e.Resource)))
+            yield return $"W:{edge.AgentId}->{ResourceKey(edge.Resource)}";
     }
 }

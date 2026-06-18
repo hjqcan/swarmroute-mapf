@@ -1,6 +1,7 @@
 using System.Linq;
 using AJR.Platform.Algorithms.Graphs;
 using SwarmRoute.Deadlock.Domain.ValueObjects;
+using SwarmRoute.SpatioTemporal.Kernel;
 
 namespace SwarmRoute.Deadlock.Tests;
 
@@ -19,16 +20,16 @@ public class ResourceAllocationGraphTests
         // agent + occupySite + applySite vertices present
         Assert.True(graph.HasVertex("agent_A"));
         Assert.True(graph.HasVertex("agent_B"));
-        Assert.True(graph.HasVertex("occupySite_r1"));
-        Assert.True(graph.HasVertex("occupySite_r2"));
+        Assert.True(graph.HasVertex("occupySite_CP:r1"));
+        Assert.True(graph.HasVertex("occupySite_CP:r2"));
 
         // ownership: resource -> owner
-        Assert.True(graph.HasEdge("occupySite_r1", "agent_A"));
-        Assert.True(graph.HasEdge("occupySite_r2", "agent_B"));
+        Assert.True(graph.HasEdge("occupySite_CP:r1", "agent_A"));
+        Assert.True(graph.HasEdge("occupySite_CP:r2", "agent_B"));
 
         // wait-for: waiter -> resource
-        Assert.True(graph.HasEdge("agent_A", "occupySite_r2"));
-        Assert.True(graph.HasEdge("agent_B", "occupySite_r1"));
+        Assert.True(graph.HasEdge("agent_A", "occupySite_CP:r2"));
+        Assert.True(graph.HasEdge("agent_B", "occupySite_CP:r1"));
     }
 
     [Fact]
@@ -79,5 +80,22 @@ public class ResourceAllocationGraphTests
             new SnapshotBuilder().Waits("A", "r1").Build());
 
         Assert.NotEqual(owns, waits);
+    }
+
+    [Fact]
+    public void Resource_key_includes_kind()
+    {
+        var cp = new ResourceRef(ResourceKind.CP, "S1");
+        var lane = new ResourceRef(ResourceKind.Lane, "S1");
+        var graph = ResourceAllocationGraph.FromSnapshot(
+            new SnapshotBuilder()
+                .Owns("A", cp)
+                .Owns("B", lane)
+                .Build()).Build();
+
+        Assert.True(graph.HasVertex("occupySite_CP:S1"));
+        Assert.True(graph.HasVertex("occupySite_Lane:S1"));
+        Assert.True(graph.HasEdge("occupySite_CP:S1", "agent_A"));
+        Assert.True(graph.HasEdge("occupySite_Lane:S1", "agent_B"));
     }
 }

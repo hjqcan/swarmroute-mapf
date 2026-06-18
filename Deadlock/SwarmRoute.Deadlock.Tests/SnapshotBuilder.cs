@@ -8,18 +8,24 @@ namespace SwarmRoute.Deadlock.Tests;
 /// </summary>
 internal sealed class SnapshotBuilder
 {
-    private readonly List<(string AgentId, string ResourceId)> _owns = [];
-    private readonly List<(string AgentId, string ResourceId)> _waits = [];
+    private readonly List<(string AgentId, ResourceRef Resource)> _owns = [];
+    private readonly List<(string AgentId, ResourceRef Resource)> _waits = [];
 
     public SnapshotBuilder Owns(string agentId, string resourceId)
+        => Owns(agentId, new ResourceRef(ResourceKind.CP, resourceId));
+
+    public SnapshotBuilder Owns(string agentId, ResourceRef resource)
     {
-        _owns.Add((agentId, resourceId));
+        _owns.Add((agentId, resource));
         return this;
     }
 
     public SnapshotBuilder Waits(string agentId, string resourceId)
+        => Waits(agentId, new ResourceRef(ResourceKind.CP, resourceId));
+
+    public SnapshotBuilder Waits(string agentId, ResourceRef resource)
     {
-        _waits.Add((agentId, resourceId));
+        _waits.Add((agentId, resource));
         return this;
     }
 

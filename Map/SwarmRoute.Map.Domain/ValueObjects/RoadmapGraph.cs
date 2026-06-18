@@ -131,6 +131,13 @@ public sealed class RoadmapGraph : ValueObject
     /// <summary>Convenience: wraps a vertex id as a Kernel <see cref="ResourceRef"/> of kind <see cref="ResourceKind.CP"/>.</summary>
     public static ResourceRef SiteRef(string siteId) => new(ResourceKind.CP, siteId);
 
+    /// <summary>Stable directed-lane id using the engine's <c>"start-end"</c> convention.</summary>
+    public static string LaneId(string fromSiteId, string toSiteId) => $"{fromSiteId}-{toSiteId}";
+
+    /// <summary>Convenience: wraps a directed edge as a Kernel <see cref="ResourceRef"/> of kind <see cref="ResourceKind.Lane"/>.</summary>
+    public static ResourceRef LaneRef(string fromSiteId, string toSiteId)
+        => new(ResourceKind.Lane, LaneId(fromSiteId, toSiteId));
+
     protected override IEnumerable<object> GetEqualityComponents()
     {
         foreach (var v in _graph.Vertices.OrderBy(v => v, StringComparer.Ordinal))

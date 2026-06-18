@@ -41,8 +41,8 @@ public sealed class TrafficController : ControllerBase
         var snapshot = _snapshotProvider.GetSnapshot();
         return Ok(new
         {
-            Owns = snapshot.Owns.Select(e => new { e.AgentId, e.ResourceId }),
-            Waits = snapshot.Waits.Select(e => new { e.AgentId, e.ResourceId })
+            Owns = snapshot.Owns.Select(e => new { e.AgentId, e.Resource.Kind, e.Resource.Id }),
+            Waits = snapshot.Waits.Select(e => new { e.AgentId, e.Resource.Kind, e.Resource.Id })
         });
     }
 
@@ -54,12 +54,14 @@ public sealed class TrafficController : ControllerBase
     [HttpPost("unlock")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public IActionResult ManualUnlock([FromBody] ManualUnlockRequest request)
+    public async Task<IActionResult> ManualUnlock(
+        [FromBody] ManualUnlockRequest request,
+        CancellationToken cancellationToken)
     {
         if (request is null || string.IsNullOrWhiteSpace(request.AgentId))
             return BadRequest(new ProblemDetails { Title = "agentId is required" });
 
-        var freed = _operator.ManualUnlock(request);
+        var freed = await _operator.ManualUnlockAsync(request, cancellationToken).ConfigureAwait(false);
         return Ok(new { request.AgentId, FreedLeases = freed });
     }
 }
