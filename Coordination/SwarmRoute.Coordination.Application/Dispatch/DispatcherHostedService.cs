@@ -13,10 +13,10 @@ public sealed class DispatcherOptions
 
 /// <summary>
 /// Drives the autonomous <see cref="DispatcherService"/> on a <see cref="PeriodicTimer"/>: each tick it advances
-/// the fleet one step and re-assigns idle vehicles. Registered only when the host has a dispatcher fleet wired
+/// demo poses one step and re-assigns idle vehicles. Registered only when the host has a dispatcher fleet wired
 /// (see the Host composition root); the lifelong <see cref="FleetCoordinationLoop"/> independently plans and
-/// reserves the goal book this service maintains. Exceptions in a tick are logged and swallowed so one bad tick
-/// never tears down the loop.
+/// reserves the goal book this service maintains, but this demo driver does not treat reservation grants as
+/// movement authority. Exceptions in a tick are logged and swallowed so one bad tick never tears down the loop.
 /// </summary>
 public sealed class DispatcherHostedService : BackgroundService
 {

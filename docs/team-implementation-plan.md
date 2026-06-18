@@ -8,7 +8,7 @@
 
 ## 1. 目標與交付定義
 
-**本計劃交付**：一套可編譯、可執行、跑在 **.NET 10** 上的 4 上下文 DDD 方案 `SwarmRoute.Mapf.sln`，並把現有引擎移植成 **v0 多機基線**（剪枝 Dijkstra 規劃 + 整路上鎖交管 + RAG 死鎖偵測與最小恢復）。v1–v3（時空預約/SIPP、優先級/RHCR、CBS/PIBT）為後續里程碑，不在本計劃範圍但介面已預留。
+**本計劃交付狀態**：一套可編譯、可執行、跑在 **.NET 10** 上的 4 上下文 DDD 方案 `SwarmRoute.Mapf.sln` 已完成；**v0 多機基線**（剪枝 Dijkstra 規劃 + 整路上鎖交管 + RAG 死鎖偵測與最小恢復）已關閉；**v1 時空預約/SIPP** 也已透過真實 Coordination + PathPlanning + TrafficControl + Simulation 閉環驗證。v2–v3（優先級/RHCR、CBS/PIBT、連續時間 SIPPwRT）為後續里程碑。
 
 **里程碑**
 
@@ -190,7 +190,7 @@ QA                        WS-Q ──  WS-Q ──  WS-Q ──  WS-Q
 |---|---|:--:|---|
 | WS-X1 | Docker Compose（PostgreSQL + RabbitMQ）+ 切換真實 CAP 端到端 | 3 | `docker compose up` 後 M3 場景可跑 |
 | WS-X2 | 可觀測性：結構化日誌、基本 metrics（規劃延遲/預約數/死鎖數）、健康檢查 | 3 | 儀表板可見關鍵指標 |
-| WS-X3 | 文件：README、執行指南、ADR 收斂、v1 交接說明 | 2 | 新人可照文件跑起來 |
+| WS-X3 | 文件：README、執行指南、ADR 收斂、v1 閉環說明 | 2 | 新人可照文件跑起來 |
 
 **估算合計 ≈ 99 ED**（不含 review/會議/緩衝）。5 名工程師 × 12 週 ≈ 300 dev-day 容量，留足緩衝與未知。
 
@@ -228,7 +228,7 @@ QA                        WS-Q ──  WS-Q ──  WS-Q ──  WS-Q
 |---|---|:--:|---|---|---|
 | ~~R1~~ | ~~NetDevPack fork 不在 workspace~~ **已解決** | — | TL | 使用者已提供於 `lib/NetDevPack/src/NetDevPack`（netstandard2.1、相容 net10、免 retarget），以 ProjectReference 納入 | 已關閉 |
 | R2 | 即時預約狀態若每 tick 寫 DB 會跟不上 | 中 | Traffic | 權威狀態走**記憶體聚合**（`StateVersion`），EF 僅快照/稽核（ADR-002） | 設計 review |
-| R3 | v0 整路上鎖被寫死、阻礙 v1 SIPP | 中 | TL | `ReservationTable/ResourceLease/SpaceTimeCell` 一開始即以**時間區間**為基礎；鎖模型只是 v0 allocator 策略 | WS4 設計 review |
+| ~~R3~~ | ~~v0 整路上鎖被寫死、阻礙 v1 SIPP~~ **已關閉** | — | TL | v1 已以 `SippPathPlanner` + `FreeIntervals` + schedule-faithful 執行證明鎖模型是策略替換，不是重寫 | 已關閉 |
 | R4 | 單一 `ReservationTable` 聚合為爭用瓶頸 | 低（起步） | Traffic | 先讓 `ResourceLease` 可獨立定址；規模化再按 zone 分片 | 壓測指標 |
 | R5 | algorithms 庫授權/目標框架 | 低 | Platform | retarget net10 前確認無授權限制 | WS0-3 |
 | R6 | 迴圈節奏/重規劃不確定 → livelock | 中 | Algo | ADR-003 定義事件驅動 + watchdog tick + 確定性 tie-break；WS-Q3 專測 livelock | WS-Q3 |
@@ -253,8 +253,8 @@ QA                        WS-Q ──  WS-Q ──  WS-Q ──  WS-Q
 ## 11. 假設、相依與伸縮
 
 - **相依（外部）**：NetDevPack 已由使用者提供於 `lib/NetDevPack`（R1 關閉）；使用者提供範例路網（或用 `AJR.Platform.Minimal` 的 `MapInfo.MapJson` 取材）。
-- **假設**：團隊熟 .NET/EF/DDD；CI 平台與雲端資源就緒；v1（SIPP）為下一里程碑、本期僅預留介面。
+- **假設**：團隊熟 .NET/EF/DDD；CI 平台與雲端資源就緒；v1（SIPP）已閉環，後續工作從 v2 優先級/RHCR 與預防式 liveness 開始。
 - **團隊伸縮**：
   - **4 人精簡**：TL 兼 Coordination/Host；Platform 兼 QA 自動化；Map 與 Traffic 各 1；Algo 1（Planning+Deadlock 串行）。里程碑順延約 2–3 週。
   - **8 人加速**：Planning 與 Deadlock 拆兩人；加 1 QA 專注場景庫；加 1 DevEx/SRE 顧 CI/可觀測性。WS4 可再切子卡並行。
-- **下一里程碑（v1 預告）**：TrafficControl 導 `TimeInterval/Headway` + `SafeIntervals()`；PathPlanning 換 `SippPathPlanner`；介面不變，只換實作——本計劃的契約設計已為此預留。
+- **下一里程碑（v2）**：優先級 SIPP / PIBT、Coordination 滾動時窗（RHCR）、以及 grant 前 `WouldCloseCycle` 預防式拒環；v1 已證明介面不變即可加深 planner 智能。

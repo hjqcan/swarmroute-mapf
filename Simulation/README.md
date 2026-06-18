@@ -21,7 +21,7 @@ Two assemblies complete the story; both live outside `Simulation.Application` be
 
 ## 2. Per-request engine — isolation by construction
 
-`InMemorySimulationEngineFactory.Create(RoadmapGraph)` (`InMemorySimulationEngineFactory.cs:20-44`) builds a **fresh `ServiceCollection` and `ServiceProvider` per call**:
+`InMemorySimulationEngineFactory.Create(RoadmapGraph, PlannerKind)` builds a **fresh `ServiceCollection` and `ServiceProvider` per call**:
 
 ```csharp
 var roadmapId = Guid.NewGuid();
@@ -29,6 +29,7 @@ var services = new ServiceCollection();
 services.AddLogging();
 services.AddEventBus();
 services.AddSingleton<IRoadmapQueryService>(new InMemoryRoadmapQueryService(roadmapId, graph));
+services.AddSingleton(new PlannerOptions { Default = planner });
 PathPlanningNativeInjectorBootStrapper.RegisterServices(services);
 TrafficControlNativeInjectorBootStrapper.RegisterServices(services);
 services.AddCoordination();
@@ -77,7 +78,7 @@ It keeps per-agent run state in a private `RunAgent` (`FleetLoopDriver.cs:102-12
         │        for each reserved result: EnRoute=true, Idx=0, CpRoute = path's CP cells           │
         │        (assert CpRoute runs Start→Goal, else throw FleetLoopException)                    │
         │                                                                                           │
-        │  (2) ADVANCE each en-route agent at most ONE CP — through the RIGHT-OF-WAY GATE:           │
+        │  (2) ADVANCE en-route agents: greedy gate for Dijkstra, schedule-faithful for SIPP         │
         │        occupantNow  = who physically sits on each CP at tick start                        │
         │        claimedNext  = CPs held after this tick (seed: every NON-mover keeps its CP)        │
         │        for each mover (priority order):                                                   │
@@ -101,15 +102,15 @@ It keeps per-agent run state in a private `RunAgent` (`FleetLoopDriver.cs:102-12
 
 **(1) Plan + reserve pending agents.** Every agent that is `!Done && !EnRoute` becomes an `AgentGoal(Id, Start, Goal, Priority)` (`FleetLoopDriver.cs:195-198`) and the batch is handed to `cycle.RunCycleAsync(roadmapId, pending, blocked, ct)` (`FleetLoopDriver.cs:205`). Crucially, **`parkedCells` is passed as the `blockedResources` set** — `parkedCells.Select(RoadmapGraph.SiteRef).ToHashSet()` (`FleetLoopDriver.cs:202-204`) — so the planner routes the rest of the fleet *around* agents that have already finished and are sitting on their goal CPs. For each reserved result the driver flips the agent en route, extracts its `CpRoute` (the `ResourceKind.CP` cells of the returned `SpaceTimePath`, `FleetLoopDriver.cs:216-219`), caches `AllResources` for later release, and accumulates `Replans += max(0, Attempts-1)` (attempts beyond the first are the cycle's internal prune-and-replan retries). It then asserts the reserved path actually runs `Start → Goal`, throwing `FleetLoopException` only if that internal invariant is violated (`FleetLoopDriver.cs:222-225`).
 
-**(2) The right-of-way gate — the final collision guarantee.** This is the executor's stop-and-wait. Two structures are built each tick (`FleetLoopDriver.cs:247-250`):
+**(2) Execution mode — greedy gate or schedule-faithful SIPP.** Dijkstra runs through the v0 stop-and-wait gate. SIPP runs schedule-faithfully: an agent advances when the next CP's planned entry tick has arrived, and the driver resolves the candidate moves to keep all post-move CPs distinct. Two structures still protect execution (`FleetLoopDriver.cs`):
 - `occupantNow` — which agent physically sits on each CP at the *start* of the tick (pending agents on their origin, en-route on their current CP, arrived on their goal).
 - `claimedNext` — the CPs that will be occupied *after* the tick. It is **seeded with every non-mover's position**, so a mover can never step onto a cell a waiting or parked agent holds.
 
-Then, for each en-route agent (in the stable priority order), looking at the next CP `toCp` (`FleetLoopDriver.cs:252-294`):
+Then, for each en-route agent (in the stable priority order), looking at the next CP `toCp`:
 
 1. **Parked blocker → re-route.** If `occupant.Done` (a finished vehicle is permanently parked on `toCp`), waiting would never clear. So the agent **drops its reservation** (`ReleaseAsync(held)`), sets `EnRoute=false`, `Start = fromCp`, resets its route to `[fromCp]`, and rejoins planning next cycle (`FleetLoopDriver.cs:263-278`). Because the parked cell is already in `parkedCells`, the next plan routes around it. `Replans++`.
-2. **Transient blocker → wait.** If `toCp` is already in `claimedNext` (a higher-priority mover took it) **or** still occupied now, the agent **holds position**: it adds `fromCp` to `claimedNext` and keeps all its leases (`FleetLoopDriver.cs:281-285`). It retries next tick.
-3. **Clear → advance one CP.** Otherwise `Idx++`, claim `toCp`, and `ReleaseAsync` the cell+lane just vacated — the `fromCp` CP and the `fromCp→toCp` `Lane` (`FleetLoopDriver.cs:287-293`) — handing them back to the reservation table so trailing/crossing agents can use them.
+2. **Transient blocker → wait.** In greedy mode, if `toCp` is already in `claimedNext` (a higher-priority mover took it) **or** still occupied now, the agent **holds position** and keeps all leases. In schedule-faithful mode, a non-advance is a planned wait unless the defensive resolver had to revoke the move.
+3. **Clear / scheduled → advance one CP.** Otherwise `Idx++`, claim `toCp`, and `ReleaseAsync` the cell+lane just vacated — the `fromCp` CP and the `fromCp→toCp` `Lane` — handing them back to the reservation table so trailing/crossing agents can use them.
 
 On reaching the last CP the agent becomes `Done`, its goal CP is added to `parkedCells`, and **all still-held resources are released** (no lease leak) (`FleetLoopDriver.cs:296-305`).
 
@@ -138,7 +139,7 @@ The gate guarantees safety, but the whole point of the simulation is to verify t
 
 - **Honest non-convergence.** When the grid is dense, whole-path reservation can serialise agents and the conservative gate makes trailing vehicles wait. If the fleet still hasn't all arrived within `maxTicks`, the loop sets `DidNotConverge` and breaks (`FleetLoopDriver.cs:180-185`) rather than colliding or truncating silently. Dense instances thus *report* the limitation truthfully.
 - **Parked-vehicle rerouting** (step (2).1 + `parkedCells`) is the liveness escape valve: a finished agent on a goal CP becomes a planner obstacle, so the rest of the fleet routes around it instead of deadlocking behind it forever.
-- **The gate is conservative.** A trailing vehicle waits one tick for the cell ahead to clear, trading a little throughput for a hard no-collision guarantee. v1's SIPP planner (§8) will recover that throughput by routing in time rather than stop-and-wait.
+- **Execution is planner-aware.** Dijkstra uses the conservative gate, so a trailing vehicle may wait one tick for the cell ahead to clear. SIPP uses the planned CP entry ticks and recovers that throughput by routing in time rather than reacting at the gate.
 
 `FleetLoopStatus` (`FleetLoopDriver.cs:28-38`): `Completed` (all arrived, no collision), `CollisionDetected` (regression signal — should never occur), `DidNotConverge` (tick budget exhausted: livelock / deadlock / starvation).
 
@@ -151,9 +152,9 @@ The gate guarantees safety, but the whole point of the simulation is to verify t
 1. **Validate** (`SimulationService.cs:68-84`): `Width ≥ 1`, `Height ≥ 1`, `AgvCount ≥ 1`, and the key invariant **`Width*Height ≥ 2*AgvCount`** — the grid must hold a *distinct start AND a distinct goal* for every AGV. A violation throws `ArgumentException` (→ HTTP 400).
 2. **Build the grid** via `GridFieldFactory.BuildGrid(w, h)` (§ below).
 3. **Seed distinct starts/goals** with a seeded `Random(request.Seed ?? DefaultSeed)` where `DefaultSeed = 1469` keeps a seedless request reproducible (`SimulationService.cs:13, 41`). It Fisher–Yates **shuffles** all site ids (`Shuffle`, `SimulationService.cs:152-160`) and takes two disjoint blocks — `shuffled[i]` as start, `shuffled[AgvCount + i]` as goal (`SimulationService.cs:45-50`). Two disjoint slices guarantee *every start ≠ its goal* **and** all starts/goals mutually distinct, given the validated capacity invariant. Agent `i` gets id `agv-{i+1}` and `Priority: i`.
-4. **Get a fresh engine** for this request: `await using var engine = _engineFactory.Create(field.Graph)` (`SimulationService.cs:53`) — isolation per §2.
-5. **Run the loop** with `maxTicks = ((Width+Height) * (AgvCount+1) * 2) + 100` (`SimulationService.cs:93-94`) — a generous bound (each agent traverses at most `Width+Height` CPs; the factor leaves slack for serialisation and gate waits) — passing `advanceClock: engine.Clock.SetTick` (`SimulationService.cs:58-62`).
-6. **Map** the `FleetLoopResult` to `SimulationResultDto` (`Map`, `SimulationService.cs:96-147`): sites → `SiteDto`, every directed `RoadmapGraph` edge (`Vertices` × `Neighbours`) → `LaneDto`, per-agent reserved route → `AgentDto.PathSiteIds` (with a `ColorIndex` for the palette), each frame → `FrameDto`/`PositionDto` (attaching planar X/Y per CP), and `FleetLoopStats` → `StatsDto`.
+4. **Get a fresh engine** for this request: `await using var engine = _engineFactory.Create(field.Graph, request.Planner)` — isolation per §2, planner selected per request.
+5. **Run the loop** with `maxTicks = ((Width+Height) * (AgvCount+1) * 2) + 100` — passing `advanceClock: engine.Clock.SetTick` and selecting `FleetExecutionMode.ScheduleFaithful` for SIPP or `FleetExecutionMode.Greedy` for Dijkstra.
+6. **Map** the `FleetLoopResult` to `SimulationResultDto`: sites → `SiteDto`, every directed `RoadmapGraph` edge (`Vertices` × `Neighbours`) → `LaneDto`, per-agent occupied trail → `AgentDto.PathSiteIds`, unfinished forward route → `AgentDto.RemainingSiteIds`, each frame → `FrameDto`/`PositionDto`, and `FleetLoopStats` → `StatsDto`.
 
 `GridFieldFactory.BuildGrid(w, h)` (`GridFieldFactory.cs:26-63`) builds a rectangular roadmap of `WorkSite` control points, ids on the `r{row}c{col}` convention (`GridFieldFactory.cs:66`), positioned at `MapPosition(X=col, Y=row)`. Each undirected 4-neighbour adjacency becomes a **pair of unit-distance directed `MapLine`s** (both directions, `AddBidirectional`, `GridFieldFactory.cs:68-72`), then `RoadmapGraph.Build(mapSites, lines)`. It returns a `GridField(Width, Height, Graph, Sites)` — the engine-facing graph plus the render metadata.
 
@@ -167,7 +168,8 @@ The gate guarantees safety, but the whole point of the simulation is to verify t
 
 **Request** — `SimulationRequest` (`SimulationRequest.cs:15`):
 ```jsonc
-{ "width": 8, "height": 8, "agvCount": 4, "seed": 1469 }   // seed optional → DefaultSeed
+{ "width": 8, "height": 8, "agvCount": 4, "seed": 1469, "planner": "Sipp" }
+// seed optional → DefaultSeed; planner optional → Dijkstra on the raw backend contract
 ```
 
 **Response** — `SimulationResultDto` (`SimulationResultDto.cs`), camelCase JSON:
@@ -180,7 +182,9 @@ The gate guarantees safety, but the whole point of the simulation is to verify t
   },
   "agents": [                      // AgentDto[]
     { "id": "agv-1", "startSiteId": "r0c0", "goalSiteId": "r7c7",
-      "colorIndex": 0, "pathSiteIds": ["r0c0", "r0c1", ...] }                  // reserved CP route
+      "colorIndex": 0,
+      "pathSiteIds": ["r0c0", "r0c1", ...],                                    // occupied trail
+      "remainingSiteIds": [] }                                                  // road ahead when not arrived
   ],
   "timeline": {                    // TimelineDto — what the frontend replays
     "tickCount": 31,
@@ -194,7 +198,10 @@ The gate guarantees safety, but the whole point of the simulation is to verify t
     "ticks": 30, "collisions": 0, "arrived": 4, "replans": 2,
     "status": "Completed",         // "Completed" | "CollisionDetected" | "DidNotConverge"
     "collisionTick": null,         // set only when status == CollisionDetected
-    "collisionAgentIds": null      // the agents involved, else null
+    "collisionAgentIds": null,     // the agents involved, else null
+    "redirects": 0,
+    "recoveries": 0,
+    "flowtimeTicks": 42
   }
 }
 ```
@@ -211,15 +218,17 @@ The closed-loop integration tests live in `tests/SwarmRoute.Integration.Tests/Cl
 - `ClosedLoop_IntersectionCrossing_SerialisedThroughCentre_BothReachGoals_NoCollision_NoLeak` — a shared `+` intersection serialised through the centre.
 - `ClosedLoop_FourAgents_PerimeterRotation_AllReachGoals_NoCollision_NoLeak` — four agents rotate a quarter-turn around a 4×4 perimeter; asserts concurrency.
 
-All three are designed to converge inside their tick budgets, so they assert `Completed`/zero collisions. The `DidNotConverge` path and the `CollisionDetected` regression signal are first-class outcomes of the driver (§4) surfaced through `StatsDto` rather than thrown.
+`SippClosedLoopTests` exercises the v1 path through the same in-memory real engine: SIPP converges on solvable densities, beats the Dijkstra/greedy baseline on dense seeds, replans far less, and is deterministic for a fixed seed.
+
+All convergent scenarios assert `Completed`/zero collisions. The `DidNotConverge` path and the `CollisionDetected` regression signal are first-class outcomes of the driver (§4) surfaced through `StatsDto` rather than thrown.
 
 ---
 
-## 8. v0 status & v1 roadmap
+## 8. v0/v1 status
 
-**v0 (today).** Lockstep, discrete-tick execution: one tick = one CP hop, whole-path interval reservation via the real `CoordinationCycleService`, and a **conservative right-of-way gate** (a trailing vehicle waits a tick for the cell ahead) plus parked-vehicle rerouting. This is provably collision-free and reproducible (tick clock), and it reports dense-instance limits honestly as `DidNotConverge`. The cost is throughput: serialisation + stop-and-wait leave parallelism on the table.
+**v0 (closed).** Lockstep, discrete-tick execution: one tick = one CP hop, whole-path interval reservation via the real `CoordinationCycleService`, and a **conservative right-of-way gate** (a trailing vehicle waits a tick for the cell ahead) plus parked-vehicle rerouting. This is collision-free and reproducible (tick clock), and it reports dense-instance limits honestly as `DidNotConverge`.
 
-**v1.** Replace whole-path reservation + stop-and-wait with **SIPP (Safe-Interval Path Planning)** and **schedule-faithful execution**: plan in *space-time* against the reservation intervals so agents are routed through free intervals rather than blocked at a cell, and execute the resulting schedule on the tick axis the `ManualFleetClock` already provides. This tightens throughput (more concurrent movers, fewer waits) while keeping the same two-layer collision-freedom guarantee and the same DTO/replay contract.
+**v1 (closed).** SIPP and schedule-faithful execution are implemented and selectable per simulation request. The planner searches reservation safe intervals, the executor follows planned CP entry ticks on the `ManualFleetClock` axis, and the same DTO/replay contract exposes the result. The web console defaults its request params to SIPP while still allowing Dijkstra A/B comparison.
 
 ---
 

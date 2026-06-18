@@ -35,5 +35,6 @@ way. Aging on `HadWaitedTime` provides anti-starvation (I7).
 - Reproducible runs (no RNG / wall-clock in the loop body; the simulation uses a `ManualFleetClock` whose
   `NowMs == tick` so reserved intervals share the executor's axis).
 - v2 will introduce a rolling-horizon (RHCR) window; the cadence contract here is forward-compatible.
-- High-density infeasible scenarios surface as `DidNotConverge` (a liveness/throughput limit addressed by v1
-  SIPP), never as a collision or a hang.
+- High-density infeasible scenarios surface as `DidNotConverge`, never as a collision or a hang. v1 SIPP
+  improves convergence and replan counts for dense but solvable scenarios; v2 will add prevention / RHCR for
+  stronger liveness.

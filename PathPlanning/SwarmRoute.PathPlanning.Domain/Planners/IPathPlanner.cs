@@ -6,9 +6,9 @@ namespace SwarmRoute.PathPlanning.Domain.Planners;
 
 /// <summary>
 /// A single-agent path planner: given the roadmap graph, a request and the current reservation view, it
-/// computes a space-time path (or reports failure). This is the strategy seam along the v0 → v3 roadmap —
-/// v0 supplies <see cref="DijkstraPathPlanner"/> (space-only shortest path); v1 swaps in a SIPP planner that
-/// actually consults <paramref name="reservations"/>. The interface is unchanged across that evolution.
+/// computes a space-time path (or reports failure). This is the strategy seam along the v0 → v3 roadmap:
+/// <see cref="DijkstraPathPlanner"/> is the v0 space-only baseline and <see cref="SippPathPlanner"/> is the v1
+/// reservation-aware implementation. The interface is unchanged across that evolution.
 /// </summary>
 public interface IPathPlanner
 {

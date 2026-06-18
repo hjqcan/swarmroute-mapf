@@ -233,6 +233,11 @@ public sealed class FleetLoopDriver
         // agents HOLD their (interval-separated) reservations rather than wait for one another in the table.
         const int standoffLogThreshold = 12;
 
+        // Schedule-faithful only: after this many ticks stalled PAST a CP's planned entry tick, an agent drops
+        // its reservation and re-plans from its current pose (breaking physical standoffs the schedule couldn't
+        // foresee). Comfortably above any brief transient wait for a higher-priority mover to clear.
+        const int stallRerouteThreshold = 12;
+
         // Stable fleet order (priority then ordinal id) so timeline + routes are reproducible.
         var fleet = agents
             .OrderBy(a => a.Priority)
@@ -496,24 +501,50 @@ public sealed class FleetLoopDriver
                     {
                         claimedNext.Add(fromCp); // hold the current CP (and all leases) this tick.
 
-                        // Standoff diagnostics are a greedy-gate concern only: in schedule-faithful mode a
-                        // non-advancing tick is a planned wait, not a physical deadlock the table couldn't see.
-                        if (executionMode == FleetExecutionMode.Greedy)
+                        if (executionMode == FleetExecutionMode.ScheduleFaithful)
                         {
-                            ag.BlockedTicks++;
-                            if (log is not null && ag.BlockedTicks == standoffLogThreshold)
+                            // A non-advancing tick is normal when the schedule planned a wait here
+                            // (tick < the next CP's entry tick). But once the schedule says we should be MOVING
+                            // (tick >= entry) and we still can't, we are physically stalled behind a non-moving
+                            // vehicle the interval-exclusive plan couldn't foresee (a contended agent that parked
+                            // its pose, a head-of-chain blocker). After a grace window, re-route: drop the
+                            // reservation and re-plan from here — SIPP then routes around the blocker, and
+                            // releasing our cells lets the rest of the stalled chain re-plan too. This is the
+                            // schedule-faithful analogue of the greedy reroute-around-parked, generalised to any
+                            // persistent block, and is what lets dense fleets break physical standoffs the RAG
+                            // deadlock detector can't see (the agents hold, not wait for, their reservations).
+                            var scheduledToMove = ag.CpEntryTicks.Count == ag.CpRoute.Count
+                                && tick >= ag.CpEntryTicks[ag.Idx + 1];
+                            if (scheduledToMove && ++ag.BlockedTicks >= stallRerouteThreshold)
                             {
-                                var occName = occupant?.Id ?? "(higher-priority mover)";
-                                var mutualSwap = occupant is { EnRoute: true, Done: false }
-                                    && occupant.Idx + 1 < occupant.CpRoute.Count
-                                    && string.Equals(occupant.CpRoute[occupant.Idx + 1], fromCp, StringComparison.Ordinal);
-                                log(
-                                    $"standoff@tick{tick}: {ag.Id} stalled {ag.BlockedTicks}+ ticks at {fromCp} wanting {toCp}; " +
-                                    $"blocked by {occName}" +
-                                    (mutualSwap ? $" which wants {fromCp} back -> HEAD-ON SWAP {ag.Id}<->{occName}" : string.Empty) +
-                                    $" (goal {ag.Goal}; redirects so far={redirects_}). " +
-                                    "Not a RAG cycle: both hold granted reservations, so deadlock detection won't fire.");
+                                ag.Replans++;
+                                var held = ag.AllResources;
+                                ag.EnRoute = false;
+                                ag.Start = fromCp;
+                                ag.CpRoute = new[] { fromCp };
+                                ag.CpEntryTicks = Array.Empty<long>();
+                                ag.Idx = 0;
+                                ag.AllResources = Array.Empty<ResourceRef>();
+                                ag.BlockedTicks = 0;
+                                await cycle.ReleaseAsync(ag.Id, held, cancellationToken).ConfigureAwait(false);
                             }
+                            continue;
+                        }
+
+                        // Greedy gate: a non-advancing tick is a wait; surface a physical standoff diagnostically.
+                        ag.BlockedTicks++;
+                        if (log is not null && ag.BlockedTicks == standoffLogThreshold)
+                        {
+                            var occName = occupant?.Id ?? "(higher-priority mover)";
+                            var mutualSwap = occupant is { EnRoute: true, Done: false }
+                                && occupant.Idx + 1 < occupant.CpRoute.Count
+                                && string.Equals(occupant.CpRoute[occupant.Idx + 1], fromCp, StringComparison.Ordinal);
+                            log(
+                                $"standoff@tick{tick}: {ag.Id} stalled {ag.BlockedTicks}+ ticks at {fromCp} wanting {toCp}; " +
+                                $"blocked by {occName}" +
+                                (mutualSwap ? $" which wants {fromCp} back -> HEAD-ON SWAP {ag.Id}<->{occName}" : string.Empty) +
+                                $" (goal {ag.Goal}; redirects so far={redirects_}). " +
+                                "Not a RAG cycle: both hold granted reservations, so deadlock detection won't fire.");
                         }
                         continue;
                     }

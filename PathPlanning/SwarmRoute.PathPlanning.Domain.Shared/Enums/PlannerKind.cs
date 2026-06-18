@@ -3,9 +3,8 @@ namespace SwarmRoute.PathPlanning.Domain.Shared.Enums;
 /// <summary>
 /// Identifies which planning algorithm produced (or is to produce) a plan.
 /// <para>
-/// v0 ships only <see cref="Dijkstra"/> (space-only shortest path). <see cref="Sipp"/> (Safe-Interval
-/// Path Planning, reservation-aware) is the v1 successor; the enum reserves the slot so the contract
-/// is stable across the evolution.
+/// <see cref="Dijkstra"/> is the v0 space-only baseline. <see cref="Sipp"/> is the v1 Safe-Interval Path
+/// Planning implementation; both values are selectable through the stable simulation/API contract.
 /// </para>
 /// </summary>
 public enum PlannerKind

@@ -156,7 +156,7 @@ These types mirror `SwarmRoute.Simulation.Application.SimulationResultDto` exact
 **Request** — `SimulationRequest`:
 
 ```ts
-{ width: number; height: number; agvCount: number; seed?: number }
+{ width: number; height: number; agvCount: number; seed?: number; planner?: 'Dijkstra' | 'Sipp' }
 ```
 
 **Response** — `SimulationResult`:
@@ -164,7 +164,7 @@ These types mirror `SwarmRoute.Simulation.Application.SimulationResultDto` exact
 ```ts
 {
   field: { width, height, sites: Site[], lanes: Lane[] }            // FieldDto
-  agents: AgentDto[]   // { id, startSiteId, goalSiteId, colorIndex, pathSiteIds: string[] }
+  agents: AgentDto[]   // { id, startSiteId, goalSiteId, colorIndex, pathSiteIds, remainingSiteIds }
   timeline: {
     tickCount: number
     frames: { tick: number; positions: Position[] }[]               // one frame per tick
@@ -173,12 +173,17 @@ These types mirror `SwarmRoute.Simulation.Application.SimulationResultDto` exact
     ticks, collisions, arrived, replans,
     status: 'Completed' | 'CollisionDetected' | 'DidNotConverge',
     collisionTick: number | null,
-    collisionAgentIds: string[] | null
+    collisionAgentIds: string[] | null,
+    redirects: number,
+    recoveries: number,
+    flowtimeTicks: number
   }
 }
 ```
 
 - `Site` = `{ id, x (col), y (row), type }`; `Lane` = `{ id, from, to }` (directed edge).
+- `PlannerKind` = `'Dijkstra' | 'Sipp'`; the UI defaults to SIPP and keeps Dijkstra available for A/B comparison.
+- `AgentDto.pathSiteIds` is the occupied trail; `remainingSiteIds` is the road still ahead when a run did not finish.
 - `Position` = `{ agentId, siteId, x, y, state }` where `state ∈ { 'Waiting', 'Moving', 'Arrived' }` (`RunState`).
 - **Important:** `frame.tick` is the **engine tick number**, which need not equal the frame's array index. The frontend always reads labels from `frame.tick`, never from the cursor index (see §7).
 
@@ -195,7 +200,7 @@ On a successful `run()`, the store resets `cursor: 0` and sets `playing: result.
 One store holds three concerns:
 
 **Request form**
-- `params: SimulationRequest` (default `{ width: 10, height: 8, agvCount: 6 }` — `DEFAULT_PARAMS`).
+- `params: SimulationRequest` (default `{ width: 10, height: 8, agvCount: 6, planner: 'Sipp' }` — `DEFAULT_PARAMS`).
 - `setParam(key, value)` — typed per-key setter; `randomizeSeed()` — sets a random seed.
 
 **Run lifecycle**
@@ -299,17 +304,20 @@ Shared canvas math lives in `src/utils/canvas.ts`: `makeProjector(cols, rows, w,
 POST /api/simulation/run        (Host on http://localhost:5062; dev-proxied from /api)
 Content-Type: application/json
 
-Request   { "width": number, "height": number, "agvCount": number, "seed"?: number }
+Request   { "width": number, "height": number, "agvCount": number,
+            "seed"?: number, "planner"?: "Dijkstra"|"Sipp" }
           Constraint: width*height >= 2*agvCount  (the frontend pre-validates this in ControlRail)
 
 200 OK    SimulationResult (camelCase JSON, returned DIRECTLY — no { code, msg, data } envelope):
           {
             field:    { width, height, sites: [{id,x,y,type}], lanes: [{id,from,to}] },
-            agents:   [{ id, startSiteId, goalSiteId, colorIndex, pathSiteIds: string[] }],
+            agents:   [{ id, startSiteId, goalSiteId, colorIndex,
+                         pathSiteIds: string[], remainingSiteIds: string[] }],
             timeline: { tickCount, frames: [{ tick, positions: [{agentId,siteId,x,y,state}] }] },
             stats:    { ticks, collisions, arrived, replans,
                         status: "Completed"|"CollisionDetected"|"DidNotConverge",
-                        collisionTick: number|null, collisionAgentIds: string[]|null }
+                        collisionTick: number|null, collisionAgentIds: string[]|null,
+                        redirects: number, recoveries: number, flowtimeTicks: number }
           }
           state ∈ { "Waiting", "Moving", "Arrived" }
 

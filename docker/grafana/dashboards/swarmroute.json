@@ -44,7 +44,7 @@
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "targets": [
         { "refId": "A", "expr": "swarmroute_orders_pending", "legendFormat": "pending" },
-        { "refId": "B", "expr": "swarmroute_orders_completed_total", "legendFormat": "completed (window)" }
+        { "refId": "B", "expr": "swarmroute_orders_completed_total", "legendFormat": "completed total" }
       ]
     },
     {

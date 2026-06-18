@@ -23,7 +23,7 @@
 
 ## 2. Per-request engine — isolation by construction
 
-`InMemorySimulationEngineFactory.Create(RoadmapGraph)`（`InMemorySimulationEngineFactory.cs:20-44`）**每次调用都构建一个全新的 `ServiceCollection` 和 `ServiceProvider`**：
+`InMemorySimulationEngineFactory.Create(RoadmapGraph, PlannerKind)` **每次调用都构建一个全新的 `ServiceCollection` 和 `ServiceProvider`**：
 
 ```csharp
 var roadmapId = Guid.NewGuid();
@@ -31,6 +31,7 @@ var services = new ServiceCollection();
 services.AddLogging();
 services.AddEventBus();
 services.AddSingleton<IRoadmapQueryService>(new InMemoryRoadmapQueryService(roadmapId, graph));
+services.AddSingleton(new PlannerOptions { Default = planner });
 PathPlanningNativeInjectorBootStrapper.RegisterServices(services);
 TrafficControlNativeInjectorBootStrapper.RegisterServices(services);
 services.AddCoordination();
@@ -79,7 +80,7 @@ services.AddSingleton<IFleetClock>(clock);
         │        for each reserved result: EnRoute=true, Idx=0, CpRoute = path's CP cells           │
         │        (assert CpRoute runs Start→Goal, else throw FleetLoopException)                    │
         │                                                                                           │
-        │  (2) ADVANCE each en-route agent at most ONE CP — through the RIGHT-OF-WAY GATE:           │
+        │  (2) ADVANCE en-route agents: greedy gate for Dijkstra, schedule-faithful for SIPP         │
         │        occupantNow  = who physically sits on each CP at tick start                        │
         │        claimedNext  = CPs held after this tick (seed: every NON-mover keeps its CP)        │
         │        for each mover (priority order):                                                   │
@@ -103,15 +104,15 @@ services.AddSingleton<IFleetClock>(clock);
 
 **（1）规划 + 预约待处理的 agent。** 每个 `!Done && !EnRoute` 的 agent 都变成一个 `AgentGoal(Id, Start, Goal, Priority)`（`FleetLoopDriver.cs:195-198`）,这一批被交给 `cycle.RunCycleAsync(roadmapId, pending, blocked, ct)`（`FleetLoopDriver.cs:205`）。关键在于,**`parkedCells` 被作为 `blockedResources` 集合传入**——`parkedCells.Select(RoadmapGraph.SiteRef).ToHashSet()`（`FleetLoopDriver.cs:202-204`）——这样规划器就会把车队的其余部分*绕过*那些已经完成并停在其目标 CP 上的 agent。对每个已预约的结果,驱动器把该 agent 翻转为在途状态,提取其 `CpRoute`(所返回 `SpaceTimePath` 中 `ResourceKind.CP` 的那些 cell,`FleetLoopDriver.cs:216-219`),缓存 `AllResources` 以便稍后释放,并累加 `Replans += max(0, Attempts-1)`(超出首次的尝试是该周期内部的剪枝-重规划重试)。然后它断言已预约的路径确实从 `Start → Goal`,仅当这个内部不变量被违反时才抛出 `FleetLoopException`(`FleetLoopDriver.cs:222-225`)。
 
-**（2）路权门控——最终的碰撞保证。** 这是执行器的停-等机制。每个 tick 构建两个结构（`FleetLoopDriver.cs:247-250`）:
+**（2）执行模式——greedy 门控或忠于调度的 SIPP。** Dijkstra 走 v0 的停-等门控；SIPP 走 schedule-faithful 执行：当下一个 CP 的计划进入 tick 到达时，agent 才推进，驱动器会把候选移动解析成一个后置 CP 互不重复的集合。两个结构仍然保护执行：
 - `occupantNow` —— 在 tick *开始*时哪个 agent 物理上坐在每个 CP 上(待处理的 agent 在其起点,在途的在其当前 CP,已到达的在其目标)。
 - `claimedNext` —— tick *之后*将被占据的那些 CP。它**以每个非移动者的位置作为种子**,所以移动者永远不会踏上一个等待或停放中的 agent 所持有的 cell。
 
-然后,对每个在途的 agent(按稳定的优先级顺序),查看下一个 CP `toCp`（`FleetLoopDriver.cs:252-294`）:
+然后,对每个在途的 agent(按稳定的优先级顺序),查看下一个 CP `toCp`：
 
 1. **停放的阻挡者 → 改道。** 如果 `occupant.Done`(一辆已完成的车辆永久停放在 `toCp` 上),等待将永远无法解除。所以该 agent **放弃其预约**（`ReleaseAsync(held)`）,设置 `EnRoute=false`、`Start = fromCp`,把其路线重置为 `[fromCp]`,并在下一周期重新加入规划（`FleetLoopDriver.cs:263-278`）。因为那个停放的 cell 已经在 `parkedCells` 中,下一次规划会绕过它。`Replans++`。
-2. **瞬态阻挡者 → 等待。** 如果 `toCp` 已经在 `claimedNext` 中(一个更高优先级的移动者占用了它)**或**当前仍被占据,该 agent **原地保持**：它把 `fromCp` 加入 `claimedNext` 并保留其全部租约（`FleetLoopDriver.cs:281-285`）。它在下一个 tick 重试。
-3. **畅通 → 推进一个 CP。** 否则 `Idx++`,占用 `toCp`,并 `ReleaseAsync` 刚刚腾出的 cell+lane——`fromCp` CP 和 `fromCp→toCp` `Lane`（`FleetLoopDriver.cs:287-293`）——把它们交还给预约表,以便后随/交叉的 agent 可以使用。
+2. **瞬态阻挡者 → 等待。** 在 greedy 模式中，如果 `toCp` 已经在 `claimedNext` 中(一个更高优先级的移动者占用了它)**或**当前仍被占据，该 agent **原地保持**并保留其全部租约。在 schedule-faithful 模式中，未推进通常是计划中的等待，除非防御性解析器撤销了该步移动。
+3. **畅通 / 已到计划时刻 → 推进一个 CP。** 否则 `Idx++`,占用 `toCp`,并 `ReleaseAsync` 刚刚腾出的 cell+lane——`fromCp` CP 和 `fromCp→toCp` `Lane`——把它们交还给预约表,以便后随/交叉的 agent 可以使用。
 
 在到达最后一个 CP 时,该 agent 变为 `Done`,它的目标 CP 被加入 `parkedCells`,并且**所有仍持有的资源都被释放**(无租约泄漏)（`FleetLoopDriver.cs:296-305`）。
 
@@ -140,7 +141,7 @@ services.AddSingleton<IFleetClock>(clock);
 
 - **诚实的非收敛。** 当网格密集时,整条路径的预约会把 agent 串行化,而保守的门控让后随车辆等待。如果车队在 `maxTicks` 内仍未全部到达,循环会设置 `DidNotConverge` 并跳出（`FleetLoopDriver.cs:180-185`）,而不是碰撞或悄悄截断。密集实例因此会如实*报告*该局限。
 - **停放车辆改道**(步骤（2）.1 + `parkedCells`)是活性的逃生阀：一个停在目标 CP 上的已完成 agent 成为规划器障碍,所以车队的其余部分绕过它,而不是永远死锁在它后面。
-- **门控是保守的。** 一辆后随车辆等待一个 tick 让前方的 cell 清空,用一点吞吐量换取一项硬性的无碰撞保证。v1 的 SIPP 规划器(§8)将通过在时间中路由而非停-等来收回那部分吞吐量。
+- **执行感知 planner。** Dijkstra 使用保守门控，因此后随车辆可能等待一个 tick 让前方 cell 清空；SIPP 使用计划中的 CP 进入 tick，通过在时间中路由而非在门控处反应来收回吞吐量。
 
 `FleetLoopStatus`（`FleetLoopDriver.cs:28-38`）：`Completed`(全部到达,无碰撞)、`CollisionDetected`(回归信号——绝不应发生)、`DidNotConverge`(tick 预算耗尽：活锁 / 死锁 / 饥饿)。
 
@@ -153,9 +154,9 @@ services.AddSingleton<IFleetClock>(clock);
 1. **校验**（`SimulationService.cs:68-84`）：`Width ≥ 1`、`Height ≥ 1`、`AgvCount ≥ 1`,以及关键不变量 **`Width*Height ≥ 2*AgvCount`**——网格必须为每个 AGV 容纳一个*独立的起点*和*一个独立的目标*。违反会抛出 `ArgumentException`(→ HTTP 400)。
 2. 通过 `GridFieldFactory.BuildGrid(w, h)` **构建网格**(见下文)。
 3. **播种独立的起点/目标**,使用一个被播种的 `Random(request.Seed ?? DefaultSeed)`,其中 `DefaultSeed = 1469` 让无 seed 的请求保持可复现（`SimulationService.cs:13, 41`）。它对所有 site id 进行 Fisher–Yates **洗牌**（`Shuffle`,`SimulationService.cs:152-160`）,并取两个不相交的块——`shuffled[i]` 作为起点,`shuffled[AgvCount + i]` 作为目标（`SimulationService.cs:45-50`）。在已校验的容量不变量下,两个不相交的切片保证了*每个起点 ≠ 其目标***并且**所有起点/目标两两不同。Agent `i` 得到 id `agv-{i+1}` 与 `Priority: i`。
-4. 为这个请求**获取一个全新的引擎**：`await using var engine = _engineFactory.Create(field.Graph)`（`SimulationService.cs:53`）——隔离见 §2。
-5. **运行循环**,`maxTicks = ((Width+Height) * (AgvCount+1) * 2) + 100`（`SimulationService.cs:93-94`）——一个宽松的边界(每个 agent 至多穿越 `Width+Height` 个 CP;该系数为串行化和门控等待留出余量)——传入 `advanceClock: engine.Clock.SetTick`（`SimulationService.cs:58-62`）。
-6. 把 `FleetLoopResult` **映射**为 `SimulationResultDto`（`Map`,`SimulationService.cs:96-147`）：sites → `SiteDto`,每条有向的 `RoadmapGraph` 边（`Vertices` × `Neighbours`）→ `LaneDto`,每个 agent 已预约的路线 → `AgentDto.PathSiteIds`(带一个用于调色板的 `ColorIndex`),每一帧 → `FrameDto`/`PositionDto`(为每个 CP 附上平面 X/Y),以及 `FleetLoopStats` → `StatsDto`。
+4. 为这个请求**获取一个全新的引擎**：`await using var engine = _engineFactory.Create(field.Graph, request.Planner)`——隔离见 §2，并按请求选择 planner。
+5. **运行循环**,`maxTicks = ((Width+Height) * (AgvCount+1) * 2) + 100`——传入 `advanceClock: engine.Clock.SetTick`，并为 SIPP 选择 `FleetExecutionMode.ScheduleFaithful`，为 Dijkstra 选择 `FleetExecutionMode.Greedy`。
+6. 把 `FleetLoopResult` **映射**为 `SimulationResultDto`：sites → `SiteDto`,每条有向的 `RoadmapGraph` 边 → `LaneDto`,每个 agent 的已占用轨迹 → `AgentDto.PathSiteIds`，未完成前方路线 → `AgentDto.RemainingSiteIds`,每一帧 → `FrameDto`/`PositionDto`,以及 `FleetLoopStats` → `StatsDto`。
 
 `GridFieldFactory.BuildGrid(w, h)`（`GridFieldFactory.cs:26-63`）构建一个由 `WorkSite` 控制点组成的矩形路网,id 遵循 `r{row}c{col}` 约定（`GridFieldFactory.cs:66`）,定位于 `MapPosition(X=col, Y=row)`。每个无向的 4 邻接关系都变成**一对单位距离的有向 `MapLine`**(双向,`AddBidirectional`,`GridFieldFactory.cs:68-72`),然后 `RoadmapGraph.Build(mapSites, lines)`。它返回一个 `GridField(Width, Height, Graph, Sites)`——面向引擎的图加上渲染元数据。
 
@@ -169,7 +170,8 @@ services.AddSingleton<IFleetClock>(clock);
 
 **请求** —— `SimulationRequest`（`SimulationRequest.cs:15`）:
 ```jsonc
-{ "width": 8, "height": 8, "agvCount": 4, "seed": 1469 }   // seed optional → DefaultSeed
+{ "width": 8, "height": 8, "agvCount": 4, "seed": 1469, "planner": "Sipp" }
+// seed optional → DefaultSeed; planner optional → raw backend contract defaults to Dijkstra
 ```
 
 **响应** —— `SimulationResultDto`（`SimulationResultDto.cs`）,camelCase JSON：
@@ -182,7 +184,9 @@ services.AddSingleton<IFleetClock>(clock);
   },
   "agents": [                      // AgentDto[]
     { "id": "agv-1", "startSiteId": "r0c0", "goalSiteId": "r7c7",
-      "colorIndex": 0, "pathSiteIds": ["r0c0", "r0c1", ...] }                  // reserved CP route
+      "colorIndex": 0,
+      "pathSiteIds": ["r0c0", "r0c1", ...],                                    // occupied trail
+      "remainingSiteIds": [] }                                                  // road ahead when not arrived
   ],
   "timeline": {                    // TimelineDto — what the frontend replays
     "tickCount": 31,
@@ -196,7 +200,10 @@ services.AddSingleton<IFleetClock>(clock);
     "ticks": 30, "collisions": 0, "arrived": 4, "replans": 2,
     "status": "Completed",         // "Completed" | "CollisionDetected" | "DidNotConverge"
     "collisionTick": null,         // set only when status == CollisionDetected
-    "collisionAgentIds": null      // the agents involved, else null
+    "collisionAgentIds": null,     // the agents involved, else null
+    "redirects": 0,
+    "recoveries": 0,
+    "flowtimeTicks": 42
   }
 }
 ```
@@ -213,15 +220,17 @@ services.AddSingleton<IFleetClock>(clock);
 - `ClosedLoop_IntersectionCrossing_SerialisedThroughCentre_BothReachGoals_NoCollision_NoLeak` —— 一个共享的 `+` 交叉路口,通过中心串行化。
 - `ClosedLoop_FourAgents_PerimeterRotation_AllReachGoals_NoCollision_NoLeak` —— 四个 agent 围绕一个 4×4 周界旋转四分之一圈;断言并发。
 
-这三个都被设计为在各自的 tick 预算内收敛,所以它们断言 `Completed`/零碰撞。`DidNotConverge` 路径和 `CollisionDetected` 回归信号是驱动器(§4)的一等结果,通过 `StatsDto` 浮现出来,而非被抛出。
+`SippClosedLoopTests` 演练同一个内存真实引擎下的 v1 路径：SIPP 在可解密度下收敛，在密集种子上优于 Dijkstra/greedy 基线，重规划次数显著更少，并且固定 seed 下确定。
+
+所有收敛场景都断言 `Completed`/零碰撞。`DidNotConverge` 路径和 `CollisionDetected` 回归信号是驱动器(§4)的一等结果,通过 `StatsDto` 浮现出来,而非被抛出。
 
 ---
 
-## 8. v0 status & v1 roadmap
+## 8. v0/v1 状态
 
-**v0(今天)。** 锁步、离散 tick 的执行：一个 tick = 一次 CP 跳跃,通过真实的 `CoordinationCycleService` 进行整条路径的区间预约,加上一个**保守的路权门控**(后随车辆等待一个 tick 让前方的 cell 清空)以及停放车辆改道。这被证明是无碰撞且可复现的(tick 时钟),并且它把密集实例的局限如实报告为 `DidNotConverge`。代价是吞吐量：串行化 + 停-等让并行度未被充分利用。
+**v0（已闭环）。** 锁步、离散 tick 的执行：一个 tick = 一次 CP 跳跃,通过真实的 `CoordinationCycleService` 进行整条路径的区间预约,加上一个**保守的路权门控**(后随车辆等待一个 tick 让前方的 cell 清空)以及停放车辆改道。它无碰撞且可复现(tick 时钟),并且把密集实例的局限如实报告为 `DidNotConverge`。
 
-**v1。** 用 **SIPP(安全区间路径规划)** 和**忠于调度的执行**替换整条路径预约 + 停-等：在*时空*中针对预约区间进行规划,使 agent 被路由穿过空闲区间而非被阻挡在某个 cell,并在 `ManualFleetClock` 已经提供的 tick 轴上执行所得到的调度。这会收紧吞吐量(更多并发的移动者,更少的等待),同时保持相同的双层无碰撞保证以及相同的 DTO/回放契约。
+**v1（已闭环）。** SIPP 与 schedule-faithful 执行已经实现，并可按模拟请求选择。planner 搜索预约安全区间，执行器在 `ManualFleetClock` 轴上遵循计划 CP 进入 tick，同一套 DTO/回放契约暴露结果。Web 控制台默认请求 SIPP，同时保留 Dijkstra 作为 A/B 对照。
 
 ---
 

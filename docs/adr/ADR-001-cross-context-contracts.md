@@ -36,7 +36,8 @@ the wire contract is versioned independently of the domain model.
 
 ## Consequences
 
-- v1 (SIPP) is a strategy swap behind `IPathPlanner` + `SafeIntervals()` — the contracts do not change.
+- v1 (SIPP) has been delivered as a strategy swap behind `IPathPlanner` + `SafeIntervals()` — the contracts did
+  not change.
 - Coordination consumes `Deadlock.Case.ResolutionRequested` to redirect the victim; Deadlock stays a pure
   analyser (see ADR-003).
 - A contract change requires a new ADR + notice to all squads.

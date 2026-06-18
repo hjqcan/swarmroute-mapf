@@ -10,7 +10,7 @@ This bounded context answers exactly one question: **"route agent _X_ from site 
 
 It **owns**:
 
-- The single-agent planner strategy seam `IPathPlanner` (`Planners/IPathPlanner.cs:13`) and its v0 implementation `DijkstraPathPlanner` (`Planners/DijkstraPathPlanner.cs:27`).
+- The single-agent planner strategy seam `IPathPlanner` (`Planners/IPathPlanner.cs:13`) and its shipped implementations: `DijkstraPathPlanner` (v0 baseline) and `SippPathPlanner` (v1 safe-interval planner).
 - The request/result vocabulary: `PlanRequest`, `PlanResult`, `PlanCost`, `WaitAction` (`ValueObjects/`).
 - The `AgentPlan` aggregate (`Aggregates/AgentPlan.cs:21`) that models the lifecycle of one vehicle's current plan and raises integration events.
 - **The declaration of the reservation read seam** `IReservationQuery` (`Reservations/IReservationQuery.cs:23`) — declared *here* by PathPlanning, but implemented by TrafficControl (the frozen cross-context contract; see §5).
@@ -32,7 +32,7 @@ Standard grukirbs/DDD onion. Six projects:
 | Project | Role | Depends on |
 |---|---|---|
 | `SwarmRoute.PathPlanning.Domain.Shared` | Leaf primitives: `PlannerKind`, `PlanStatus` enums, `PathPlanningErrorCodes` (`PP-001`…`PP-005`). | *(nothing)* — pure leaf. |
-| `SwarmRoute.PathPlanning.Domain` | The core: `IPathPlanner` + `DijkstraPathPlanner`, the value objects, `AgentPlan` aggregate + events, and the `IReservationQuery`/`NullReservationQuery`/`AlwaysFreeReservationView` reservation seam. | Kernel, `Domain.Abstractions` (event bus), NetDevPack (`ValueObject`/`Entity`/`DomainEvent`), the vendored `SwarmRoute.Algorithms`, **`Map.Domain`** (for `RoadmapGraph`), Domain.Shared. |
+| `SwarmRoute.PathPlanning.Domain` | The core: `IPathPlanner` + `SelectablePathPlanner` + `DijkstraPathPlanner` + `SippPathPlanner`, the value objects, `AgentPlan` aggregate + events, and the `IReservationQuery`/`NullReservationQuery`/`AlwaysFreeReservationView` reservation seam. | Kernel, `Domain.Abstractions` (event bus), NetDevPack (`ValueObject`/`Entity`/`DomainEvent`), the vendored `SwarmRoute.Algorithms`, **`Map.Domain`** (for `RoadmapGraph`), Domain.Shared. |
 | `SwarmRoute.PathPlanning.Application.Contract` | Transport surface: `IPathPlanningAppService` + `PlanResultDto`. | Kernel only. |
 | `SwarmRoute.PathPlanning.Application` | `PathPlanningAppService` orchestration + the AutoMapper `PathPlanningMappingProfile`. | Domain, Application.Contract, **`Map.Application.Contract`** (for `IRoadmapQueryService`), AutoMapper. |
 | `SwarmRoute.PathPlanning.Infra.CrossCutting.IoC` | The composition root `PathPlanningNativeInjectorBootStrapper`. | Application; `FrameworkReference Microsoft.AspNetCore.App` (for `WebApplicationBuilder`). |
@@ -42,9 +42,13 @@ Key dependency note: the **Domain** layer references `Map.Domain` directly (`Swa
 
 ---
 
-## 3. The planner — `DijkstraPathPlanner`
+## 3. The planners — Dijkstra and SIPP
 
 `Plan(RoadmapGraph graph, PlanRequest request, IReservationView reservations)` (`DijkstraPathPlanner.cs:36`). The body is two phases — **(a) find a site sequence**, then **(b) lift it into a timeline** (§4).
+
+The registered `IPathPlanner` is now `SelectablePathPlanner`: it dispatches each call to `DijkstraPathPlanner`
+or `SippPathPlanner` according to `PlannerOptions.Default`. The interface did not change for v1; only the
+strategy behind it did.
 
 ### Shortest path (pruned Dijkstra)
 
@@ -104,7 +108,7 @@ cells: CP:A          CP:B       CP:C      CP:D
        [rel,+w0) ... contiguous, half-open, non-overlapping ...
 ```
 
-**Why CP and Lane deliberately overlap the same window** (`DijkstraPathPlanner.cs:18-22`): while traversing a segment the vehicle physically occupies *both* the lane and (conservatively) the control point it is heading along. v0 reserves both for safety — it is the simplest sound over-approximation. The resource vocabulary (`ResourceKind.CP` / `.Lane`, Kernel `ResourceRef.cs:8-21`) is fixed now so that v1's SIPP can later refine *exact* enter/exit timing (a tighter, possibly non-overlapping split) **without changing what gets reserved** — only when.
+**Why CP and Lane deliberately overlap the same window** (`DijkstraPathPlanner.cs:18-22`): while traversing a segment the vehicle physically occupies *both* the lane and (conservatively) the control point it is heading along. v0 reserves both for safety — it is the simplest sound over-approximation. The resource vocabulary (`ResourceKind.CP` / `.Lane`, Kernel `ResourceRef.cs:8-21`) is fixed so SIPP can reuse the same resources while changing *when* they are occupied.
 
 The CP-only projection is what downstream consumers read back as the route: `AgentPlan.ExtractSiteSequence` and the mapping profile both filter `Resource.Kind == CP` (`AgentPlan.cs:174-178`, `PathPlanningMappingProfile.cs:27-33`).
 
@@ -135,9 +139,14 @@ PathPlanning is agnostic to *which* clock is in play — it just emits intervals
 
 ## 5. Reservation awareness
 
-### Wired, but always-free in v0
+### v0 baseline vs v1 SIPP
 
 `IPathPlanner.Plan` takes an `IReservationView` (`IPathPlanner.cs:21-26`), so every call site already passes one — the seam is wired end-to-end. But **v0's planner does not search safe intervals**. The stub view `AlwaysFreeReservationView` reports `IsFree → true` and a single maximal `[0, long.MaxValue)` free interval for any resource (`AlwaysFreeReservationView.cs:14-27`); `DijkstraPathPlanner` never even calls it (`DijkstraPathPlanner.cs:40` — "read but treated as always-free"). `WaitAction` (`ValueObjects/WaitAction.cs:16`) — the dual of a move, what a reservation-aware planner inserts to let another vehicle pass — is defined now but **never emitted** by v0 ("its timeline is move-only", `WaitAction.cs:11-14`).
+
+`SippPathPlanner` is the v1 implementation of that same seam. It materialises each CP and Lane resource's
+`FreeIntervals`, searches `(site, safe-interval)` states with an A* priority, and emits a `SpaceTimePath` whose
+CP dwell may be longer than one hop when the agent must wait for a busy CP or lane to clear. A lane conflict is
+detected through the view, including reversed-lane conflicts supplied by TrafficControl's snapshot view.
 
 ### Avoidance is via the request blacklist (CP/Lane)
 
@@ -156,7 +165,7 @@ This is the heart of the v0 design and is owned by **`CoordinationCycleService`*
 4. On `Denied`/`Queued`/`Blocked` → ask `_traffic.BlockedResources(path, ...)` for the *concrete* CP/Lane resources that actually blocked this path, **add them to `pruned`** (never the agent's own start/goal, `:170-178`), and **replan** — bounded by `MaxReplanAttempts = 8` (`:40`, `:118`).
 5. If nothing new could be pruned, replanning would be a no-op → stop (`:184-186`).
 
-Each replan **strictly shrinks the search space** (more blacklisted resources), so the inner loop provably terminates — it either routes around the contention or fails with no-route, to be retried next tick once a holder releases (`:25-35`). The explicit v0 note (`:32-35`): immediate-retry avoidance is expressed via the CP/Lane blacklist *because* the planner does not yet consult safe intervals; **when SIPP lands at v1, this loop body does not change** — SIPP additionally routes around the view in time.
+Each replan **strictly shrinks the search space** (more blacklisted resources), so the inner loop provably terminates — it either routes around the contention or fails with no-route, to be retried next tick once a holder releases (`:25-35`). v1 did not change this loop body: SIPP still respects the blacklist, and additionally routes around the reservation view in time.
 
 The static-obstacle seed is the same mechanism: `FleetLoopDriver` feeds parked (arrived) vehicles' CPs as `blockedResources` so the rest of the fleet routes around them (`FleetLoopDriver.cs:202-205`, `CoordinationCycleService.cs:108-112`).
 
@@ -167,8 +176,11 @@ The static-obstacle seed is the same mechanism: `FleetLoopDriver` feeds parked (
 `PathPlanningNativeInjectorBootStrapper.RegisterServices` (`Infra.CrossCutting.IoC/...:33-52`), with a `WebApplicationBuilder` overload (`:22-27`) per the grukirbs `*NativeInjectorBootStrapper` convention so the Host wires every context uniformly:
 
 ```csharp
-services.AddSingleton<IPathPlanner, DijkstraPathPlanner>();        // stateless strategy → singleton
-services.AddSingleton<IReservationQuery, NullReservationQuery>();  // v0 default read seam
+services.AddSingleton<DijkstraPathPlanner>();
+services.AddSingleton<SippPathPlanner>();
+services.TryAddSingleton<PlannerOptions>();              // default planner, overrideable per container
+services.AddSingleton<IPathPlanner, SelectablePathPlanner>();
+services.AddSingleton<IReservationQuery, NullReservationQuery>();
 services.AddScoped<IPathPlanningAppService, PathPlanningAppService>();
 services.AddLogging();
 services.AddAutoMapper(_ => { }, typeof(PathPlanningMappingProfile).Assembly);
@@ -184,8 +196,8 @@ No DbContext / repository / unit of work — PathPlanning is a pure compute cont
 
 1. Build + validate `PlanRequest` (release time 0 in v0) (`:67`).
 2. `_roadmapQuery.GetGraphAsync` — Map read seam; throws `KeyNotFoundException` for an unknown roadmap (`:70`).
-3. `_reservationQuery.GetView` — always-free in v0 (`:73`).
-4. `_planner.Plan(...)` (`:75`).
+3. `_reservationQuery.GetView` — standalone mode returns the always-free stub; the Host/Simulation composition is overridden by TrafficControl's live reservation snapshot (`:73`).
+4. `_planner.Plan(...)` — dispatched to Dijkstra or SIPP by `SelectablePathPlanner` (`:75`).
 5. Wrap the outcome in a fresh `AgentPlan` aggregate (which raises `Computed`/`Failed`) and dispatch events (`:78-87`).
 6. `_mapper.Map<PlanResultDto>` (`:89`).
 
@@ -210,25 +222,27 @@ xUnit; three suites + two test-support fakes.
   - **Blacklist pruning**: a blacklisted intermediate CP *and* a blacklisted Lane each force the alternate branch (`:202-229`).
   - Null-argument guards (`:231-240`).
 - **`AgentPlanTests`** — aggregate behaviour: construction raises the right event, `Replan`/`Invalidate` bump version + raise, id/reason guards (`AgentPlanTests.cs`).
+- **`SippPathPlannerTests`** — v1 safe-interval correctness: ordinary routing, deterministic tie-breaks,
+  unknown/unreachable failures, waiting for busy CPs and lanes, detouring around permanently blocked CPs, and
+  the unified one-hop tick axis.
 - **`PathPlanningAppServiceTests`** — end-to-end through the **real** `PathPlanningNativeInjectorBootStrapper` (real planner + `NullReservationQuery` + AutoMapper + app service), with only the Map seam swapped for `FakeRoadmapQueryService` (`PathPlanningAppServiceTests.cs:20-31`): ordered site sequence + cost on success, `PP-003` failure DTO, `KeyNotFoundException` for unknown roadmap, empty-agent-id validation.
-- **`TestSupport/`** — `RoadmapGraphBuilder` (fluent builder over the *real* `RoadmapGraph.Build`, distance→`round(d×1000)` weight) and `FakeRoadmapQueryService` (in-memory `IRoadmapQueryService` honouring the `KeyNotFoundException` contract).
-
-There is no SIPP / reservation-search test — none exists in v0.
+- **`TestSupport/`** — `RoadmapGraphBuilder` (fluent builder over the *real* `RoadmapGraph.Build`, distance→`round(d×1000)` weight), `FakeRoadmapQueryService`, and `FakeReservationView` for safe-interval tests.
 
 ---
 
-## 8. v0 status & v1 roadmap
+## 8. v0/v1 status
 
-| | **v0 — shipped** | **v1 — planned** |
+| | **v0 — shipped** | **v1 — shipped** |
 |---|---|---|
-| `PlannerKind` | `Dijkstra = 1` (`PlannerKind.cs:13-14`) | `Sipp = 2` (slot reserved, `:16-17`) |
+| `PlannerKind` | `Dijkstra = 1` | `Sipp = 2` |
 | Algorithm | Pruned single-agent Dijkstra, **space-only** | SIPP — Safe-Interval Path Planning, **reservation-aware in time** |
 | Reservation view | Accepted but **never read**; `AlwaysFreeReservationView` | Searched: `FreeIntervals` / `IsFree` drive safe-interval expansion |
 | Contention avoidance | Request **CP/Lane blacklist** + Coordination prune-and-replan | Above **plus** routing around the view in time (waits) |
-| `WaitAction` | Defined, **never emitted** (move-only timeline) | Emitted to hold a CP and let another vehicle pass |
-| CP/Lane cells | Share one interval (conservative over-approximation) | May refine exact enter/exit timing — *same resource vocabulary* |
+| Waits | Not emitted by Dijkstra (move-only timeline) | Represented as longer CP dwell intervals in the emitted `SpaceTimePath` |
+| CP/Lane cells | Share one interval sized by edge weight | Unit-hop timeline on `TimeAxis.HopMs`, aligned with schedule-faithful execution |
 
-The seam is engineered so the swap is surgical: **`IPathPlanner` is unchanged across v0→v1** (`IPathPlanner.cs:7-11`), the IoC line `AddSingleton<IPathPlanner, …>` is the only registration that changes, and the Coordination loop body is explicitly designed not to change (`CoordinationCycleService.cs:32-35`). v1 is purely an *additive* refinement of *when* resources are taken, on top of v0's already-correct *what*.
+The seam held: **`IPathPlanner` is unchanged across v0→v1** (`IPathPlanner.cs`), and the Coordination loop body
+is unchanged. v1 is an additive refinement of *when* resources are taken, on top of v0's already-correct *what*.
 
 ---
 

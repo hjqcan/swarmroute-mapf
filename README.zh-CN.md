@@ -55,7 +55,7 @@ DDD 约定进行整洁架构重构后的产物。车队控制问题被拆解为
      │                       │ IReservationQuery      │           │  AllocationContended
 ┌────▼─────────┐   ┌─────────▼────────┐   ┌───────────▼──────┐    │   ┌───────────────┐
 │ Map 資源/地圖 │   │ PathPlanning      │   │ TrafficControl   │────┼──►│ Deadlock 死鎖  │
-│ RoadmapGraph │   │ 路徑規劃 (Dijkstra)│   │ 交通管制 (預約表) │◄───┼───│ 死鎖處理 (RAG)  │
+│ RoadmapGraph │   │ Dijkstra / SIPP │   │ 交通管制 (預約表) │◄───┼───│ 死鎖處理 (RAG)  │
 └──────────────┘   └──────────────────┘   └──────────────────┘  snapshot └───────────────┘
        └───────────────────────┴───────────────────────┴────────────────┬───────────┘
 ┌─────────────────────────────────────────────────────────────────────────▼──────────┐
@@ -86,7 +86,7 @@ DDD 约定进行整洁架构重构后的产物。车队控制问题被拆解为
 for each agent goal (ascending Priority, then ordinal id):
    graph  = Map.GetGraph(roadmap)
    view   = TrafficControl.ReservationView
-   path   = PathPlanning.Plan(graph, request, view)        # Dijkstra, honours blacklist
+   path   = PathPlanning.Plan(graph, request, view)        # Dijkstra or SIPP, selected by PlannerKind
    outcome= TrafficControl.TryReserve(path, agent)          # whole-path interval lock
    if Queued/Blocked:  prune the blocking CP/Lane → re-plan (bounded)   # = "wait / detour"
 ```
@@ -181,7 +181,7 @@ ASPNETCORE_URLS=http://localhost:5062 dotnet run --project host/SwarmRoute.Host
 ```bash
 curl -s -XPOST localhost:5062/api/simulation/run \
   -H 'content-type: application/json' \
-  -d '{"width":16,"height":16,"agvCount":12}'
+  -d '{"width":16,"height":16,"agvCount":12,"planner":"Sipp"}'
 # → { field, agents, timeline{frames[{tick, positions[…]}]}, stats{status, collisions, arrived, replans, …} }
 ```
 `stats.status` 取值为 `Completed` | `CollisionDetected` | `DidNotConverge`。（`CollisionDetected` 是一个回归
@@ -200,7 +200,7 @@ npm run dev            # http://localhost:5173  (Vite proxies /api → http://lo
 
 ## Status & roadmap
 
-**v0（当前）。** 端到端闭环，全部测试通过，构造上即无碰撞：
+**v0（已闭环）。** 端到端闭环，全部测试通过，构造上即无碰撞：
 - Dijkstra 最短路径规划 + 黑名单驱动的剪枝重规划。
 - 整条路径、基于区间的预约（SIPP-ready 模型）。
 - 在资源分配图上进行反应式死锁检测。
@@ -210,9 +210,20 @@ npm run dev            # http://localhost:5173  (Vite proxies /api → http://lo
 在密度扫描中验证通过（10×10、16×16、20×20 网格；多达数十辆 AGV；多个随机种子）：**处处
 零碰撞**；典型密度下均能完成；只有真正过度排满的场地才会报告 `DidNotConverge`。
 
-**v1（计划中）。** 在保持 `IPathPlanner` 接缝不变的前提下，将规划器替换为 **SIPP**（安全区间路径
-规划），并转向忠于排程的执行 —— 在时间维度上协调交汇以获得更高吞吐量，沿用同样的
-上下文、契约和循环主体。
+**v1（已闭环）。** SIPP 已经在保持 `IPathPlanner` 接缝不变的前提下落地，并通过真实的
+Coordination + PathPlanning + TrafficControl + Simulation 引擎验证：
+- `PlannerKind.Sipp` 会选择 `SippPathPlanner`，读取 `IReservationView.FreeIntervals` / `IsFree`，
+  通过拉长 CP 停留区间插入等待。
+- 模拟引擎接受 `"planner":"Sipp"`，并将 `FleetLoopDriver` 切到同一 `ManualFleetClock` tick 轴上的
+  schedule-faithful 执行。
+- Web 控制台提供 SIPP / Dijkstra 切换，模拟表单默认使用 SIPP。
+- Host 的自主后台循环仍默认 `Planning:DefaultPlanner = Dijkstra`，除非部署配置显式切到 `Sipp`；
+  模拟/API 路径是每请求可选。
+
+验证证据：`dotnet test SwarmRoute.Mapf.sln` 通过，包含 `SippPathPlannerTests` 与
+`SippClosedLoopTests`；一次 7×7 / 16 AGV 的 SIPP HTTP smoke 返回 `Completed`、`0` 碰撞、全员到达。
+
+**下一步。** v2 是优先级 SIPP + 滚动时域 / grant 前预防，v3 是局部 CBS/CCBS 与连续时间 SIPPwRT。
 
 ---
 

@@ -12,7 +12,7 @@
 
 它**拥有**:
 
-- 单智能体规划器策略接缝 `IPathPlanner`(`Planners/IPathPlanner.cs:13`)及其 v0 实现 `DijkstraPathPlanner`(`Planners/DijkstraPathPlanner.cs:27`)。
+- 单智能体规划器策略接缝 `IPathPlanner`(`Planners/IPathPlanner.cs:13`)及其已交付实现：`DijkstraPathPlanner`（v0 基线）与 `SippPathPlanner`（v1 安全区间规划器）。
 - 请求/结果词汇表:`PlanRequest`、`PlanResult`、`PlanCost`、`WaitAction`(`ValueObjects/`)。
 - `AgentPlan` 聚合(`Aggregates/AgentPlan.cs:21`),它建模单台车辆当前计划的生命周期并触发集成事件。
 - **预约读取接缝 `IReservationQuery` 的声明**(`Reservations/IReservationQuery.cs:23`)—— 在*此处*由 PathPlanning 声明,但由 TrafficControl 实现(已冻结的跨上下文契约;见 §5)。
@@ -34,7 +34,7 @@
 | 项目 | 角色 | 依赖于 |
 |---|---|---|
 | `SwarmRoute.PathPlanning.Domain.Shared` | 叶子原语:`PlannerKind`、`PlanStatus` 枚举,`PathPlanningErrorCodes`(`PP-001`…`PP-005`)。 | *(无)* —— 纯叶子。 |
-| `SwarmRoute.PathPlanning.Domain` | 核心:`IPathPlanner` + `DijkstraPathPlanner`、各值对象、`AgentPlan` 聚合 + 事件,以及 `IReservationQuery`/`NullReservationQuery`/`AlwaysFreeReservationView` 预约接缝。 | Kernel、`Domain.Abstractions`(事件总线)、NetDevPack(`ValueObject`/`Entity`/`DomainEvent`)、内嵌(vendored)的 `SwarmRoute.Algorithms`、**`Map.Domain`**(用于 `RoadmapGraph`)、Domain.Shared。 |
+| `SwarmRoute.PathPlanning.Domain` | 核心:`IPathPlanner` + `SelectablePathPlanner` + `DijkstraPathPlanner` + `SippPathPlanner`、各值对象、`AgentPlan` 聚合 + 事件,以及 `IReservationQuery`/`NullReservationQuery`/`AlwaysFreeReservationView` 预约接缝。 | Kernel、`Domain.Abstractions`(事件总线)、NetDevPack(`ValueObject`/`Entity`/`DomainEvent`)、内嵌(vendored)的 `SwarmRoute.Algorithms`、**`Map.Domain`**(用于 `RoadmapGraph`)、Domain.Shared。 |
 | `SwarmRoute.PathPlanning.Application.Contract` | 传输面:`IPathPlanningAppService` + `PlanResultDto`。 | 仅 Kernel。 |
 | `SwarmRoute.PathPlanning.Application` | `PathPlanningAppService` 编排 + AutoMapper 的 `PathPlanningMappingProfile`。 | Domain、Application.Contract、**`Map.Application.Contract`**(用于 `IRoadmapQueryService`)、AutoMapper。 |
 | `SwarmRoute.PathPlanning.Infra.CrossCutting.IoC` | 组合根 `PathPlanningNativeInjectorBootStrapper`。 | Application;`FrameworkReference Microsoft.AspNetCore.App`(用于 `WebApplicationBuilder`)。 |
@@ -44,9 +44,12 @@
 
 ---
 
-## 3. 规划器 —— `DijkstraPathPlanner`
+## 3. 规划器 —— Dijkstra 与 SIPP
 
 `Plan(RoadmapGraph graph, PlanRequest request, IReservationView reservations)`(`DijkstraPathPlanner.cs:36`)。函数体分为两个阶段 —— **(a) 找到一个站点序列**,然后 **(b) 把它提升为一条时间线**(§4)。
+
+当前注册的 `IPathPlanner` 是 `SelectablePathPlanner`：它根据 `PlannerOptions.Default` 把每次调用分派给
+`DijkstraPathPlanner` 或 `SippPathPlanner`。v1 没有改变接口，只替换了接口背后的策略。
 
 ### 最短路径(剪枝的 Dijkstra)
 
@@ -106,7 +109,7 @@ cells: CP:A          CP:B       CP:C      CP:D
        [rel,+w0) ... contiguous, half-open, non-overlapping ...
 ```
 
-**为什么 CP 与 Lane 有意重叠同一时间窗**(`DijkstraPathPlanner.cs:18-22`):在穿越某段时,车辆物理上同时占据*车道*和(保守地)它正驶向的那个控制点。v0 出于安全起见把两者都预约 —— 这是最简单的、可靠的过度近似(over-approximation)。资源词汇表(`ResourceKind.CP` / `.Lane`,Kernel `ResourceRef.cs:8-21`)现在就被固定下来,这样 v1 的 SIPP 日后可以细化*精确的*进入/退出时刻(更紧、可能不重叠的拆分),**而无需改变所预约的内容** —— 只改变时刻。
+**为什么 CP 与 Lane 有意重叠同一时间窗**(`DijkstraPathPlanner.cs:18-22`):在穿越某段时,车辆物理上同时占据*车道*和(保守地)它正驶向的那个控制点。v0 出于安全起见把两者都预约 —— 这是最简单的、可靠的过度近似(over-approximation)。资源词汇表(`ResourceKind.CP` / `.Lane`,Kernel `ResourceRef.cs:8-21`)已经固定，SIPP 复用同一批资源，只改变它们被占用的*时间*。
 
 下游消费者读回作为路线的,正是仅 CP 的投影:`AgentPlan.ExtractSiteSequence` 和映射 profile 都过滤 `Resource.Kind == CP`(`AgentPlan.cs:174-178`、`PathPlanningMappingProfile.cs:27-33`)。
 
@@ -137,9 +140,13 @@ PathPlanning 对*哪个*时钟在起作用是无感知的 —— 它只是在被
 
 ## 5. 预约感知
 
-### 已接线,但在 v0 中始终空闲
+### v0 基线与 v1 SIPP
 
 `IPathPlanner.Plan` 接受一个 `IReservationView`(`IPathPlanner.cs:21-26`),所以每个调用点都已经传入一个 —— 接缝端到端已接线。但 **v0 的规划器并不搜索安全区间**。桩视图 `AlwaysFreeReservationView` 对任何资源都报告 `IsFree → true` 以及单一的最大空闲区间 `[0, long.MaxValue)`(`AlwaysFreeReservationView.cs:14-27`);`DijkstraPathPlanner` 甚至从不调用它(`DijkstraPathPlanner.cs:40` —— "被读取但当作始终空闲处理")。`WaitAction`(`ValueObjects/WaitAction.cs:16`)—— move 的对偶,即一个感知预约的规划器为让另一台车辆通过而插入的动作 —— 现在已被定义,但 v0 **从不发出**它("它的时间线只含移动",`WaitAction.cs:11-14`)。
+
+`SippPathPlanner` 是同一个接缝下的 v1 实现。它会物化每个 CP 与 Lane 的 `FreeIntervals`，搜索
+`(site, safe-interval)` 状态，并在需要等待 busy CP 或 lane 释放时，把输出 `SpaceTimePath` 中的 CP
+停留区间拉长。车道冲突也由预约视图判断，包括 TrafficControl 快照视图提供的反向车道冲突。
 
 ### 避让通过请求黑名单(CP/Lane)实现
 
@@ -158,7 +165,7 @@ PathPlanning 对*哪个*时钟在起作用是无感知的 —— 它只是在被
 4. 返回 `Denied`/`Queued`/`Blocked` 时 → 向 `_traffic.BlockedResources(path, ...)` 询问实际阻塞了这条路径的*具体* CP/Lane 资源,**把它们加入 `pruned`**(绝不加入该智能体自己的起点/终点,`:170-178`),然后**重规划** —— 以 `MaxReplanAttempts = 8` 为上界(`:40`、`:118`)。
 5. 若没有新东西可剪,重规划就会是空操作(no-op)→ 停止(`:184-186`)。
 
-每次重规划都**严格缩小搜索空间**(更多被列入黑名单的资源),所以这个内循环可证明会终止 —— 它要么绕开争用,要么以无路径告终,待下个 tick 在某个持有者释放后再重试(`:25-35`)。明确的 v0 说明(`:32-35`):立即重试的避让通过 CP/Lane 黑名单来表达,*正是因为*规划器尚未查阅安全区间;**当 SIPP 在 v1 落地时,这段循环体不变** —— SIPP 额外地在时间上绕开视图。
+每次重规划都**严格缩小搜索空间**(更多被列入黑名单的资源),所以这个内循环可证明会终止 —— 它要么绕开争用,要么以无路径告终,待下个 tick 在某个持有者释放后再重试(`:25-35`)。v1 没有改变这段循环体：SIPP 仍尊重黑名单，并额外在时间上绕开预约视图。
 
 静态障碍的种子用的是同一机制:`FleetLoopDriver` 把已停泊(已到达)车辆的 CP 作为 `blockedResources` 喂入,使车队其余成员绕开它们(`FleetLoopDriver.cs:202-205`、`CoordinationCycleService.cs:108-112`)。
 
@@ -169,8 +176,11 @@ PathPlanning 对*哪个*时钟在起作用是无感知的 —— 它只是在被
 `PathPlanningNativeInjectorBootStrapper.RegisterServices`(`Infra.CrossCutting.IoC/...:33-52`),并按 grukirbs 的 `*NativeInjectorBootStrapper` 约定提供一个 `WebApplicationBuilder` 重载(`:22-27`),以便 Host 统一接线每个上下文:
 
 ```csharp
-services.AddSingleton<IPathPlanner, DijkstraPathPlanner>();        // stateless strategy → singleton
-services.AddSingleton<IReservationQuery, NullReservationQuery>();  // v0 default read seam
+services.AddSingleton<DijkstraPathPlanner>();
+services.AddSingleton<SippPathPlanner>();
+services.TryAddSingleton<PlannerOptions>();              // default planner, overrideable per container
+services.AddSingleton<IPathPlanner, SelectablePathPlanner>();
+services.AddSingleton<IReservationQuery, NullReservationQuery>();
 services.AddScoped<IPathPlanningAppService, PathPlanningAppService>();
 services.AddLogging();
 services.AddAutoMapper(_ => { }, typeof(PathPlanningMappingProfile).Assembly);
@@ -186,8 +196,8 @@ services.AddAutoMapper(_ => { }, typeof(PathPlanningMappingProfile).Assembly);
 
 1. 构建 + 校验 `PlanRequest`(v0 中 release time 为 0)(`:67`)。
 2. `_roadmapQuery.GetGraphAsync` —— Map 读取接缝;对未知路网抛出 `KeyNotFoundException`(`:70`)。
-3. `_reservationQuery.GetView` —— v0 中始终空闲(`:73`)。
-4. `_planner.Plan(...)`(`:75`)。
+3. `_reservationQuery.GetView` —— 独立运行时返回始终空闲的 stub；Host/Simulation 组合中由 TrafficControl 的实时预约快照覆盖(`:73`)。
+4. `_planner.Plan(...)` —— 由 `SelectablePathPlanner` 分派给 Dijkstra 或 SIPP(`:75`)。
 5. 把结果包进一个新建的 `AgentPlan` 聚合(它会触发 `Computed`/`Failed`)并派发事件(`:78-87`)。
 6. `_mapper.Map<PlanResultDto>`(`:89`)。
 
@@ -212,25 +222,24 @@ xUnit;三个套件 + 两个测试支持 fake。
   - **黑名单剪枝**:一个被列入黑名单的中间 CP *以及*一条被列入黑名单的 Lane,各自迫使走另一条分支(`:202-229`)。
   - 空参数保护(`:231-240`)。
 - **`AgentPlanTests`** —— 聚合行为:构造触发正确的事件,`Replan`/`Invalidate` 递增版本 + 触发,id/原因保护(`AgentPlanTests.cs`)。
+- **`SippPathPlannerTests`** —— v1 安全区间正确性：普通路由、确定性 tie-break、未知/不可达失败、等待 busy CP 与 lane、绕开永久阻塞 CP，以及统一的一跳 tick 轴。
 - **`PathPlanningAppServiceTests`** —— 通过**真实**的 `PathPlanningNativeInjectorBootStrapper`(真实规划器 + `NullReservationQuery` + AutoMapper + app service)进行端到端测试,仅把 Map 接缝换成 `FakeRoadmapQueryService`(`PathPlanningAppServiceTests.cs:20-31`):成功时返回有序站点序列 + 代价、`PP-003` 失败 DTO、未知路网的 `KeyNotFoundException`、空 agent id 校验。
-- **`TestSupport/`** —— `RoadmapGraphBuilder`(在*真实*的 `RoadmapGraph.Build` 之上的流式构建器,距离→`round(d×1000)` 权重)和 `FakeRoadmapQueryService`(遵守 `KeyNotFoundException` 契约的内存 `IRoadmapQueryService`)。
-
-没有 SIPP / 预约搜索的测试 —— v0 中不存在。
+- **`TestSupport/`** —— `RoadmapGraphBuilder`、`FakeRoadmapQueryService`，以及用于安全区间测试的 `FakeReservationView`。
 
 ---
 
-## 8. v0 状态与 v1 路线图
+## 8. v0/v1 状态
 
-| | **v0 —— 已交付** | **v1 —— 计划中** |
+| | **v0 —— 已交付** | **v1 —— 已交付** |
 |---|---|---|
-| `PlannerKind` | `Dijkstra = 1`(`PlannerKind.cs:13-14`) | `Sipp = 2`(预留槽位,`:16-17`) |
+| `PlannerKind` | `Dijkstra = 1` | `Sipp = 2` |
 | 算法 | 剪枝的单智能体 Dijkstra,**仅空间** | SIPP —— 安全区间路径规划,**在时间上感知预约** |
 | 预约视图 | 接受但**从不读取**;`AlwaysFreeReservationView` | 被搜索:`FreeIntervals` / `IsFree` 驱动安全区间扩展 |
 | 争用避让 | 请求的 **CP/Lane 黑名单** + Coordination 剪枝重规划 | 以上**外加**在时间上绕开视图(等待) |
-| `WaitAction` | 已定义,**从不发出**(只含移动的时间线) | 被发出以占住一个 CP 并让另一台车辆通过 |
-| CP/Lane 格子 | 共享一个区间(保守的过度近似) | 可细化精确的进入/退出时刻 —— *相同的资源词汇表* |
+| 等待 | Dijkstra 不发出等待(只含移动的时间线) | 表达为输出 `SpaceTimePath` 中更长的 CP 停留区间 |
+| CP/Lane 格子 | 共享一个按边权缩放的区间 | 基于 `TimeAxis.HopMs` 的单位跳时间线，对齐 schedule-faithful 执行 |
 
-接缝经过精心设计,使这个替换是外科手术式的:**`IPathPlanner` 在 v0→v1 之间不变**(`IPathPlanner.cs:7-11`),IoC 那行 `AddSingleton<IPathPlanner, …>` 是唯一会变的注册,而 Coordination 的循环体被明确设计为不变(`CoordinationCycleService.cs:32-35`)。v1 纯粹是对资源被取用的*时机*的一次*增量式*细化,叠加在 v0 已然正确的*内容*之上。
+接缝经受住了演进：**`IPathPlanner` 在 v0→v1 之间不变**(`IPathPlanner.cs`)，Coordination 循环体也不变。v1 是在 v0 已经正确的*资源内容*之上，对资源被取用的*时机*做增量细化。
 
 ---
 

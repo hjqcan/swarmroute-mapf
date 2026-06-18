@@ -16,18 +16,41 @@ public sealed class OrdersController(IServiceProvider services) : ControllerBase
     [HttpPost]
     [ProducesResponseType(typeof(TransportOrder), StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
-    public IActionResult Submit([FromBody] OrderRequest request)
+    public async Task<IActionResult> Submit([FromBody] OrderRequest request, CancellationToken cancellationToken)
     {
         if (services.GetService(typeof(OrderBook)) is not OrderBook orders)
             return Problem("The autonomous dispatcher is not enabled (set Dispatcher:Enabled=true).",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        if (services.GetService(typeof(DispatcherService)) is not DispatcherService dispatcher)
+            return Problem("The autonomous dispatcher is not available.",
                 statusCode: StatusCodes.Status503ServiceUnavailable);
 
         if (request is null || string.IsNullOrWhiteSpace(request.Destination))
             return BadRequest(new ProblemDetails { Title = "Invalid order", Detail = "A destination site id is required." });
 
-        var accepted = orders.Submit(new TransportOrder(request.Id ?? string.Empty, request.Destination, request.Priority));
-        return Accepted(accepted);
+        var destination = request.Destination.Trim();
+        var destinationExists = await dispatcher.DestinationExistsAsync(destination, cancellationToken).ConfigureAwait(false);
+        if (destinationExists is null)
+            return Problem("The dispatcher roadmap graph is not available.",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        if (destinationExists == false)
+            return BadRequest(new ProblemDetails
+            {
+                Title = "Invalid order",
+                Detail = $"Destination site '{destination}' does not exist on the active roadmap.",
+            });
+
+        try
+        {
+            var accepted = orders.Submit(new TransportOrder(request.Id ?? string.Empty, destination, request.Priority));
+            return Accepted(accepted);
+        }
+        catch (DuplicateOrderIdException ex)
+        {
+            return Conflict(new ProblemDetails { Title = "Duplicate order id", Detail = ex.Message });
+        }
     }
 
     [HttpGet]

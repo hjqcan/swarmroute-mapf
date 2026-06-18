@@ -53,7 +53,7 @@ each other's domain internals.
      │                       │ IReservationQuery      │           │  AllocationContended
 ┌────▼─────────┐   ┌─────────▼────────┐   ┌───────────▼──────┐    │   ┌───────────────┐
 │ Map 資源/地圖 │   │ PathPlanning      │   │ TrafficControl   │────┼──►│ Deadlock 死鎖  │
-│ RoadmapGraph │   │ 路徑規劃 (Dijkstra)│   │ 交通管制 (預約表) │◄───┼───│ 死鎖處理 (RAG)  │
+│ RoadmapGraph │   │ Dijkstra / SIPP │   │ 交通管制 (預約表) │◄───┼───│ 死鎖處理 (RAG)  │
 └──────────────┘   └──────────────────┘   └──────────────────┘  snapshot └───────────────┘
        └───────────────────────┴───────────────────────┴────────────────┬───────────┘
 ┌─────────────────────────────────────────────────────────────────────────▼──────────┐
@@ -84,7 +84,7 @@ the contended resources and re-plans within a bounded budget:
 for each agent goal (ascending Priority, then ordinal id):
    graph  = Map.GetGraph(roadmap)
    view   = TrafficControl.ReservationView
-   path   = PathPlanning.Plan(graph, request, view)        # Dijkstra, honours blacklist
+   path   = PathPlanning.Plan(graph, request, view)        # Dijkstra or SIPP, selected by PlannerKind
    outcome= TrafficControl.TryReserve(path, agent)          # whole-path interval lock
    if Queued/Blocked:  prune the blocking CP/Lane → re-plan (bounded)   # = "wait / detour"
 ```
@@ -180,7 +180,7 @@ Drive a simulation directly:
 ```bash
 curl -s -XPOST localhost:5062/api/simulation/run \
   -H 'content-type: application/json' \
-  -d '{"width":16,"height":16,"agvCount":12}'
+  -d '{"width":16,"height":16,"agvCount":12,"planner":"Sipp"}'
 # → { field, agents, timeline{frames[{tick, positions[…]}]}, stats{status, collisions, arrived, replans, …} }
 ```
 `stats.status` is `Completed` | `CollisionDetected` | `DidNotConverge`. (`CollisionDetected` is a regression
@@ -211,7 +211,7 @@ itself is in-memory, so the host is usable with or without the broker. Architect
 
 ## Status & roadmap
 
-**v0 (current).** End-to-end closed loop, fully green, collision-free by construction:
+**v0 (closed).** End-to-end closed loop, fully green, collision-free by construction:
 - Dijkstra shortest-path planning + blacklist-driven prune-and-replan.
 - Whole-path, interval-based reservations (SIPP-ready model).
 - Reactive deadlock detection over the resource-allocation graph.
@@ -221,9 +221,22 @@ itself is in-memory, so the host is usable with or without the broker. Architect
 Verified across a density sweep (10×10, 16×16, 20×20 grids; up to dozens of AGVs; many seeds): **zero
 collisions everywhere**; typical densities complete; only genuinely over-packed fields report `DidNotConverge`.
 
-**v1 (planned).** Swap the planner for **SIPP** (safe-interval path planning) behind the unchanged
-`IPathPlanner` seam, and move to schedule-faithful execution — coordinating crossings *in time* for higher
-throughput, with the same contexts, contracts, and loop body.
+**v1 (closed).** SIPP is implemented behind the unchanged `IPathPlanner` seam and is exercised through the
+real Coordination + PathPlanning + TrafficControl + Simulation engine:
+- `PlannerKind.Sipp` selects `SippPathPlanner`, which searches `IReservationView.FreeIntervals` / `IsFree`
+  and inserts waits by lengthening CP dwell intervals.
+- The simulation engine accepts `"planner":"Sipp"` and switches `FleetLoopDriver` to schedule-faithful
+  execution on the same `ManualFleetClock` tick axis.
+- The web console exposes a SIPP / Dijkstra selector and defaults the simulation form to SIPP.
+- The host's autonomous background loop still defaults to `Planning:DefaultPlanner = Dijkstra` unless the
+  deployment config flips it to `Sipp`; the simulation/API path is per-request selectable.
+
+Verification evidence: `dotnet test SwarmRoute.Mapf.sln` passes, including `SippPathPlannerTests` and
+`SippClosedLoopTests`; `POST /api/simulation/run` with a 7×7 / 16-AGV SIPP run returns `Completed`, `0`
+collisions, and all agents arrived.
+
+**Next.** v2 is priority SIPP + rolling horizon / prevention, and v3 is local CBS/CCBS plus continuous-time
+SIPPwRT.
 
 ---
 

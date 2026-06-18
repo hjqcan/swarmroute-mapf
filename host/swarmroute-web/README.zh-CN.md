@@ -158,7 +158,7 @@ export function runSimulation(req: SimulationRequest): Promise<SimulationResult>
 **Request** —— `SimulationRequest`:
 
 ```ts
-{ width: number; height: number; agvCount: number; seed?: number }
+{ width: number; height: number; agvCount: number; seed?: number; planner?: 'Dijkstra' | 'Sipp' }
 ```
 
 **Response** —— `SimulationResult`:
@@ -166,7 +166,7 @@ export function runSimulation(req: SimulationRequest): Promise<SimulationResult>
 ```ts
 {
   field: { width, height, sites: Site[], lanes: Lane[] }            // FieldDto
-  agents: AgentDto[]   // { id, startSiteId, goalSiteId, colorIndex, pathSiteIds: string[] }
+  agents: AgentDto[]   // { id, startSiteId, goalSiteId, colorIndex, pathSiteIds, remainingSiteIds }
   timeline: {
     tickCount: number
     frames: { tick: number; positions: Position[] }[]               // one frame per tick
@@ -175,12 +175,17 @@ export function runSimulation(req: SimulationRequest): Promise<SimulationResult>
     ticks, collisions, arrived, replans,
     status: 'Completed' | 'CollisionDetected' | 'DidNotConverge',
     collisionTick: number | null,
-    collisionAgentIds: string[] | null
+    collisionAgentIds: string[] | null,
+    redirects: number,
+    recoveries: number,
+    flowtimeTicks: number
   }
 }
 ```
 
 - `Site` = `{ id, x (col), y (row), type }`;`Lane` = `{ id, from, to }`(有向边)。
+- `PlannerKind` = `'Dijkstra' | 'Sipp'`；UI 默认使用 SIPP，同时保留 Dijkstra 作为 A/B 对照。
+- `AgentDto.pathSiteIds` 是已占用轨迹；`remainingSiteIds` 是一次运行未完成时仍在前方的路线。
 - `Position` = `{ agentId, siteId, x, y, state }`,其中 `state ∈ { 'Waiting', 'Moving', 'Arrived' }`(`RunState`)。
 - **重要:** `frame.tick` 是 **引擎 tick 编号**,它不必等于该帧在数组中的索引。前端始终从 `frame.tick` 读取标签,而绝不从游标索引读取(参见 §7)。
 
@@ -197,7 +202,7 @@ export function runSimulation(req: SimulationRequest): Promise<SimulationResult>
 一个 store 承载三项关注点:
 
 **请求表单**
-- `params: SimulationRequest`(默认 `{ width: 10, height: 8, agvCount: 6 }` —— `DEFAULT_PARAMS`)。
+- `params: SimulationRequest`(默认 `{ width: 10, height: 8, agvCount: 6, planner: 'Sipp' }` —— `DEFAULT_PARAMS`)。
 - `setParam(key, value)` —— 按键(per-key)的带类型 setter;`randomizeSeed()` —— 设置一个随机种子。
 
 **运行生命周期**
@@ -301,17 +306,20 @@ export function runSimulation(req: SimulationRequest): Promise<SimulationResult>
 POST /api/simulation/run        (Host on http://localhost:5062; dev-proxied from /api)
 Content-Type: application/json
 
-Request   { "width": number, "height": number, "agvCount": number, "seed"?: number }
+Request   { "width": number, "height": number, "agvCount": number,
+            "seed"?: number, "planner"?: "Dijkstra"|"Sipp" }
           Constraint: width*height >= 2*agvCount  (the frontend pre-validates this in ControlRail)
 
 200 OK    SimulationResult (camelCase JSON, returned DIRECTLY — no { code, msg, data } envelope):
           {
             field:    { width, height, sites: [{id,x,y,type}], lanes: [{id,from,to}] },
-            agents:   [{ id, startSiteId, goalSiteId, colorIndex, pathSiteIds: string[] }],
+            agents:   [{ id, startSiteId, goalSiteId, colorIndex,
+                         pathSiteIds: string[], remainingSiteIds: string[] }],
             timeline: { tickCount, frames: [{ tick, positions: [{agentId,siteId,x,y,state}] }] },
             stats:    { ticks, collisions, arrived, replans,
                         status: "Completed"|"CollisionDetected"|"DidNotConverge",
-                        collisionTick: number|null, collisionAgentIds: string[]|null }
+                        collisionTick: number|null, collisionAgentIds: string[]|null,
+                        redirects: number, recoveries: number, flowtimeTicks: number }
           }
           state ∈ { "Waiting", "Moving", "Arrived" }
 

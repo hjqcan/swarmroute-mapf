@@ -45,7 +45,7 @@ public static class StatusSnapshot
     private static object ToOrderCounts(OrderBook orders)
     {
         var (pending, assigned, completed) = orders.Counts();
-        return new { pending, assigned, completed };
+        return new { pending, assigned, completed, completedTotal = orders.CompletedTotal };
     }
 
     private static int? TryLeaseCount(ITrafficControlSnapshotProvider? snapshot)
@@ -76,6 +76,7 @@ public sealed class CoordinationHealthCheck(
             data["ordersPending"] = pending;
             data["ordersAssigned"] = assigned;
             data["ordersCompleted"] = completed;
+            data["ordersCompletedTotal"] = orders.CompletedTotal;
         }
 
         return Task.FromResult(HealthCheckResult.Healthy("Coordination loop is live.", data));
@@ -95,8 +96,8 @@ public sealed class DispatcherMetrics : IHostedService, IDisposable
     {
         _meter.CreateObservableGauge("swarmroute_orders_pending", () => orders.Counts().Pending,
             description: "Transport orders waiting for a vehicle.");
-        _meter.CreateObservableGauge("swarmroute_orders_completed_total", () => orders.Counts().Completed,
-            description: "Transport orders completed (rolling window).");
+        _meter.CreateObservableCounter("swarmroute_orders_completed_total", () => orders.CompletedTotal,
+            description: "Transport orders completed since this order book started.");
         _meter.CreateObservableGauge("swarmroute_vehicles_busy", () => vehicles.Snapshot().Count(v => v.OrderId is not null),
             description: "Vehicles currently fulfilling an order.");
         _meter.CreateObservableGauge("swarmroute_coordination_active_goals", () => goals.CurrentGoals.Count,

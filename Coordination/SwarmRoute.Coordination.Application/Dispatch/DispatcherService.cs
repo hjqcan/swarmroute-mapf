@@ -6,21 +6,20 @@ namespace SwarmRoute.Coordination.Application.Dispatch;
 
 /// <summary>
 /// The autonomous dispatcher (OpenTCS "Dispatcher"/"Router" reduced to a v1 skeleton): it turns a live feed of
-/// <see cref="TransportOrder"/>s into the goal book the lifelong <see cref="FleetCoordinationLoop"/> plans and
-/// reserves. Implements <see cref="ICoordinationGoalSource"/> so the loop reads it directly; a separate hosted
-/// service ticks <see cref="DispatchAsync"/> to advance the fleet.
+/// <see cref="TransportOrder"/>s into a goal book for the lifelong <see cref="FleetCoordinationLoop"/> and drives
+/// demo vehicle poses so the host can show order assignment progress. Implements <see cref="ICoordinationGoalSource"/>
+/// so the loop reads the goal book directly; a separate hosted service ticks <see cref="DispatchAsync"/>.
 /// <para>
 /// Each dispatch tick: (1) advance every assigned vehicle one control point along the shortest path to its
 /// destination — through a one-vehicle-per-CP gate so the demo poses never overlap — completing the order on
 /// arrival; (2) assign each idle vehicle the nearest reachable pending order (graph distance); (3) rebuild the
 /// goal book from the in-flight assignments (each vehicle's CURRENT pose → its destination), so the coordination
-/// loop continuously re-plans/reserves the remaining route. This is a minimal but real lifelong loop: orders in,
-/// vehicles dispatched, planned, reserved, completed, re-dispatched — no test harness, no database required.
+/// loop continuously re-plans/reserves the remaining route.
 /// </para>
-/// <para><b>Skeleton scope.</b> Pose advancement is a simple kinematic stand-in (one CP/tick along the shortest
-/// path, gated for occupancy); the reservation layer (the coordination cycle) is the authoritative collision-free
-/// planner, and the validated tick-accurate executor lives in the Simulation context. This is a dispatch-flow
-/// skeleton, not a full WMS.</para>
+/// <para><b>Skeleton scope.</b> Pose advancement is a simple kinematic demo stand-in (one CP/tick along the
+/// shortest path, gated for occupancy). It produces goals for the reservation layer, but it does not consume
+/// reservation grants as movement authority; the validated reservation-authoritative executor lives in the
+/// Simulation context. This is a dispatch-flow demo, not a full WMS.</para>
 /// </summary>
 public sealed class DispatcherService : ICoordinationGoalSource
 {
@@ -57,6 +56,19 @@ public sealed class DispatcherService : ICoordinationGoalSource
     }
 
     /// <summary>
+    /// Validates that an intake destination exists on the active dispatcher roadmap. Returns <see langword="null"/>
+    /// when the roadmap graph is unavailable, so API callers can fail fast instead of creating stuck orders.
+    /// </summary>
+    public async Task<bool?> DestinationExistsAsync(string siteId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(siteId))
+            return false;
+
+        var graph = await _roadmaps.TryGetGraphAsync(_roadmapId, cancellationToken).ConfigureAwait(false);
+        return graph?.HasSite(siteId.Trim());
+    }
+
+    /// <summary>
     /// Advances the fleet one step and refreshes the goal book. Safe no-op when the roadmap graph is not yet
     /// available. Returns the goals now in flight (also exposed via <see cref="CurrentGoals"/>).
     /// </summary>
@@ -82,7 +94,7 @@ public sealed class DispatcherService : ICoordinationGoalSource
         return goals;
     }
 
-    /// <summary>Step each assigned vehicle one CP toward its goal (occupancy-gated); complete the order on arrival.</summary>
+    /// <summary>Step each assigned vehicle one CP toward its goal in the demo pose model; complete the order on arrival.</summary>
     private void AdvanceAssigned(IReadOnlyCollection<Vehicle> vehicles, RoadmapGraph graph)
     {
         // Cells that will be occupied after this tick: idle vehicles stay put; movers claim their next CP.
