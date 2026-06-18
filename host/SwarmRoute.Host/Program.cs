@@ -73,8 +73,10 @@ builder.Services.AddScoped<IDetourReservationService, TrafficDetourReservationAd
 // 7. Coordination cycle + hosted watchdog loop.
 builder.Services.AddCoordination(registerHostedLoop: true);
 
-// 7b. Simulation API — builds its own per-request engine, so it only needs its stateless collaborators here.
-//     The SimulationController lives in this Host assembly and is discovered by AddControllers() automatically.
+// 7b. Simulation API — the Host supplies the per-request engine factory because it knows Infra bootstrappers
+//     and registration order. The SimulationController lives in this Host assembly and is discovered by
+//     AddControllers() automatically.
+builder.Services.AddScoped<ISimulationEngineFactory, InMemorySimulationEngineFactory>();
 builder.Services.AddSimulation();
 
 var app = builder.Build();

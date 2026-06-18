@@ -47,6 +47,7 @@
 
     <!-- Simulation: the extracted closed-loop driver (FleetLoopDriver) the closed-loop tests now reuse. -->
     <ProjectReference Include="..\..\Simulation\SwarmRoute.Simulation.Application\SwarmRoute.Simulation.Application.csproj" />
+    <ProjectReference Include="..\..\host\SwarmRoute.Host\SwarmRoute.Host.csproj" />
   </ItemGroup>
 
 </Project>

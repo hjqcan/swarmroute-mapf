@@ -11,8 +11,6 @@ namespace SwarmRoute.EventBus;
 /// </summary>
 public sealed class InProcessIntegrationEventPublisher : IIntegrationEventPublisher
 {
-    private static readonly AsyncLocal<HashSet<string>?> DispatchingEventNames = new();
-
     private readonly IServiceProvider _services;
     private readonly ILogger<InProcessIntegrationEventPublisher> _logger;
 
@@ -42,42 +40,24 @@ public sealed class InProcessIntegrationEventPublisher : IIntegrationEventPublis
         foreach (var domainEvent in events)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var integrationEvent = (IIntegrationEvent)domainEvent;
-            var activeEventNames = DispatchingEventNames.Value ??= new HashSet<string>(StringComparer.Ordinal);
-            if (!activeEventNames.Add(integrationEvent.EventName))
-            {
-                _logger.LogDebug(
-                    "Skipping reentrant integration event {EventName} while it is already being dispatched.",
-                    integrationEvent.EventName);
-                continue;
-            }
 
-            try
+            foreach (var handler in handlers)
             {
-                foreach (var handler in handlers)
+                if (!handler.CanHandle(domainEvent))
+                    continue;
+
+                try
                 {
-                    if (!handler.CanHandle(domainEvent))
-                        continue;
-
-                    try
-                    {
-                        await handler.HandleAsync(domainEvent, cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(
-                            ex,
-                            "Integration-event handler {Handler} failed for event {EventType}.",
-                            handler.GetType().Name,
-                            domainEvent.GetType().Name);
-                    }
+                    await handler.HandleAsync(domainEvent, cancellationToken).ConfigureAwait(false);
                 }
-            }
-            finally
-            {
-                activeEventNames.Remove(integrationEvent.EventName);
-                if (activeEventNames.Count == 0)
-                    DispatchingEventNames.Value = null;
+                catch (Exception ex)
+                {
+                    _logger.LogError(
+                        ex,
+                        "Integration-event handler {Handler} failed for event {EventType}.",
+                        handler.GetType().Name,
+                        domainEvent.GetType().Name);
+                }
             }
         }
     }

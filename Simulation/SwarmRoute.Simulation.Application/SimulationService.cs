@@ -1,17 +1,11 @@
-using Microsoft.Extensions.DependencyInjection;
-using SwarmRoute.Coordination.Application;
-using SwarmRoute.EventBus.Extensions;
-using SwarmRoute.Map.Application.Contract.Services;
-using SwarmRoute.PathPlanning.Infra.CrossCutting.IoC;
-using SwarmRoute.TrafficControl.Infra.CrossCutting.IoC;
-
 namespace SwarmRoute.Simulation.Application;
 
 /// <summary>
 /// Default <see cref="ISimulationService"/>. Builds a grid field, assigns each AGV a distinct start and a
-/// distinct goal with a seeded RNG (reproducible), constructs a fresh per-request in-memory engine (the same
-/// wiring as the integration test host — so concurrent runs never share the singleton <c>ReservationTable</c>),
-/// runs the <see cref="FleetLoopDriver"/> to completion, and maps the result to a <see cref="SimulationResultDto"/>.
+/// distinct goal with a seeded RNG (reproducible), obtains a fresh per-request in-memory engine from
+/// <see cref="ISimulationEngineFactory"/> (so concurrent runs never share the singleton
+/// <c>ReservationTable</c>), runs the <see cref="FleetLoopDriver"/> to completion, and maps the result to a
+/// <see cref="SimulationResultDto"/>.
 /// </summary>
 public sealed class SimulationService : ISimulationService
 {
@@ -20,11 +14,16 @@ public sealed class SimulationService : ISimulationService
 
     private readonly GridFieldFactory _gridFactory;
     private readonly FleetLoopDriver _loopDriver;
+    private readonly ISimulationEngineFactory _engineFactory;
 
-    public SimulationService(GridFieldFactory gridFactory, FleetLoopDriver loopDriver)
+    public SimulationService(
+        GridFieldFactory gridFactory,
+        FleetLoopDriver loopDriver,
+        ISimulationEngineFactory engineFactory)
     {
         _gridFactory = gridFactory ?? throw new ArgumentNullException(nameof(gridFactory));
         _loopDriver = loopDriver ?? throw new ArgumentNullException(nameof(loopDriver));
+        _engineFactory = engineFactory ?? throw new ArgumentNullException(nameof(engineFactory));
     }
 
     /// <inheritdoc />
@@ -50,13 +49,13 @@ public sealed class SimulationService : ISimulationService
             agentSpecs.Add(new FleetAgentSpec($"agv-{i + 1}", start, goal, Priority: i));
         }
 
-        // 3. Wire a fresh REAL engine for THIS request (isolation between concurrent runs).
-        await using var engine = BuildEngine(field.Graph, out var roadmapId, out var cycle);
+        // 3. Get a fresh REAL engine for THIS request (isolation between concurrent runs).
+        await using var engine = _engineFactory.Create(field.Graph);
 
         // 4. Run the closed loop to completion, recording the timeline.
         var maxTicks = MaxTicks(request);
         var loop = await _loopDriver
-            .RunToCompletionAsync(cycle, roadmapId, field.Graph, agentSpecs, maxTicks, cancellationToken)
+            .RunToCompletionAsync(engine.Cycle, engine.RoadmapId, field.Graph, agentSpecs, maxTicks, cancellationToken)
             .ConfigureAwait(false);
 
         // 5. Map to the transport DTO.
@@ -88,42 +87,6 @@ public sealed class SimulationService : ISimulationService
     /// </summary>
     private static int MaxTicks(SimulationRequest request)
         => ((request.Width + request.Height) * (request.AgvCount + 1)) + 50;
-
-    /// <summary>
-    /// Builds a per-request DI container wiring the REAL services exactly like <c>CoordinationTestHost.Build</c>:
-    /// <c>AddLogging + AddEventBus + in-memory IRoadmapQueryService + PathPlanning + TrafficControl (after
-    /// PathPlanning, so its ReservationService overrides IReservationQuery) + AddCoordination</c>. Returns the
-    /// provider (caller disposes) and resolves the cycle + the roadmap id the graph is registered under.
-    /// </summary>
-    private static ServiceProvider BuildEngine(
-        Map.Domain.ValueObjects.RoadmapGraph graph,
-        out Guid roadmapId,
-        out IFleetCoordinationCycle cycle)
-    {
-        roadmapId = Guid.NewGuid();
-        var services = new ServiceCollection();
-
-        services.AddLogging();
-
-        // Event bus (real in-memory integration dispatch).
-        services.AddEventBus();
-
-        // Map read seam — graph-backed, no DB.
-        services.AddSingleton<IRoadmapQueryService>(new InMemoryRoadmapQueryService(roadmapId, graph));
-
-        // PathPlanning (IPathPlanner + NullReservationQuery).
-        PathPlanningNativeInjectorBootStrapper.RegisterServices(services);
-
-        // TrafficControl AFTER PathPlanning so ReservationService overrides IReservationQuery (last wins).
-        TrafficControlNativeInjectorBootStrapper.RegisterServices(services);
-
-        // Coordination cycle (no hosted loop — we drive RunCycleAsync directly).
-        services.AddCoordination();
-
-        var provider = services.BuildServiceProvider();
-        cycle = provider.GetRequiredService<IFleetCoordinationCycle>();
-        return provider;
-    }
 
     private static SimulationResultDto Map(
         GridField field,

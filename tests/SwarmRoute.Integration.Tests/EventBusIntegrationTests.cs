@@ -42,7 +42,7 @@ public sealed class EventBusIntegrationTests
     }
 
     [Fact]
-    public async Task InProcessPublisher_DoesNotDispatchSameEventNameReentrantly()
+    public async Task InProcessPublisher_DispatchesNestedSameEventNameWithoutDropping()
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -58,6 +58,6 @@ public sealed class EventBusIntegrationTests
 
         await publisher.PublishAsync([new TestIntegrationEvent("Test.Same")]);
 
-        Assert.Equal(new[] { "Test.Same", "Test.Other" }, handler.HandledEventNames);
+        Assert.Equal(new[] { "Test.Same", "Test.Same", "Test.Other" }, handler.HandledEventNames);
     }
 }
