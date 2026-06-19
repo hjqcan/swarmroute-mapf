@@ -1,6 +1,7 @@
 using SwarmRoute.Coordination.Application;
 using SwarmRoute.Coordination.Application.Deadlock;
 using SwarmRoute.Map.Domain.ValueObjects;
+using SwarmRoute.Simulation.Application.Pibt;
 using SwarmRoute.SpatioTemporal.Kernel;
 
 namespace SwarmRoute.Simulation.Application;
@@ -169,6 +170,18 @@ public sealed class FleetLoopDriver
         /// circular blocking chain the lockstep executor can't resolve — which the diagnostic log surfaces.</summary>
         public int BlockedTicks { get; set; }
 
+        /// <summary>True while this agent is being driven by zone-local PIBT (v3): it has released its (stalled)
+        /// reservation and is moved one hop per tick by the joint resolver until it reaches its goal or the episode
+        /// budget elapses. PIBT agents are excluded from normal planning/advancing and handled in block (2).</summary>
+        public bool PibtActive { get; set; }
+
+        /// <summary>Consecutive ticks this PIBT agent has been forced to hold inside the current episode (the
+        /// anti-livelock key that promotes the longest-waiting agent in the resolver's processing order).</summary>
+        public int PibtHeldTicks { get; set; }
+
+        /// <summary>Ticks of PIBT driving left in the current episode before the agent disbands back to SIPP.</summary>
+        public int PibtEpisodeTicksLeft { get; set; }
+
         /// <summary>When set, the agent is yielding a deadlock: it is being routed to this avoidance site
         /// instead of its goal, until the case is recovered and the target is cleared.</summary>
         public string? RedirectTarget { get; set; }
@@ -233,6 +246,7 @@ public sealed class FleetLoopDriver
         Func<string, CancellationToken, Task>? escalateLivelock = null,
         FleetExecutionMode executionMode = FleetExecutionMode.Greedy,
         bool stepAside = false,
+        bool usePibt = false,
         Action<string>? log = null,
         CancellationToken cancellationToken = default)
     {
@@ -263,6 +277,13 @@ public sealed class FleetLoopDriver
         // vehicles on its approach step aside for `gatekeeperYieldWindow` ticks (then re-park) so it can pass.
         const int gatekeeperUnblockThreshold = 10;
         const int gatekeeperYieldWindow = 20;
+
+        // PIBT (v3, zone-local): a congestion cluster is taken over once a member has been blocked this many ticks
+        // — below the stall-reroute (12) and gatekeeper (10) thresholds, so PIBT gets first crack — and is driven
+        // jointly for at most this many ticks before disbanding back to prioritized-SIPP. The episode is bounded
+        // (generously, by graph size); the DidNotConverge tick budget remains the ultimate backstop.
+        const int pibtTriggerThreshold = 8;
+        var pibtEpisodeMaxTicks = 2 * Math.Max(1, graph.VertexCount);
 
         // Stable fleet order (priority then ordinal id) so timeline + routes are reproducible.
         var fleet = agents
@@ -311,6 +332,11 @@ public sealed class FleetLoopDriver
             ag.AllResources = Array.Empty<ResourceRef>();
             ag.FrontierIsGoal = true; // re-plan toward EffectiveGoal fresh next cycle (block 1 re-derives this).
         }
+
+        // PIBT hop-distance oracle, memoized for the whole run (one reverse-BFS per distinct goal).
+        var pibtHopsCache = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal);
+        IReadOnlyDictionary<string, int> HopsTo(string goal) =>
+            pibtHopsCache.TryGetValue(goal, out var d) ? d : pibtHopsCache[goal] = HopDistances.To(graph, goal);
 
         while (fleet.Any(a => !a.Done))
         {
@@ -469,7 +495,7 @@ public sealed class FleetLoopDriver
             // (1) Plan + reserve every agent that still needs right-of-way. A victim holding at its avoidance
             //     site (waiting for recovery) is intentionally NOT re-planned.
             var pending = fleet
-                .Where(a => !a.Done && !a.EnRoute && !a.HoldingAtAvoidSite)
+                .Where(a => !a.Done && !a.EnRoute && !a.HoldingAtAvoidSite && !a.PibtActive)
                 .Select(a => new AgentGoal(a.Id, a.Start, a.EffectiveGoal, a.Priority))
                 .ToList();
 
@@ -543,6 +569,37 @@ public sealed class FleetLoopDriver
             var posBefore = fleet.ToDictionary(a => a.Id, a => a.Position, StringComparer.Ordinal);
 
             var occupantNow = fleet.ToDictionary(a => a.Position, a => a, StringComparer.Ordinal);
+
+            // (2-PIBT-enter) Zone-local PIBT (opt-in): promote physical standoffs into clusters and take them over
+            // from SIPP. The RAG detector can't see these (each agent HOLDS, not waits for, its interval-exclusive
+            // reservation); PIBT is the principled, deadlock-aware generalization of the stall-reroute / step-aside
+            // band-aids. A cluster's agents release their stalled reservations and are then driven jointly one hop
+            // per tick (block 2-PIBT-drive) until they reach goal or the episode budget elapses; being !EnRoute,
+            // their cells already feed physicallyBlockedCells so the rest of the fleet routes around the pocket.
+            if (usePibt)
+            {
+                var occById = occupantNow.ToDictionary(kv => kv.Key, kv => kv.Value.Id, StringComparer.Ordinal);
+                var snapshots = fleet
+                    .Select(a => new StuckAgentSnapshot(
+                        a.Id,
+                        a is { EnRoute: true, Done: false } && a.Idx + 1 < a.CpRoute.Count ? a.CpRoute[a.Idx + 1] : null,
+                        a.BlockedTicks, a.EnRoute, a.Done))
+                    .ToList();
+                foreach (var cluster in StuckClusterDetector.Assemble(snapshots, occById, pibtTriggerThreshold))
+                    foreach (var id in cluster)
+                    {
+                        var ag = fleet.Single(a => a.Id == id);
+                        if (ag.PibtActive || ag.RedirectTarget is not null)
+                            continue; // already in PIBT, or owned by the deadlock-redirect machinery
+                        await YieldAndReplanFromCurrentAsync(ag).ConfigureAwait(false);
+                        ag.PibtActive = true;
+                        ag.PibtEpisodeTicksLeft = pibtEpisodeMaxTicks;
+                        ag.PibtHeldTicks = 0;
+                        ag.BlockedTicks = 0;
+                        log?.Invoke($"pibt-enter@tick{tick}: {ag.Id} joins a congestion cluster at {ag.Position} (goal {ag.Goal}).");
+                    }
+            }
+
             var claimedNext = new HashSet<string>(StringComparer.Ordinal);
             foreach (var a in fleet.Where(a => !(a.EnRoute && !a.Done)))
                 claimedNext.Add(a.Position);
@@ -555,6 +612,65 @@ public sealed class FleetLoopDriver
             var scheduledAdvance = executionMode == FleetExecutionMode.ScheduleFaithful
                 ? ResolveScheduleFaithfulAdvances(fleet, tick, parkedCells, log)
                 : null;
+
+            // (2-PIBT-drive) Compute and apply the cluster's joint single-hop move. Blocked cells = every
+            // non-cluster agent's current cell PLUS the cells this tick's scheduled movers will enter — so a PIBT
+            // hop never lands on, or swaps with, a flowing-fleet agent within the tick. Each PIBT agent holds no
+            // lease, so a move just updates its physical pose (no ReleaseAsync); block (3)/(3b) stay the final net.
+            if (usePibt && fleet.Any(a => a.PibtActive))
+            {
+                var blockedForPibt = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var a in fleet)
+                    if (!a.PibtActive)
+                        blockedForPibt.Add(a.Position);
+                if (scheduledAdvance is not null)
+                    foreach (var moverId in scheduledAdvance)
+                    {
+                        var m = fleet.Single(a => a.Id == moverId);
+                        if (m.Idx + 1 < m.CpRoute.Count)
+                            blockedForPibt.Add(m.CpRoute[m.Idx + 1]);
+                    }
+
+                var clusterViews = fleet
+                    .Where(a => a.PibtActive)
+                    .Select(a => new PibtAgentView(a.Id, a.Position, a.EffectiveGoal, a.Priority, a.PibtHeldTicks))
+                    .ToList();
+                var pibtMove = PibtZoneResolver.Resolve(clusterViews, blockedForPibt, graph, HopsTo);
+
+                foreach (var ag in fleet.Where(a => a.PibtActive).ToList())
+                {
+                    ag.PibtEpisodeTicksLeft--;
+                    var from = ag.Position;
+                    var to = pibtMove[ag.Id];
+                    if (!string.Equals(to, from, StringComparison.Ordinal))
+                    {
+                        ag.Start = to;            // a PIBT agent holds no lease: move it physically (Position = Start)
+                        ag.CpRoute = new[] { to };
+                        ag.Idx = 0;
+                        ag.PibtHeldTicks = 0;
+                    }
+                    else
+                    {
+                        ag.PibtHeldTicks++;       // forced hold this tick
+                    }
+                    claimedNext.Add(ag.Position); // claim the (new) cell so no non-cluster mover steps onto it
+
+                    if (string.Equals(ag.Position, ag.Goal, StringComparison.Ordinal))
+                    {
+                        // Reached the real goal: park (hand back nothing — it held no lease) and exit PIBT.
+                        ag.PibtActive = false;
+                        ag.Done = true;
+                        parkedCells.Add(ag.Position);
+                        flowtimeTicks += tick;
+                    }
+                    else if (ag.PibtEpisodeTicksLeft <= 0)
+                    {
+                        // Episode budget elapsed: disband back to prioritized-SIPP, which re-plans from this pose.
+                        ag.PibtActive = false;
+                        log?.Invoke($"pibt-exit@tick{tick}: {ag.Id} leaves PIBT at {ag.Position} (episode budget elapsed), re-planning.");
+                    }
+                }
+            }
 
             foreach (var ag in fleet.Where(a => a is { EnRoute: true, Done: false }))
             {
@@ -631,6 +747,11 @@ public sealed class FleetLoopDriver
                                     && string.Equals(partner.CpRoute[partner.Idx + 1], fromCp, StringComparison.Ordinal);
                                 var iYield = headOn && ag.Priority >= partner!.Priority;
                                 var threshold = iYield ? headOnYieldThreshold : stallRerouteThreshold;
+                                // When PIBT is on it is the primary standoff handler: it engages at
+                                // pibtTriggerThreshold and pulls the agents out of the en-route advance entirely.
+                                // Keep these band-aids only as a far backstop for anything its detector never clusters.
+                                if (usePibt)
+                                    threshold = Math.Max(stallRerouteThreshold, pibtTriggerThreshold) + 8;
 
                                 if (ag.BlockedTicks >= threshold)
                                 {
@@ -725,9 +846,11 @@ public sealed class FleetLoopDriver
                 }
             }
 
-            // (3) Safety: no two agents holding right-of-way (moving or just-arrived) share a CP this tick.
+            // (3) Safety: no two agents holding right-of-way (moving or just-arrived) — or being driven by PIBT —
+            //     share a CP this tick. PIBT agents hold no lease but physically occupy a cell, so they must be in
+            //     the net or a PIBT bug could co-locate undetected.
             var occupied = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var ag in fleet.Where(a => a.EnRoute || a.Done).OrderBy(a => a.Id, StringComparer.Ordinal))
+            foreach (var ag in fleet.Where(a => a.EnRoute || a.Done || a.PibtActive).OrderBy(a => a.Id, StringComparer.Ordinal))
             {
                 if (occupied.TryGetValue(ag.Position, out var other))
                 {
@@ -748,7 +871,7 @@ public sealed class FleetLoopDriver
             //      lane in opposite directions). Their end CPs are distinct, so (3) above can't see it. The
             //      schedule-faithful resolver forbids this up front; detect any residual so a run reports
             //      CollisionDetected honestly instead of a false "no collision", and log the offenders.
-            foreach (var ag in fleet.Where(a => a.EnRoute || a.Done))
+            foreach (var ag in fleet.Where(a => a.EnRoute || a.Done || a.PibtActive))
             {
                 if (!posBefore.TryGetValue(ag.Id, out var prev) || string.Equals(prev, ag.Position, StringComparison.Ordinal))
                     continue; // didn't move this tick

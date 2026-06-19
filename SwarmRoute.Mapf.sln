@@ -113,6 +113,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Simulation", "Simulation", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Simulation.Application", "Simulation\SwarmRoute.Simulation.Application\SwarmRoute.Simulation.Application.csproj", "{003EA724-F25E-4C79-A7B8-88361668E3E5}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Simulation.Tests", "Simulation\SwarmRoute.Simulation.Tests\SwarmRoute.Simulation.Tests.csproj", "{0B67A21A-350C-40A7-BFA7-A674CF0A9664}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -615,6 +617,18 @@ Global
 		{003EA724-F25E-4C79-A7B8-88361668E3E5}.Release|x64.Build.0 = Release|Any CPU
 		{003EA724-F25E-4C79-A7B8-88361668E3E5}.Release|x86.ActiveCfg = Release|Any CPU
 		{003EA724-F25E-4C79-A7B8-88361668E3E5}.Release|x86.Build.0 = Release|Any CPU
+		{0B67A21A-350C-40A7-BFA7-A674CF0A9664}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0B67A21A-350C-40A7-BFA7-A674CF0A9664}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0B67A21A-350C-40A7-BFA7-A674CF0A9664}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{0B67A21A-350C-40A7-BFA7-A674CF0A9664}.Debug|x64.Build.0 = Debug|Any CPU
+		{0B67A21A-350C-40A7-BFA7-A674CF0A9664}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{0B67A21A-350C-40A7-BFA7-A674CF0A9664}.Debug|x86.Build.0 = Debug|Any CPU
+		{0B67A21A-350C-40A7-BFA7-A674CF0A9664}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0B67A21A-350C-40A7-BFA7-A674CF0A9664}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0B67A21A-350C-40A7-BFA7-A674CF0A9664}.Release|x64.ActiveCfg = Release|Any CPU
+		{0B67A21A-350C-40A7-BFA7-A674CF0A9664}.Release|x64.Build.0 = Release|Any CPU
+		{0B67A21A-350C-40A7-BFA7-A674CF0A9664}.Release|x86.ActiveCfg = Release|Any CPU
+		{0B67A21A-350C-40A7-BFA7-A674CF0A9664}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -664,5 +678,6 @@ Global
 		{EE233E83-D201-4CEE-B27A-7B56C22B4638} = {AE46CC9A-5502-86DB-B795-80687CC1E02C}
 		{846668C9-75E3-4AF4-8E94-1591A4548BA1} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{003EA724-F25E-4C79-A7B8-88361668E3E5} = {36E7FC26-247D-07CC-9F36-7068B8A9EA44}
+		{0B67A21A-350C-40A7-BFA7-A674CF0A9664} = {36E7FC26-247D-07CC-9F36-7068B8A9EA44}
 	EndGlobalSection
 EndGlobal

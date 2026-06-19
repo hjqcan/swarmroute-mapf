@@ -221,9 +221,10 @@ MAPF 天生把「規劃 + 預約 + 死鎖」耦在一起；切錯會得到貧血
 | **v0** Dijkstra + 預約表 + Deadlock | ✅ 已關閉 | 剪枝 Dijkstra、整路區間預約、RAG 偵測/恢復、greedy 執行器 | 乾淨架構 + 多機無碰撞基線 |
 | **v1** 時空預約 + SIPP | ✅ 已關閉 | PathPlanning `SippPathPlanner` 搜尋安全區間；Simulation `PlannerKind.Sipp` + schedule-faithful 執行；Web 可切換 | 車輛錯時共用走廊；密集場景收斂率與重規劃數優於 v0 |
 | **v2** 滾動時窗 + 避免式預防 | 🟡 **部分交付** | Coordination 滾動時窗（RHCR）：`HorizonWindowMs`（預設 ∞=關，opt-in）；Deadlock `WouldCloseCycle` 接進 `TryReserve`（grant 前拒環，預設關閉）。**AA-SIPP(m) 顯式版與 h<w 已否決；PIBT 移至 v3**（見下方決策記錄） | 規劃延遲有界；構造性 liveness（**僅在預約層 wait-for 環會形成的路徑**）。高密度收斂主要由執行層 StepAside 恢復達成，非 RHCR |
-| **v3** CBS/PIBT + 連續時間 SIPPwRT | 下一階段 | PathPlanning **密集處 PIBT**（聯合每-tick 決策，與現 `Plan()`+`TryReserve` 單-agent 接縫不合，需新 `IJointStepPlanner` + 預約表原子聯合提交）+ 壅塞 Zone 局部 CBS/CCBS；SIPPwRT/TP-SIPPwRT 連續時間 + 運動學（Bezier 上的 v_max/a_max） | 最高密度吞吐、平滑且時間精確的運動 |
+| **v3** PIBT（壅塞區局部聯合步進） | 🟡 **部分交付** | Simulation 執行層 **zone-local PIBT**（opt-in `UsePibt`，預設關閉）：`StuckClusterDetector` 偵測互阻僵局簇 → 釋放其預約 → `PibtZoneResolver`（優先級繼承+回溯）逐 tick 聯合步進至清空，再回 prioritized-SIPP。**採 executor-anchored**（不動凍結接縫）；CBS/CCBS、連續時間 SIPPwRT、`IJointStepPlanner`+預約表原子聯合提交+host-loop 接線**移至 v4**（見下方決策記錄） | 高密度物理僵局收斂（7×7/16 多 seed 由 DidNotConverge → Completed 或抵達數嚴格增加，全程無碰撞）；範圍限 sim/執行層，**未接 host loop** |
+| **v4** CBS/CCBS + 連續時間 SIPPwRT + PIBT host-seam | 下一階段 | 壅塞 Zone 局部 CBS/CCBS；SIPPwRT/TP-SIPPwRT 連續時間 + 運動學（Bezier 上的 v_max/a_max）；把 `PibtZoneResolver` 包進 `IJointStepPlanner` + `ReservationTable.TryGrantJointStep`（單跳原子聯合提交）經 `IFleetCoordinationCycle` 接進 autonomous `FleetCoordinationLoop` | 最高密度吞吐、平滑時間精確運動、host-loop 自治、cross-tick 健全性以表為權威封口 |
 
-> 關鍵：v1 已證明 plan/reserve 契約可在不改 Coordination 內迴圈的前提下加深智能；後續 v2/v3 仍沿用此契約邊界。
+> 關鍵：v1 已證明 plan/reserve 契約可在不改 Coordination 內迴圈的前提下加深智能；v2 仍沿用此契約邊界。**v3 PIBT 為執行層 zone-local 機制**（物理僵局發生在執行層、非預約層），刻意落在 plan/reserve 接縫**之外**；其文檔字面的 `IJointStepPlanner`+原子聯合提交 host-seam 版移至 v4。
 
 > **v2 決策記錄（2026-06）**：
 > - **AA-SIPP(m)（PathPlanning 內顯式優先級規劃）— 否決**：Coordination 層已是優先級序列化規劃（按 `AgentGoal.Priority` 逐車 plan→reserve、後車避開前車預約），等價於優先級 SIPP；PathPlanning **內部沒有、也不再加**顯式 AA-SIPP(m)，再加是無實測收益的 dead-weight。
@@ -231,6 +232,13 @@ MAPF 天生把「規劃 + 預約 + 死鎖」耦在一起；切錯會得到貧血
 > - **PIBT — 移至 v3**：與 `Plan()`+`TryReserve` 單-agent 接縫不合（需聯合每-tick 決策 + 原子聯合提交），屬 v3 等級工程。
 > - **TrafficControl 端 right-of-way**：grant-時拒環的讓路判定目前用 **ordinal-id**，**非**真 priority/aging（lease 不帶持有者 priority、`TryReserve` 不傳 priority）。優先級 right-of-way 屬 refinement，未交付——本階段只聲稱 **Coordination 層** prioritized SIPP，不聲稱 TrafficControl priority/right-of-way 完成。
 > - **WouldCloseCycle 範圍**：正確性已由 seeded 預約環測試證明；在 `FleetLoopDriver` 執行層 sim 中 **inert**（該 sim 的死鎖是物理僵局、非預約環）。sim 的 A/B 開關證明的是 **wiring / non-regression**，不是「sim 中防死鎖觸發有效」。
+
+> **v3 決策記錄（2026-06）**：
+> - **PIBT 採 executor-anchored（而非文檔字面的 `IJointStepPlanner` + 預約表原子聯合提交）**：開放問題（物理僵局）就在執行層——agent 各握互斥區間預約卻在執行層對撞，RAG 看不到、WouldCloseCycle 在 sim inert、RHCR 只邊際改善。PIBT 落在 `FleetLoopDriver`，重用既有 per-tick fixpoint 解器不變量與 release-then-replan idiom，**不動任何凍結接縫**、不碰 `ReservationTable`/`IPathPlanner`/Coordination/DI 工廠，純加法於單一 bounded context（3 生產檔 + 4 純新檔 `Pibt/`）。是現有 StepAside/stall-reroute band-aid 的原則化、無死鎖泛化。
+> - **CBS/CCBS 局部 + 連續時間 SIPPwRT — 移至 v4**：本期 PIBT 先行；另兩支柱（尤其 SIPPwRT 會打破 `TimeAxis.HopMs` 離散 tick 模型，波及整條時間軸/執行器/幾何）屬 v4。
+> - **`IJointStepPlanner` 港 + `TryGrantJointStep` 原子聯合提交 + host-loop 接線 — 移至 v4**：可讓預約表為唯一真相、帶 PIBT 進 autonomous host loop，並徹底封住下方 cross-tick 健全性邊界；但今天 host loop 未跑高密度僵局，且觸及 6 個 context。純 `PibtZoneResolver` 已設計成可被 v4 原樣包進該港（讀唯讀 `PibtAgentView`、回 `agentId→下一格`）。
+> - **健全性邊界（誠實標註）**：簇內 + **同-tick 跨簇**無碰撞由建構保證（解器把非簇 `occupantNow` + 本 tick 排定 `claimedNext` 一併當 reserved）；**cross-tick 跨簇僅緩解、非證明**——PIBT 簇成員 episode 間不持 lease，靠 `physicallyBlockedCells` 使其餘 fleet 繞行 + block(3)/(3b) 安全網（含 `PibtActive`，報 `CollisionDetected`、不靜默）+ 全密度 collision-free sweep 經驗證。完全封口＝v4 的 `TryGrantJointStep`（表為權威）。
+> - **量測收益（7×7/16，以 StepAside 為基線）**：多個 DidNotConverge seed 轉 Completed（全 16 抵達）或抵達數嚴格增加，全程 0 碰撞、確定性；已收斂 seed 逐位元不變（opt-in 預設關＝byte-identical v2，回歸鎖）。仍有 seed 維持 DidNotConverge——PIBT 助大多數而非全部，`DidNotConverge` tick budget 硬底永在（永不崩、永不對撞）。
 
 ---
 

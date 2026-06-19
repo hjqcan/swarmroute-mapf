@@ -47,6 +47,15 @@ namespace SwarmRoute.Simulation.Application;
 /// byte-identical v1, so the same seed A/B-compares prevention by flipping only this field. Independent of
 /// <see cref="StepAside"/> (executor recovery) and <see cref="HorizonWindowMs"/> (rolling horizon).
 /// </param>
+/// <param name="UsePibt">
+/// Opt-in zone-local PIBT (Priority Inheritance with Backtracking) executor recovery for physical standoffs in
+/// schedule-faithful (SIPP) runs (v3; default off). When on, a detected congestion cluster — agents that each
+/// hold interval-exclusive reservations yet physically block one another (head-on swaps / circular chains the
+/// reservation table cannot see) — is driven jointly one hop at a time until the jam dissolves, after which each
+/// agent re-plans back to prioritized-SIPP. Off = byte-identical v2 (no cluster is ever entered). Independent of
+/// <see cref="StepAside"/> and <see cref="HorizonWindowMs"/>; PIBT engages a few ticks before the StepAside /
+/// stall-reroute band-aids and supersedes them inside its cluster.
+/// </param>
 public sealed record SimulationRequest(
     int Width,
     int Height,
@@ -56,4 +65,5 @@ public sealed record SimulationRequest(
     IReadOnlyList<string>? Starts = null,
     long HorizonWindowMs = long.MaxValue,
     bool StepAside = false,
-    bool PreventDeadlockCycles = false);
+    bool PreventDeadlockCycles = false,
+    bool UsePibt = false);

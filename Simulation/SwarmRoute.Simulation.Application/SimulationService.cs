@@ -86,6 +86,7 @@ public sealed class SimulationService : ISimulationService
                 escalateLivelock: engine.EscalateLivelock,
                 executionMode: executionMode,
                 stepAside: request.StepAside,
+                usePibt: request.UsePibt,
                 log: msg => _logger.LogWarning("[standoff] {Detail}", msg),
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
@@ -97,12 +98,13 @@ public sealed class SimulationService : ISimulationService
         {
             var starts = "[\"" + string.Join("\",\"", agentSpecs.Select(a => a.StartSiteId)) + "\"]";
             // Capture EVERY field that changes execution, or the repro won't reproduce: planner, the RHCR window,
-            // the StepAside executor recovery, and the deadlock-prevention toggle — not just seed + starts.
+            // the StepAside executor recovery, the deadlock-prevention toggle, and the PIBT toggle — not just seed + starts.
             var repro = $"{{\"width\":{request.Width},\"height\":{request.Height},\"agvCount\":{request.AgvCount}," +
                         $"\"seed\":{request.Seed?.ToString() ?? "null"},\"planner\":\"{request.Planner}\"," +
                         $"\"horizonWindowMs\":{request.HorizonWindowMs}," +
                         $"\"stepAside\":{(request.StepAside ? "true" : "false")}," +
-                        $"\"preventDeadlockCycles\":{(request.PreventDeadlockCycles ? "true" : "false")},\"starts\":{starts}}}";
+                        $"\"preventDeadlockCycles\":{(request.PreventDeadlockCycles ? "true" : "false")}," +
+                        $"\"usePibt\":{(request.UsePibt ? "true" : "false")},\"starts\":{starts}}}";
             _logger.LogWarning("[did-not-converge] arrived {Arrived}/{Total} in {Ticks} ticks. Repro: {Repro}",
                 loop.Stats.Arrived, request.AgvCount, loop.Stats.Ticks, repro);
         }
