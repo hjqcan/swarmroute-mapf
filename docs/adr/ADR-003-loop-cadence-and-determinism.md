@@ -1,5 +1,7 @@
 # ADR-003 — Loop cadence is event-driven + watchdog tick; re-planning is deterministic
 
+> _Superseded: the reactive deadlock-resolution flow described here was replaced by the `Liveness` context (grant-time prevention + a synchronous standoff-resolution policy). See `Liveness/README.md`._
+
 - Status: Accepted
 - Date: 2026-06-18
 - Deciders: TL / Coordination / Algo

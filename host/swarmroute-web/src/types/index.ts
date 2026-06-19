@@ -25,6 +25,15 @@ export type RunStatus = 'Completed' | 'CollisionDetected' | 'DidNotConverge'
  */
 export type PlannerKind = 'Dijkstra' | 'Sipp' | 'Sippwrt'
 
+/**
+ * Which zone-local joint resolver owns a physical standoff cluster (mirrors the backend
+ * `SwarmRoute.Liveness.Application.Contract.Policy.JointResolverKind`). Exactly one resolver owns a cluster.
+ * - `None` — no joint resolver; clusters are broken only by the cheap per-agent ladder (head-on yield / stall-reroute).
+ * - `Pibt` — zone-local PIBT (Priority Inheritance with Backtracking): fast greedy one-hop-per-tick drive.
+ * - `Cbs` — zone-local CBS (Conflict-Based Search): complete, cracks the dense standoffs PIBT can't. SIPP-only.
+ */
+export type JointResolverKind = 'None' | 'Pibt' | 'Cbs'
+
 /** Inputs to one simulation run. */
 export interface SimulationRequest {
   width: number
@@ -46,17 +55,11 @@ export interface SimulationRequest {
    */
   stepAside?: boolean
   /**
-   * Opt-in zone-local PIBT (v3): when a cluster of AGVs is physically stuck, resolve that zone with Priority
-   * Inheritance with Backtracking so high-density standoffs converge. SIPP-only; edge-collision safety unchanged.
-   * Mutually exclusive with {@link useCbs} — pick exactly one local cluster owner (or neither).
+   * Opt-in zone-local joint resolver for physical standoff clusters (SIPP-only; default `None`). One resolver owns
+   * a cluster: `Pibt` is the fast greedy priority-inheritance drive (v3); `Cbs` is the complete local Conflict-Based
+   * Search (v4) that cracks the swaps/chains greedy PIBT can't (heavier). Edge-collision safety is independent.
    */
-  usePibt?: boolean
-  /**
-   * Opt-in zone-local CBS (v4): solve a physical standoff cluster JOINTLY with a complete local Conflict-Based
-   * Search, cracking the swaps/chains greedy PIBT can't. SIPP-only; heavier than PIBT. Mutually exclusive with
-   * {@link usePibt}.
-   */
-  useCbs?: boolean
+  jointResolver?: JointResolverKind
 }
 
 /** A single control point on the grid at planar (x=col, y=row). */

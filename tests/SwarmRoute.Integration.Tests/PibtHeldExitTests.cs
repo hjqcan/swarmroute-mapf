@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using SwarmRoute.Host.Adapters;
+using SwarmRoute.Liveness.Application.Contract.Policy;
 using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 using SwarmRoute.Simulation.Application;
 using Xunit;
@@ -21,7 +22,8 @@ public sealed class PibtHeldExitTests
         => new SimulationService(new GridFieldFactory(), new FleetLoopDriver(),
                 new InMemorySimulationEngineFactory(), NullLogger<SimulationService>.Instance)
             .RunAsync(new SimulationRequest(w, h, agv, seed, PlannerKind.Sipp,
-                HorizonWindowMs: window ?? long.MaxValue, StepAside: true, UsePibt: usePibt))
+                HorizonWindowMs: window ?? long.MaxValue, StepAside: true,
+                JointResolver: usePibt ? JointResolverKind.Pibt : JointResolverKind.None))
             .GetAwaiter().GetResult();
 
     [Fact]

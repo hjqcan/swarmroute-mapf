@@ -1,11 +1,8 @@
+using SwarmRoute.Liveness.Domain.Detection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using SwarmRoute.Coordination.Application;
-using SwarmRoute.Coordination.Application.Deadlock;
-using SwarmRoute.Deadlock.Application.Abstractions;
-using SwarmRoute.Deadlock.Application.Contract.Services;
-using SwarmRoute.Deadlock.Domain.Services;
-using SwarmRoute.Deadlock.Infra.CrossCutting.IoC;
+using SwarmRoute.Liveness.Infra.CrossCutting.IoC;
 using SwarmRoute.EventBus.Extensions;
 using SwarmRoute.Map.Application.Contract.Services;
 using SwarmRoute.Map.Domain.ValueObjects;
@@ -14,7 +11,6 @@ using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 using SwarmRoute.PathPlanning.Infra.CrossCutting.IoC;
 using SwarmRoute.Simulation.Application;
 using SwarmRoute.SpatioTemporal.Kernel;
-using SwarmRoute.TrafficControl.Application.Contract.Services;
 using SwarmRoute.TrafficControl.Domain.Services;
 using SwarmRoute.TrafficControl.Infra.CrossCutting.IoC;
 
@@ -42,7 +38,7 @@ public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
         // prevention ON for THIS run (default off = the Null detector = byte-identical v0/v1). Per-request and
         // contained to this isolated container, exactly like the planner / horizon switches.
         if (preventCycles)
-            services.AddSingleton<IWouldCloseCycleDetector, RagWouldCloseCycleDetector>();
+            services.AddSingleton<IWouldCloseCycleDetector, RagCycleDetector>();
 
         // Select the planner for THIS run. Pre-registered before the PathPlanning bootstrapper, whose
         // TryAddSingleton<PlannerOptions> then defers to this instance — so the isolated container's
@@ -52,20 +48,18 @@ public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
         TrafficControlNativeInjectorBootStrapper.RegisterServices(services);
         DeadlockNativeInjectorBootStrapper.RegisterServices(services);
 
-        services.AddScoped<IDeadlockSnapshotProvider, TrafficSnapshotDeadlockAdapter>();
-        services.AddScoped<IDetourReservationService, TrafficDetourReservationAdapter>();
-        services.AddScoped<IClearanceConfirmer, SnapshotClearanceConfirmer>();
-        services.AddScoped<IAvoidancePointSelector>(sp =>
-            new GraphAvoidancePointSelector(
-                graph,
-                sp.GetRequiredService<ITrafficControlSnapshotProvider>()));
-
         services.AddCoordination();
 
         // RHCR (v2): bound this run's planning horizon. The CoordinationCycleService reads HorizonWindowMs from
         // CoordinationLoopOptions and stamps each PlanRequest; long.MaxValue (default) = unbounded whole-path,
         // byte-identical to v1. Per-request and contained to this isolated container, like PlannerOptions above.
-        services.Configure<CoordinationLoopOptions>(o => o.HorizonWindowMs = horizonWindowMs);
+        // (v3) Continuous: the SIPPwRT planner pairs with the continuous executor, so its cluster joint solve must be
+        // CCBS (continuous CBS over a SIPPwRT low level) rather than discrete CBS. Off for every discrete planner.
+        services.Configure<CoordinationLoopOptions>(o =>
+        {
+            o.HorizonWindowMs = horizonWindowMs;
+            o.Continuous = planner == PlannerKind.Sippwrt;
+        });
 
         // Drive reservation timing off the discrete simulation tick (not wall-clock): the driver advances this
         // clock each tick so reserved intervals live on the same axis the executor moves on. Replaces the
@@ -79,20 +73,14 @@ public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
             provider,
             roadmapId,
             provider.GetRequiredService<IFleetCoordinationCycle>(),
-            clock,
-            provider.GetRequiredService<IFleetRedirectQuery>(),
-            provider.GetRequiredService<IDeadlockRecoveryService>(),
-            provider.GetRequiredService<IDeadlockEscalationService>());
+            clock);
     }
 
     private sealed class Engine(
         ServiceProvider provider,
         Guid roadmapId,
         IFleetCoordinationCycle cycle,
-        ManualFleetClock clock,
-        IFleetRedirectQuery redirects,
-        IDeadlockRecoveryService recovery,
-        IDeadlockEscalationService escalation)
+        ManualFleetClock clock)
         : ISimulationEngine
     {
         public Guid RoadmapId { get; } = roadmapId;
@@ -101,42 +89,6 @@ public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
 
         public ManualFleetClock Clock { get; } = clock;
 
-        public IFleetRedirectQuery Redirects { get; } = redirects;
-
-        public Func<CancellationToken, Task<IReadOnlyCollection<string>>> RecoverTick { get; } =
-            recovery.TryRecoverAllAsync;
-
-        public Func<string, CancellationToken, Task> EscalateLivelock { get; } =
-            async (victimAgentId, cancellationToken) =>
-                await escalation
-                    .EscalateLivelockAsync(
-                        victimAgentId,
-                        "Simulation.Driver.Livelock",
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
         public ValueTask DisposeAsync() => provider.DisposeAsync();
-    }
-
-    private sealed class GraphAvoidancePointSelector(
-        RoadmapGraph graph,
-        ITrafficControlSnapshotProvider snapshots) : IAvoidancePointSelector
-    {
-        public string? SelectAvoidancePoint(string victimAgentId, IReadOnlySet<string>? excludedSiteIds = null)
-        {
-            if (string.IsNullOrWhiteSpace(victimAgentId))
-                return null;
-
-            var occupiedSites = snapshots.GetSnapshot().Owns
-                .Where(o => o.Resource.Kind == ResourceKind.CP)
-                .Select(o => o.Resource.Id)
-                .ToHashSet(StringComparer.Ordinal);
-
-            return graph.Vertices
-                .Where(site => excludedSiteIds is null || !excludedSiteIds.Contains(site))
-                .Where(site => !occupiedSites.Contains(site))
-                .OrderBy(site => site, StringComparer.Ordinal)
-                .FirstOrDefault();
-        }
     }
 }

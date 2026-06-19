@@ -1,8 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
-using SwarmRoute.Coordination.Application.Deadlock;
-using SwarmRoute.Domain.Abstractions.EventBus;
 
 namespace SwarmRoute.Coordination.Application;
 
@@ -44,17 +42,6 @@ public static class CoordinationServiceCollectionExtensions
         services.TryAddSingleton<InMemoryCoordinationGoalSource>();
         services.TryAddSingleton<ICoordinationGoalSource>(sp =>
             sp.GetRequiredService<InMemoryCoordinationGoalSource>());
-
-        // Deadlock-redirect projection + consumer: the Coordination side of the resolve loop. The consumer
-        // reacts to Deadlock.Case.ResolutionRequested/Resolved/Escalated and records redirect/recovery
-        // intent in the singleton store, which the fleet driver reads each tick. Registering it here means
-        // any host that calls AddCoordination() (incl. the integration test host) gets the closed loop.
-        services.TryAddSingleton<FleetRedirectStore>();
-        services.TryAddSingleton<IFleetRedirectQuery>(sp => sp.GetRequiredService<FleetRedirectStore>());
-        services.TryAddSingleton<IFleetRedirectSink>(sp => sp.GetRequiredService<FleetRedirectStore>());
-        services.AddScoped<DeadlockResolutionRequestedConsumer>();
-        services.AddScoped<IIntegrationEventHandler>(sp =>
-            sp.GetRequiredService<DeadlockResolutionRequestedConsumer>());
 
         if (configure is not null)
             services.Configure(configure);

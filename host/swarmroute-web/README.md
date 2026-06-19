@@ -174,8 +174,6 @@ These types mirror `SwarmRoute.Simulation.Application.SimulationResultDto` exact
     status: 'Completed' | 'CollisionDetected' | 'DidNotConverge',
     collisionTick: number | null,
     collisionAgentIds: string[] | null,
-    redirects: number,
-    recoveries: number,
     flowtimeTicks: number
   }
 }
@@ -317,7 +315,7 @@ Request   { "width": number, "height": number, "agvCount": number,
             stats:    { ticks, collisions, arrived, replans,
                         status: "Completed"|"CollisionDetected"|"DidNotConverge",
                         collisionTick: number|null, collisionAgentIds: string[]|null,
-                        redirects: number, recoveries: number, flowtimeTicks: number }
+                        flowtimeTicks: number }
           }
           state ∈ { "Waiting", "Moving", "Arrived" }
 

@@ -1,3 +1,4 @@
+using SwarmRoute.Liveness.Application.Contract.Policy;
 using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 
 namespace SwarmRoute.Simulation.Application;
@@ -47,26 +48,26 @@ namespace SwarmRoute.Simulation.Application;
 /// byte-identical v1, so the same seed A/B-compares prevention by flipping only this field. Independent of
 /// <see cref="StepAside"/> (executor recovery) and <see cref="HorizonWindowMs"/> (rolling horizon).
 /// </param>
-/// <param name="UsePibt">
-/// Opt-in zone-local PIBT (Priority Inheritance with Backtracking) executor recovery for physical standoffs in
-/// schedule-faithful (SIPP) runs (v3; default off). When on, a detected congestion cluster — agents that each
-/// hold interval-exclusive reservations yet physically block one another (head-on swaps / circular chains the
-/// reservation table cannot see) — is driven jointly one hop at a time until the jam dissolves, after which each
-/// agent re-plans back to prioritized-SIPP. Off = byte-identical v2 (no cluster is ever entered). Independent of
-/// <see cref="StepAside"/> and <see cref="HorizonWindowMs"/>; PIBT engages a few ticks before the StepAside /
-/// stall-reroute band-aids and supersedes them inside its cluster. Mutually exclusive with <see cref="UseCbs"/>:
-/// one physical standoff cluster must have exactly one local owner.
-/// </param>
-/// <param name="UseCbs">
-/// Opt-in zone-local CBS (Conflict-Based Search) executor recovery for physical standoffs in schedule-faithful
-/// (SIPP) runs (v3; default off). When on, a detected congestion cluster is solved JOINTLY by a complete/optimal
-/// local CBS over its agents (reusing SIPP as the constrained low level), the conflict-free paths are reserved
-/// atomically, and the cluster resumes normal schedule-faithful execution. Where <see cref="UsePibt"/> is a fast
-/// greedy resolver, CBS cracks the dense standoffs greedy priority-inheritance cannot (at higher cost). Off =
-/// byte-identical v2 (no cluster is ever solved). Requires <see cref="PlannerKind.Sipp"/> and is mutually
-/// exclusive with <see cref="UsePibt"/>; it is still independent of <see cref="StepAside"/>. It honors
-/// <see cref="HorizonWindowMs"/> through CBS's SIPP low level; like PIBT it is sim/executor-scoped (production has
-/// no executor).
+/// <param name="JointResolver">
+/// Opt-in zone-local joint resolver for physical standoffs in schedule-faithful (SIPP) runs (v3; default
+/// <see cref="JointResolverKind.None"/>). A "physical standoff" is a cluster of agents that each hold
+/// interval-exclusive reservations yet physically block one another (head-on swaps / circular chains the
+/// reservation table cannot see). Exactly one resolver owns a cluster:
+/// <list type="bullet">
+/// <item><see cref="JointResolverKind.None"/> — no joint resolver; clusters are broken only by the cheap per-agent
+/// ladder (head-on yield / stall-reroute). Byte-identical to v2 (no cluster is ever entered or solved).</item>
+/// <item><see cref="JointResolverKind.Pibt"/> — a detected cluster is driven jointly one hop at a time (Priority
+/// Inheritance with Backtracking) until the jam dissolves, after which each agent re-plans back to
+/// prioritized-SIPP. A fast greedy resolver that engages a few ticks before the stall-reroute band-aid and
+/// supersedes it inside its cluster.</item>
+/// <item><see cref="JointResolverKind.Cbs"/> — a detected cluster is solved JOINTLY by a complete/optimal local
+/// CBS (Conflict-Based Search) over its agents (reusing SIPP as the constrained low level); the conflict-free
+/// paths are reserved atomically and the cluster resumes normal schedule-faithful execution. CBS cracks the dense
+/// standoffs greedy priority-inheritance cannot (at higher cost). <b>Requires <see cref="PlannerKind.Sipp"/></b>
+/// because CBS returns time-axis SIPP paths the schedule-faithful executor must run.</item>
+/// </list>
+/// Independent of <see cref="StepAside"/> and <see cref="HorizonWindowMs"/> (CBS honors the rolling-horizon window
+/// through its SIPP low level). Like every standoff lever it is sim/executor-scoped (production has no executor).
 /// </param>
 public sealed record SimulationRequest(
     int Width,
@@ -78,5 +79,4 @@ public sealed record SimulationRequest(
     long HorizonWindowMs = long.MaxValue,
     bool StepAside = false,
     bool PreventDeadlockCycles = false,
-    bool UsePibt = false,
-    bool UseCbs = false);
+    JointResolverKind JointResolver = JointResolverKind.None);

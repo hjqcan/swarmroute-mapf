@@ -1,9 +1,9 @@
 using System.Collections.Generic;
 using System.Linq;
 using NetDevPack.Domain;
-using SwarmRoute.Deadlock.Domain.Shared;
+using SwarmRoute.Liveness.Domain.Shared;
 
-namespace SwarmRoute.Deadlock.Domain.ValueObjects;
+namespace SwarmRoute.Liveness.Domain.ValueObjects;
 
 /// <summary>
 /// The set of agent ids that participate in a single circular wait (a cycle in the

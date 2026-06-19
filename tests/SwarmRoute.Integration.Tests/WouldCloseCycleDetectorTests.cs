@@ -1,3 +1,4 @@
+using SwarmRoute.Liveness.Domain.Detection;
 using SwarmRoute.Host.Adapters;
 using SwarmRoute.SpatioTemporal.Kernel;
 using SwarmRoute.TrafficControl.Domain.Services;
@@ -6,14 +7,14 @@ using Xunit;
 namespace SwarmRoute.Integration.Tests;
 
 /// <summary>
-/// The real <see cref="RagWouldCloseCycleDetector"/> (which reuses the Deadlock RAG builder + cycle detector):
+/// The real <see cref="RagCycleDetector"/> (which reuses the Deadlock RAG builder + cycle detector):
 /// it must say "yes" exactly when adding the candidate's would-be wait edges closes a circular wait through it,
 /// and "no" otherwise — the same cycle semantics the reactive detector uses.
 /// </summary>
 public sealed class WouldCloseCycleDetectorTests
 {
     private static ResourceRef Cp(string id) => new(ResourceKind.CP, id);
-    private readonly IWouldCloseCycleDetector _detector = new RagWouldCloseCycleDetector();
+    private readonly IWouldCloseCycleDetector _detector = new RagCycleDetector();
 
     [Fact]
     public void Closing_a_two_agent_circular_wait_is_detected()

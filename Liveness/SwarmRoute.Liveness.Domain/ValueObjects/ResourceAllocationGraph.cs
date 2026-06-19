@@ -2,10 +2,10 @@ using System.Collections.Generic;
 using System.Linq;
 using AJR.Platform.Algorithms.DataStructures.Graphs;
 using NetDevPack.Domain;
-using SwarmRoute.Deadlock.Domain.Shared;
+using SwarmRoute.Liveness.Domain.Shared;
 using SwarmRoute.SpatioTemporal.Kernel;
 
-namespace SwarmRoute.Deadlock.Domain.ValueObjects;
+namespace SwarmRoute.Liveness.Domain.ValueObjects;
 
 /// <summary>
 /// The Resource-Allocation-Graph (RAG) for a point-in-time snapshot of who holds and who waits on

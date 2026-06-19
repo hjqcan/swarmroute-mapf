@@ -5,9 +5,6 @@ using SwarmRoute.Coordination.Application;
 using SwarmRoute.PathPlanning.Domain.Planners;
 using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 using SwarmRoute.SpatioTemporal.Kernel;
-using SwarmRoute.Deadlock.Application.Abstractions;
-using SwarmRoute.Deadlock.Application.Resolution;
-using SwarmRoute.Deadlock.Domain.Services;
 using SwarmRoute.EventBus.Extensions;
 using SwarmRoute.Host;
 using SwarmRoute.Host.Adapters;
@@ -16,7 +13,7 @@ using SwarmRoute.PathPlanning.Infra.CrossCutting.IoC;
 using SwarmRoute.Simulation.Application;
 using SwarmRoute.TrafficControl.Domain.Services;
 using SwarmRoute.TrafficControl.Infra.CrossCutting.IoC;
-using DeadlockBootStrapper = SwarmRoute.Deadlock.Infra.CrossCutting.IoC.DeadlockNativeInjectorBootStrapper;
+using DeadlockBootStrapper = SwarmRoute.Liveness.Infra.CrossCutting.IoC.DeadlockNativeInjectorBootStrapper;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SwarmRoute composition root (single deployable). Wires the four bounded contexts
@@ -28,11 +25,9 @@ using DeadlockBootStrapper = SwarmRoute.Deadlock.Infra.CrossCutting.IoC.Deadlock
 //   3. PathPlanningNativeInjectorBootStrapper     — IPathPlanner + NullReservationQuery (no DB)
 //   4. TrafficControlNativeInjectorBootStrapper   — AFTER Planning so ReservationService overrides
 //                                                   IReservationQuery (DbContext: TrafficControlDatabase)
-//   5. DeadlockNativeInjectorBootStrapper         — detector/resolver + TryAdd null seams (no DB)
-//   6. Host adapters (override defaults)          — Deadlock snapshot → Traffic; IResourceTopology → Map;
-//                                                   Deadlock avoid/detour seams (registered AFTER step 5,
-//                                                   but seams use TryAdd so the Host wins; topology must be
-//                                                   registered for ReservationTable to pick it up)
+//   5. DeadlockNativeInjectorBootStrapper         — the RAG cycle detector (post-hoc detection role; no DB)
+//   6. Host adapters (override defaults)          — IResourceTopology → Map (topology must be registered for
+//                                                   ReservationTable to pick it up)
 //   7. AddCoordination() + FleetCoordinationLoop  — the lifelong RHCR driver
 //   8. Controllers from Map.Api + TrafficControl.Api
 //
@@ -96,26 +91,8 @@ builder.Services.TryAddSingleton<ICoordinationGoalSource>(sp =>
 //        AddSingleton replaces TrafficControl's IResourceTopology.Empty (last registration wins).
 builder.Services.AddSingleton<IResourceTopology, MapResourceTopologyAdapter>();
 
-//    6b. Deadlock seams (Null* were registered via TryAdd by the bootstrapper, so these explicit ones win).
-builder.Services.AddScoped<IDeadlockSnapshotProvider, TrafficSnapshotDeadlockAdapter>();
-builder.Services.AddScoped<IDetourReservationService, TrafficDetourReservationAdapter>();
-//        Avoidance-point selection: Map-backed selector wrapped in the anti-livelock "no repeat point" guard
-//        (singleton history remembers the last point per victim across scans).
-builder.Services.AddSingleton<AvoidancePointHistory>();
-builder.Services.AddScoped<MapAvoidancePointSelector>();
-builder.Services.AddScoped<IAvoidancePointSelector>(sp =>
-    new AntiLivelockAvoidancePointSelector(
-        sp.GetRequiredService<MapAvoidancePointSelector>(),
-        sp.GetRequiredService<AvoidancePointHistory>()));
-//        Clearance: confirm recovery by re-detecting over a fresh TrafficControl snapshot (replaces the
-//        optimistic NullClearanceConfirmer registered by the bootstrapper).
-builder.Services.AddScoped<IClearanceConfirmer, SnapshotClearanceConfirmer>();
-
 // 7. Coordination cycle + hosted watchdog loop.
 builder.Services.AddCoordination(registerHostedLoop: true);
-
-// 7a. CAP subscriber bridge. Used only when CAP is configured; harmless in the in-process path.
-builder.Services.AddScoped<CapIntegrationEventSubscriber>();
 
 // 7b. Simulation API — the Host supplies the per-request engine factory because it knows Infra bootstrappers
 //     and registration order. The SimulationController lives in this Host assembly and is discovered by

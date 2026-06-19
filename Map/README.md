@@ -21,7 +21,7 @@ It explicitly does **NOT** own:
 | Path search / agent plans | **PathPlanning** |
 | The per-tick coordination loop, goal selection | **Coordination** |
 | Per-agent blacklists, runtime resource state | **TrafficControl / Host** (runtime) |
-| Deadlock detection | **Deadlock** |
+| Wait-for-cycle prevention/detection + physical-standoff policy | **Liveness** |
 
 This split is deliberate and load-bearing. The original first-generation engine fused topology with live occupancy on `MapSite`/`MapResource`; this port keeps only the *static* fields here. `MapSite` (`Map/SwarmRoute.Map.Domain/Entities/MapSite.cs:13`) carries type, pose, enabled flag and interference references — **no** dynamic lock state. Even the ported `MapResourceStatus` enum documents that `Locked`/`Belong` are retained for import fidelity only; the authoritative copy lives in TrafficControl (`Map/SwarmRoute.Map.Domain.Shared/Enums/MapResourceStatus.cs:13`).
 
@@ -95,7 +95,7 @@ Kernel-interop helpers map graph elements to the **frozen** `ResourceRef` contra
 - `LaneId(from,to)` → the `"{from}-{to}"` convention
 - `LaneRef(from,to)` → `ResourceRef(ResourceKind.Lane, "{from}-{to}")`
 
-These are how TrafficControl / Deadlock name the same physical resources Map owns. The raw `Graph` is also exposed for advanced consumers (planners running their own Dijkstra/SIPP).
+These are how TrafficControl / Liveness name the same physical resources Map owns. The raw `Graph` is also exposed for advanced consumers (planners running their own Dijkstra/SIPP).
 
 ### Entities & supporting VOs
 
@@ -143,7 +143,7 @@ Integration events (`…/Domain/Events/`), both `DomainEvent, IIntegrationEvent`
 | `MapRoadmapImportedEvent` | `Map.Roadmap.Imported` / `v1` | id, name, version, site/line/block counts | observability / bookkeeping |
 | `MapRoadmapPublishedEvent` | `Map.Roadmap.Published` / `v1` | id, name, version | cache invalidators (Map's provider; Host's topology adapter) |
 
-> **Note on the runtime closure seam (Host):** in the assembled system the Host binds TrafficControl's `IResourceTopology` to a `MapResourceTopologyAdapter` that reads the `Roadmap` **aggregate directly** (via `IRoadmapRepository`) and derives each resource's lock-closure (interference set + parent block) using `RoadmapGraph.SiteRef`/`LaneRef`. Likewise `MapAvoidancePointSelector` reads sites by `MapSiteType` to pick `AvoidSite`s. So Map's *domain* (aggregate + `RoadmapGraph` helpers) is consumed beyond the `IRoadmapQueryService` graph seam — but always read-only, and the dynamic state derived from it lives in TrafficControl, not Map.
+> **Note on the runtime closure seam (Host):** in the assembled system the Host binds TrafficControl's `IResourceTopology` to a `MapResourceTopologyAdapter` that reads the `Roadmap` **aggregate directly** (via `IRoadmapRepository`) and derives each resource's lock-closure (interference set + parent block) using `RoadmapGraph.SiteRef`/`LaneRef`. So Map's *domain* (aggregate + `RoadmapGraph` helpers) is consumed beyond the `IRoadmapQueryService` graph seam — but always read-only, and the dynamic state derived from it lives in TrafficControl, not Map.
 
 ---
 

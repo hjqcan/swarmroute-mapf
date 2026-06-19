@@ -1,4 +1,4 @@
-using SwarmRoute.Simulation.Application.Pibt;
+using SwarmRoute.Liveness.Domain.Detection;
 
 namespace SwarmRoute.Simulation.Tests;
 

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using SwarmRoute.Host.Adapters;
+using SwarmRoute.Liveness.Application.Contract.Policy;
 using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 using SwarmRoute.Simulation.Application;
 using Xunit;
@@ -22,27 +23,20 @@ public sealed class CbsClosedLoopTests
                 NullLogger<SimulationService>.Instance)
             .RunAsync(request).GetAwaiter().GetResult();
 
-    // CBS in isolation (UsePibt:false) so the value tests below attribute convergence to CBS, not PIBT.
+    // CBS in isolation (the joint resolver is exactly one cluster owner) so the value tests below attribute
+    // convergence to CBS, not PIBT.
     private static SimulationRequest Req(int w, int h, int agv, int seed, bool useCbs) =>
         new(w, h, agv, seed, PlannerKind.Sipp, Starts: null, HorizonWindowMs: long.MaxValue,
-            StepAside: true, PreventDeadlockCycles: false, UsePibt: false, UseCbs: useCbs);
+            StepAside: true, PreventDeadlockCycles: false,
+            JointResolver: useCbs ? JointResolverKind.Cbs : JointResolverKind.None);
 
     [Fact]
     public void Cbs_requires_sipp_schedule_faithful_execution()
     {
         var ex = Assert.Throws<ArgumentException>(() =>
-            Run(new SimulationRequest(4, 4, 3, Seed: 1, Planner: PlannerKind.Dijkstra, UseCbs: true)));
+            Run(new SimulationRequest(4, 4, 3, Seed: 1, Planner: PlannerKind.Dijkstra, JointResolver: JointResolverKind.Cbs)));
 
-        Assert.Contains("UseCbs requires Planner=Sipp", ex.Message);
-    }
-
-    [Fact]
-    public void Cbs_and_pibt_are_explicitly_mutually_exclusive()
-    {
-        var ex = Assert.Throws<ArgumentException>(() =>
-            Run(new SimulationRequest(4, 4, 3, Seed: 1, Planner: PlannerKind.Sipp, UsePibt: true, UseCbs: true)));
-
-        Assert.Contains("UseCbs and UsePibt are mutually exclusive", ex.Message);
+        Assert.Contains("JointResolver=Cbs requires Planner=Sipp", ex.Message);
     }
 
     // ── Regression lock: an explicit UseCbs:false run is byte-identical to the default (field-omitted) request ─

@@ -18,9 +18,8 @@ export const DEFAULT_PARAMS: SimulationRequest = {
   // Enable executor recovery for parked goal blockers; edge-collision safety is independent and always on.
   stepAside: true,
   // Default standoff resolver = v4 local CBS (complete: resolves the corridor swaps / blocking chains greedy PIBT
-  // can't). PIBT and CBS are mutually-exclusive cluster owners; the control rail switches Off / PIBT / CBS.
-  usePibt: false,
-  useCbs: true,
+  // can't). The single jointResolver owns a cluster; the control rail switches Off / PIBT / CBS (None/Pibt/Cbs).
+  jointResolver: 'Cbs',
 }
 
 export interface SimState {

@@ -15,7 +15,7 @@ simulation:
 | **Map — 資源 / 地圖** | The static roadmap: control points (CP), directed lanes, mutual-exclusion blocks; the in-memory `RoadmapGraph` read model. | [Map/README.md](Map/README.md) |
 | **Path Planning — 路徑規劃** | Single-agent route search over the graph; lifts a route into a space-time path. | [PathPlanning/README.md](PathPlanning/README.md) |
 | **Traffic Control — 交通管制** | Right-of-way: interval-based space-time reservations (who may occupy which resource, when); grant / deny / release. | [TrafficControl/README.md](TrafficControl/README.md) |
-| **Deadlock Handling — 死鎖處理** | Reactive circular-wait detection from the reservation contention graph; requests resolution (detour / reroute). | [Deadlock/README.md](Deadlock/README.md) |
+| **Liveness — 活性** | Keeps the fleet making progress, two decision-only ways: **prevents** wait-for cycles at reservation grant time (the RAG check TrafficControl consults), and owns the synchronous `ILivenessPolicy` that resolves **physical** standoffs (head-on yield, PIBT, CBS, parked step-aside) the reservation table cannot see. | [Liveness/README.md](Liveness/README.md) |
 | **Coordination — 協調** | The RHCR rolling-horizon control loop that orchestrates the four domains into one fleet tick. | [Coordination/README.md](Coordination/README.md) |
 | **Simulation — 模擬** | DB-free closed-loop **executor + verifier** and the HTTP replay API that drives the whole stack. | [Simulation/README.md](Simulation/README.md) |
 | **SwarmRoute Web — 前端** | React/Vite "dispatcher's console" that runs scenarios and replays them on a canvas. | [host/swarmroute-web/README.md](host/swarmroute-web/README.md) |
@@ -39,7 +39,7 @@ each other's domain internals.
                                    │  POST /api/simulation/run   (Vite dev-proxy)
 ┌─────────────────────────────────▼──────────────────────────────────────────────┐
 │ Host   ASP.NET Core — composition root, SimulationController, integration       │
-│        adapters (topology / detour / deadlock-snapshot / in-memory engine)      │
+│        adapters (Map-backed topology, in-memory simulation engine)              │
 └─────────────────────────────────┬──────────────────────────────────────────────┘
 ┌─────────────────────────────────▼──────────────────────────────────────────────┐
 │ Simulation 模擬   FleetLoopDriver (tick executor + right-of-way gate),           │
@@ -50,11 +50,11 @@ each other's domain internals.
 │ Coordination 協調   RHCR rolling-horizon cycle — orchestrates the four domains   │
 └────┬──────────────────────┬───────────────────────┬─────────────────────────────┘
      │ IRoadmapQueryService  │ IPathPlanner           │ ITrafficCoordinatorAppService
-     │                       │ IReservationQuery      │           │  AllocationContended
+     │                       │ IReservationQuery      │           │  IWouldCloseCycleDetector
 ┌────▼─────────┐   ┌─────────▼────────┐   ┌───────────▼──────┐    │   ┌───────────────┐
-│ Map 資源/地圖 │   │ PathPlanning      │   │ TrafficControl   │────┼──►│ Deadlock 死鎖  │
-│ RoadmapGraph │   │ Dijkstra / SIPP │   │ 交通管制 (預約表) │◄───┼───│ 死鎖處理 (RAG)  │
-└──────────────┘   └──────────────────┘   └──────────────────┘  snapshot └───────────────┘
+│ Map 資源/地圖 │   │ PathPlanning      │   │ TrafficControl   │◄───┼───│ Liveness 活性  │
+│ RoadmapGraph │   │ Dijkstra / SIPP │   │ 交通管制 (預約表) │ grant-time│ RagCycleDetector│
+└──────────────┘   └──────────────────┘   └──────────────────┘  veto  └───────────────┘
        └───────────────────────┴───────────────────────┴────────────────┬───────────┘
 ┌─────────────────────────────────────────────────────────────────────────▼──────────┐
 │ Shared / Kernel   SpatioTemporal.Kernel (ResourceRef, SpaceTimePath, TimeInterval,   │
@@ -69,7 +69,8 @@ Key seams (the only ways contexts couple):
 - **`IPathPlanner`** (PathPlanning) → single-agent planning, called by Coordination.
 - **`IReservationQuery`** — *declared* by PathPlanning (`NullReservationQuery` default), *implemented* by TrafficControl (`ReservationService`), which overrides the registration at composition time.
 - **`ITrafficCoordinatorAppService`** (TrafficControl) → `TryReserve` / `Release` / `BlockedResources`, the write seam Coordination drives.
-- **`AllocationContended`** integration event (TrafficControl → Deadlock) + a reservation **snapshot** read seam back the other way.
+- **`IWouldCloseCycleDetector`** — *declared* by TrafficControl, *implemented* by Liveness's `RagCycleDetector`. Consulted **inside** `ReservationTable.TryGrant` (only when the request's `PreventDeadlockCycles` flag is on) to refuse a grant that would close a wait-for cycle — grant-time prevention, not a reactive event.
+- **`ILivenessPolicy`** (Liveness) → the synchronous physical-standoff policy the Simulation executor (`FleetLoopDriver`) consults once per phase per tick to resolve head-on swaps / blocking chains / parked-sealed goals.
 - **`IFleetClock`** (Kernel) → the time axis every reservation interval is expressed against.
 
 ---
@@ -138,7 +139,7 @@ collision.
 ## Repository layout
 
 ```
-Map/  PathPlanning/  TrafficControl/  Deadlock/   # the four domains (each: per-context README + DDD layers)
+Map/  PathPlanning/  TrafficControl/  Liveness/   # the four domains (each: per-context README + DDD layers)
 Coordination/                                     # RHCR orchestration loop
 Simulation/                                       # closed-loop executor + in-memory engine + replay DTOs
 Shared/                                           # Kernel, EventBus, Domain.Abstractions, Infra.Data.Core, StateMachine.Core
@@ -168,7 +169,7 @@ Each domain also has unit tests (`SwarmRoute.<Context>.Tests`); the cross-contex
 ### Build & test
 ```bash
 dotnet build                       # whole solution
-dotnet test                        # full suite (Map, PathPlanning, TrafficControl, Deadlock, Integration)
+dotnet test                        # full suite (Map, PathPlanning, TrafficControl, Liveness, Integration)
 ```
 
 ### Run the backend (no DB)
@@ -214,7 +215,7 @@ itself is in-memory, so the host is usable with or without the broker. Architect
 **v0 (closed).** End-to-end closed loop, fully green, collision-free by construction:
 - Dijkstra shortest-path planning + blacklist-driven prune-and-replan.
 - Whole-path, interval-based reservations (SIPP-ready model).
-- Reactive deadlock detection over the resource-allocation graph.
+- Liveness: opt-in grant-time wait-for-cycle prevention (`RagCycleDetector` over the resource-allocation graph) plus the synchronous physical-standoff policy the executor consults.
 - Tick-synchronous executor with a right-of-way gate and parked-vehicle rerouting.
 - In-memory simulation API + canvas replay frontend.
 

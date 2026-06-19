@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\SwarmRoute.Deadlock.Application\SwarmRoute.Deadlock.Application.csproj" />
+    <ProjectReference Include="..\SwarmRoute.Liveness.Application\SwarmRoute.Liveness.Application.csproj" />
   </ItemGroup>
 
   <ItemGroup>

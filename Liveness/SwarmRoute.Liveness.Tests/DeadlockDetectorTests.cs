@@ -1,13 +1,14 @@
+using SwarmRoute.Liveness.Domain.Detection;
 using System.Linq;
-using SwarmRoute.Deadlock.Domain.Services;
-using SwarmRoute.Deadlock.Domain.ValueObjects;
+using SwarmRoute.Liveness.Domain.Services;
+using SwarmRoute.Liveness.Domain.ValueObjects;
 using SwarmRoute.SpatioTemporal.Kernel;
 
-namespace SwarmRoute.Deadlock.Tests;
+namespace SwarmRoute.Liveness.Tests;
 
 public class DeadlockDetectorTests
 {
-    private readonly IDeadlockDetector _detector = new RagDeadlockDetector();
+    private readonly IDeadlockDetector _detector = new RagCycleDetector();
 
     [Fact]
     public void TwoAgentCycle_FlagsBothAgents()

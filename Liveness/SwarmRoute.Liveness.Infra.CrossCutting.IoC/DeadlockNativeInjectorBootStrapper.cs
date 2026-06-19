@@ -1,33 +1,20 @@
+using SwarmRoute.Liveness.Domain.Detection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
-using SwarmRoute.Deadlock.Application.Abstractions;
-using SwarmRoute.Deadlock.Application.Contract.Services;
-using SwarmRoute.Deadlock.Application.Resolution;
-using SwarmRoute.Deadlock.Application.Services;
-using SwarmRoute.Deadlock.Application.Subscribers;
-using SwarmRoute.Deadlock.Domain.Services;
-using SwarmRoute.Domain.Abstractions.EventBus;
+using SwarmRoute.Liveness.Domain.Services;
 
-namespace SwarmRoute.Deadlock.Infra.CrossCutting.IoC;
+namespace SwarmRoute.Liveness.Infra.CrossCutting.IoC;
 
 /// <summary>
-/// Registers the Deadlock bounded context's services into the host container, following the grukirbs
+/// Registers the Liveness bounded context's services into the host container, following the grukirbs
 /// <c>*NativeInjectorBootStrapper.RegisterServices(WebApplicationBuilder)</c> convention.
 /// </summary>
 public static class DeadlockNativeInjectorBootStrapper
 {
     /// <summary>
-    /// Registers Deadlock domain services, the application service, and the contended-allocation
-    /// subscriber.
-    /// <para>
-    /// The integration seams (<see cref="IAvoidancePointSelector"/>, <see cref="IDetourReservationService"/>,
-    /// <see cref="IClearanceConfirmer"/>, <see cref="IDeadlockSnapshotProvider"/>) are registered with their
-    /// <c>Null*</c> implementations via <c>TryAdd</c>, so the context is fully resolvable standalone while
-    /// the Host (at integration) can override each with a real Map/TrafficControl-backed adapter simply by
-    /// registering it first. The shared <c>IIntegrationEventPublisher</c> is intentionally NOT registered
-    /// here — it is owned by the EventBus/Host wiring.
-    /// </para>
+    /// Registers the RAG cycle detector, which serves the surviving liveness roles: grant-time prevention
+    /// (<c>IWouldCloseCycleDetector</c>, consulted by TrafficControl) and post-hoc detection
+    /// (<c>IDeadlockDetector.Detect</c>). The reactive redirect/recovery resolution machinery was removed.
     /// </summary>
     public static WebApplicationBuilder RegisterServices(WebApplicationBuilder builder)
     {
@@ -49,27 +36,8 @@ public static class DeadlockNativeInjectorBootStrapper
 
     private static void RegisterCore(IServiceCollection services)
     {
-        // Domain - detection & resolution
-        services.AddScoped<IDeadlockDetector, RagDeadlockDetector>();
-        services.AddScoped<IVictimSelector, DeterministicVictimSelector>();
-        services.AddScoped<IDeadlockResolver, AvoidanceDeadlockResolver>();
-
-        // Integration seams - Null defaults (overridable by the Host at integration).
-        services.TryAddScoped<IAvoidancePointSelector, NullAvoidancePointSelector>();
-        services.TryAddScoped<IDetourReservationService, NullDetourReservationService>();
-        services.TryAddScoped<IClearanceConfirmer, NullClearanceConfirmer>();
-        services.TryAddScoped<IDeadlockSnapshotProvider, NullDeadlockSnapshotProvider>();
-
-        // Open-resolution registry: SINGLETON so the live case/plan survive between the scan that opens a
-        // resolution and the later tick that recovers it (the Deadlock context persists no EF state).
-        services.TryAddSingleton<IActiveResolutionRegistry, InMemoryActiveResolutionRegistry>();
-
-        // Application - service, recovery driver & subscriber
-        services.AddScoped<IDeadlockAppService, DeadlockAppService>();
-        services.AddScoped<IDeadlockRecoveryService, DeadlockRecoveryService>();
-        services.AddScoped<IDeadlockEscalationService, DeadlockEscalationService>();
-        services.AddScoped<AllocationContendedSubscriber>();
-        services.AddScoped<IIntegrationEventHandler>(sp =>
-            sp.GetRequiredService<AllocationContendedSubscriber>());
+        // The single RAG cycle-detection primitive (post-hoc detection role; the prevention role is wired by
+        // TrafficControl / the simulation engine factory as IWouldCloseCycleDetector).
+        services.AddScoped<IDeadlockDetector, RagCycleDetector>();
     }
 }

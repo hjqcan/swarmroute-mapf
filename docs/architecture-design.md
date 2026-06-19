@@ -1,5 +1,7 @@
 # SwarmRoute MAPF — 架構設計（Architecture Design）
 
+> _已被取代（Superseded）：本文描述的反應式死鎖解除流程已被 `Liveness` 上下文取代（授予時預防 + 同步的僵局解除策略）。詳見 `Liveness/README.md`。_
+
 > 狀態：**Approved（已核可）** ｜ 目標框架：**.NET 10 (LTS, C# 14)** ｜ 配套文件：[`team-implementation-plan.md`](./team-implementation-plan.md)
 
 本文件是 `swarmroute-mapf`（多機 AGV/AMR 路徑規劃與車隊協調系統）的權威架構設計。團隊實作以本文為「**做什麼**」、以團隊實現計劃為「**怎麼做、誰做、何時做**」。

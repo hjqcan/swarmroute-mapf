@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using SwarmRoute.Host.Adapters;
+using SwarmRoute.Liveness.Application.Contract.Policy;
 using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 using SwarmRoute.Simulation.Application;
 using Xunit;
@@ -25,7 +26,8 @@ public sealed class PibtClosedLoopTests
 
     private static SimulationRequest Req(int w, int h, int agv, int seed, bool usePibt) =>
         new(w, h, agv, seed, PlannerKind.Sipp, Starts: null, HorizonWindowMs: long.MaxValue,
-            StepAside: true, PreventDeadlockCycles: false, UsePibt: usePibt);
+            StepAside: true, PreventDeadlockCycles: false,
+            JointResolver: usePibt ? JointResolverKind.Pibt : JointResolverKind.None);
 
     // ── Regression lock: an explicit UsePibt:false run is byte-identical to the default (field-omitted) request ─
     [Theory]
@@ -119,7 +121,7 @@ public sealed class PibtClosedLoopTests
         for (var seed = 1; seed <= 6; seed++)
         {
             var raw = Run(new SimulationRequest(w, h, agv, seed, PlannerKind.Sipp)); // no StepAside, no PIBT
-            var pibtOnly = Run(new SimulationRequest(w, h, agv, seed, PlannerKind.Sipp, UsePibt: true)); // PIBT only
+            var pibtOnly = Run(new SimulationRequest(w, h, agv, seed, PlannerKind.Sipp, JointResolver: JointResolverKind.Pibt)); // PIBT only
 
             Assert.Equal(0, pibtOnly.Stats.Collisions);
             Assert.True(pibtOnly.Stats.Arrived >= raw.Stats.Arrived,

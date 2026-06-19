@@ -1,9 +1,9 @@
 using System.Linq;
 using AJR.Platform.Algorithms.Graphs;
-using SwarmRoute.Deadlock.Domain.ValueObjects;
+using SwarmRoute.Liveness.Domain.ValueObjects;
 using SwarmRoute.SpatioTemporal.Kernel;
 
-namespace SwarmRoute.Deadlock.Tests;
+namespace SwarmRoute.Liveness.Tests;
 
 public class ResourceAllocationGraphTests
 {

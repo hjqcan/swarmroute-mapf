@@ -1,4 +1,5 @@
-using SwarmRoute.Deadlock.Domain.Services;
+using SwarmRoute.Liveness.Domain.Detection;
+using SwarmRoute.Liveness.Domain.Services;
 using SwarmRoute.Host.Adapters;
 using SwarmRoute.SpatioTemporal.Kernel;
 using SwarmRoute.TrafficControl.Domain.Aggregates;
@@ -10,7 +11,7 @@ namespace SwarmRoute.Integration.Tests;
 
 /// <summary>
 /// End-to-end grant-time prevention: the REAL <see cref="ReservationTable"/> wired with the REAL
-/// <see cref="RagWouldCloseCycleDetector"/>. The inverse of <c>DeadlockClosedLoopIntegrationTests</c> — instead of
+/// <see cref="RagCycleDetector"/>. The inverse of <c>DeadlockClosedLoopIntegrationTests</c> — instead of
 /// detecting and resolving a circular wait after it forms, prevention refuses the cycle-closing grant so the ring
 /// never closes and the reactive RAG detector finds nothing to do.
 /// </summary>
@@ -22,7 +23,7 @@ public sealed class CyclePreventionIntegrationTests
     [Fact]
     public void Three_agent_circular_wait_is_averted_so_no_deadlock_forms()
     {
-        var table = new ReservationTable(IResourceTopology.Empty, new RagWouldCloseCycleDetector());
+        var table = new ReservationTable(IResourceTopology.Empty, new RagCycleDetector());
 
         // Each agent holds one control point.
         Assert.Equal(AllocationOutcome.Granted, table.TryGrant(Cp("S1", 0, 100), "AGV-A"));
@@ -41,7 +42,7 @@ public sealed class CyclePreventionIntegrationTests
         var snapshot = new ResourceAllocationGraphSnapshot(
             table.ActiveLeases.Select(l => (l.AgentId, l.Resource)).ToList(),
             table.ContendedRequests.Select(r => (r.AgentId, r.Resource)).ToList());
-        var cycles = new RagDeadlockDetector().Detect(snapshot);
+        var cycles = new RagCycleDetector().Detect(snapshot);
 
         Assert.Empty(cycles);
         Assert.Equal(2, table.ContendedRequests.Count); // only A→S2 and B→S3; the closing C→S1 was refused

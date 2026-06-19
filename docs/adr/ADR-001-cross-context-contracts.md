@@ -1,5 +1,7 @@
 # ADR-001 — Cross-context contracts are frozen in the SpatioTemporal Kernel
 
+> _Superseded: the reactive deadlock-resolution flow described here was replaced by the `Liveness` context (grant-time prevention + a synchronous standoff-resolution policy). See `Liveness/README.md`._
+
 - Status: Accepted
 - Date: 2026-06-18
 - Deciders: TL / architecture

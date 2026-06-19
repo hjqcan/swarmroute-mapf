@@ -51,9 +51,9 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.PathPlanning.Dom
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.PathPlanning.Domain.Shared", "PathPlanning\SwarmRoute.PathPlanning.Domain.Shared\SwarmRoute.PathPlanning.Domain.Shared.csproj", "{2BF0FFDD-7700-47CC-B31B-E7C56991E5B3}"
 EndProject
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Deadlock", "Deadlock", "{AE46CC9A-5502-86DB-B795-80687CC1E02C}"
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Liveness", "Liveness", "{AE46CC9A-5502-86DB-B795-80687CC1E02C}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Deadlock.Application.Contract", "Deadlock\SwarmRoute.Deadlock.Application.Contract\SwarmRoute.Deadlock.Application.Contract.csproj", "{DD035730-50BF-4B66-AA6A-430B1CD2D466}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Liveness.Application.Contract", "Liveness\SwarmRoute.Liveness.Application.Contract\SwarmRoute.Liveness.Application.Contract.csproj", "{DD035730-50BF-4B66-AA6A-430B1CD2D466}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "host", "host", "{7226ABEA-787E-1D09-10EA-A2ECF996D6A6}"
 EndProject
@@ -85,13 +85,13 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.TrafficControl.I
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.TrafficControl.Infra.BackgroundJobs", "TrafficControl\SwarmRoute.TrafficControl.Infra.BackgroundJobs\SwarmRoute.TrafficControl.Infra.BackgroundJobs.csproj", "{16B90984-7F06-4DE4-AC42-A490B79DE7C5}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Deadlock.Infra.CrossCutting.IoC", "Deadlock\SwarmRoute.Deadlock.Infra.CrossCutting.IoC\SwarmRoute.Deadlock.Infra.CrossCutting.IoC.csproj", "{5EB1FA4D-AB99-4F40-8C2B-80C69C2337F8}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Liveness.Infra.CrossCutting.IoC", "Liveness\SwarmRoute.Liveness.Infra.CrossCutting.IoC\SwarmRoute.Liveness.Infra.CrossCutting.IoC.csproj", "{5EB1FA4D-AB99-4F40-8C2B-80C69C2337F8}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Deadlock.Application", "Deadlock\SwarmRoute.Deadlock.Application\SwarmRoute.Deadlock.Application.csproj", "{A5D3FD65-C558-4068-8486-15D9A3F8B7D6}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Liveness.Application", "Liveness\SwarmRoute.Liveness.Application\SwarmRoute.Liveness.Application.csproj", "{A5D3FD65-C558-4068-8486-15D9A3F8B7D6}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Deadlock.Domain", "Deadlock\SwarmRoute.Deadlock.Domain\SwarmRoute.Deadlock.Domain.csproj", "{478F6E5C-BC1A-4C4C-9972-05D0DF86A565}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Liveness.Domain", "Liveness\SwarmRoute.Liveness.Domain\SwarmRoute.Liveness.Domain.csproj", "{478F6E5C-BC1A-4C4C-9972-05D0DF86A565}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Deadlock.Domain.Shared", "Deadlock\SwarmRoute.Deadlock.Domain.Shared\SwarmRoute.Deadlock.Domain.Shared.csproj", "{DDC7D159-62BC-4AAD-B346-484E18D14FC9}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Liveness.Domain.Shared", "Liveness\SwarmRoute.Liveness.Domain.Shared\SwarmRoute.Liveness.Domain.Shared.csproj", "{DDC7D159-62BC-4AAD-B346-484E18D14FC9}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.PathPlanning.Tests", "PathPlanning\SwarmRoute.PathPlanning.Tests\SwarmRoute.PathPlanning.Tests.csproj", "{0F4D02D3-9494-452B-8153-6FBE016CDB78}"
 EndProject
@@ -103,7 +103,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.TrafficControl.T
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.TrafficControl.Api", "TrafficControl\SwarmRoute.TrafficControl.Api\SwarmRoute.TrafficControl.Api.csproj", "{4C678662-BFBC-495C-9324-88CA7C053AFE}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Deadlock.Tests", "Deadlock\SwarmRoute.Deadlock.Tests\SwarmRoute.Deadlock.Tests.csproj", "{EE233E83-D201-4CEE-B27A-7B56C22B4638}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SwarmRoute.Liveness.Tests", "Liveness\SwarmRoute.Liveness.Tests\SwarmRoute.Liveness.Tests.csproj", "{EE233E83-D201-4CEE-B27A-7B56C22B4638}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
 EndProject

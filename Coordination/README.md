@@ -34,7 +34,7 @@ There is exactly **one project**: `SwarmRoute.Coordination.Application` (`Coordi
 | `ICoordinationGoalSource.cs` | The goal-book seam + `InMemoryCoordinationGoalSource` default. |
 | `CoordinationServiceCollectionExtensions.cs` | Composition root: `AddCoordination(...)`. |
 
-The `.csproj` references the contract + domain-shared assemblies of Map, PathPlanning, TrafficControl, plus the Kernel (and a `Deadlock.Application.Contract` reference that is currently unused by Coordination code — Coordination never calls Deadlock; deadlock handling is reactive/event-driven, not invoked from this loop). It pulls in only `Microsoft.Extensions.*` abstractions (Hosting, DI, Logging, Options) — no concrete infrastructure.
+The `.csproj` references the contract + domain assemblies of Map, PathPlanning, TrafficControl, plus the Kernel. It does **not** reference the Liveness context at all: Coordination never invokes liveness handling from this loop — grant-time cycle **prevention** lives inside TrafficControl's `ReservationTable.TryGrant` (which consults Liveness's `IWouldCloseCycleDetector`), and physical-standoff **resolution** lives in the Simulation executor (`FleetLoopDriver`, which consults `ILivenessPolicy`). It pulls in only `Microsoft.Extensions.*` abstractions (Hosting, DI, Logging, Options) — no concrete infrastructure.
 
 ---
 
@@ -100,7 +100,7 @@ Salient design points, all in code:
 - **Resilience**: a cycle-internal exception is logged and swallowed (`:105-109`) so one bad tick never tears down the lifelong loop; only `OperationCanceledException` propagates.
 - `EnableWatchdog = false` (`:21`) turns the timer off so the loop is **on-demand only** (tests / hosts that drive ticks explicitly call `RunOnceAsync`).
 
-**How it differs from one cycle:** the loop adds *time, a goal source, and fault isolation*. The cycle is a pure function of `(roadmap, goals, view, clock)` → `CycleReport`; the loop supplies *when* (the watchdog tick), *what* (the live goal book), and *keep-alive* (swallow-and-continue). Per architecture-design §7, deadlock handling is **reactive** (subscriber/job driven), not polled in this inner loop (`:28-30`).
+**How it differs from one cycle:** the loop adds *time, a goal source, and fault isolation*. The cycle is a pure function of `(roadmap, goals, view, clock)` → `CycleReport`; the loop supplies *when* (the watchdog tick), *what* (the live goal book), and *keep-alive* (swallow-and-continue). Liveness handling is **not** part of this inner loop: wait-for-cycle **prevention** happens at grant time inside TrafficControl (Liveness's `IWouldCloseCycleDetector`, consulted by `ReservationTable.TryGrant`), and physical-standoff **resolution** is the Simulation executor's job (`ILivenessPolicy`, consulted by `FleetLoopDriver`). Coordination just plans → reserves → prunes-and-replans (`:28-30`).
 
 `ICoordinationGoalSource` (`ICoordinationGoalSource.cs:9-16`) is the seam between the loop and the order book: `CurrentRoadmapId` + a `CurrentGoals` snapshot. The default `InMemoryCoordinationGoalSource` (`:22-60`) is a thread-safe mutable book the Host (or a test) feeds via `Set`/`Clear`; with nothing set the loop idles. Keeping it separate from the loop is what lets the goal book be swapped (real dispatcher) without touching control logic.
 
@@ -172,9 +172,8 @@ Coordination's behaviour is verified by **integration tests** in `SwarmRoute.Int
 | `M2_TwoAgents_SharingCorridor_AreSerialised_ThenSecondGrantedAfterRelease` | Head-on corridor: priority-0 `Granted`, priority-1 `Queued`; after `ReleaseAsync` + re-run, the second is `Granted`. Determinism + denial→retry-next-tick. |
 | `M2_Retry_PrunesOnlyBlockedResource_AndKeepsSharedPrefix` | Surgical pruning: the detour sharing the failed path's prefix is reserved (`Attempts ≥ 2`), the blocked lane `B-D` is avoided. |
 | `M2_Retry_ProjectsClosureBlockConflict_ToPlannerPrunableCell` | A `Block:Z` *closure* conflict is projected to the prunable CP `B`; retry reroutes through `A-C-D`. |
-| `M3_TrafficControlContention_TriggersDeadlockScanThroughEventBus` | Contention publishes an event the Deadlock subscriber reacts to — confirms deadlock is reactive, **not** in Coordination's loop. |
 
-The closed-loop end-to-end run (the executor driving many ticks to completion) is covered by `ClosedLoopIntegrationTests.cs` against `FleetLoopDriver` (Simulation context).
+The closed-loop end-to-end run (the executor driving many ticks to completion) is covered by `ClosedLoopIntegrationTests.cs` against `FleetLoopDriver` (Simulation context). Grant-time wait-for-cycle prevention — the only coupling between this loop's reservations and Liveness — is covered separately by `CyclePreventionIntegrationTests.cs` / `WouldCloseCycleDetectorTests.cs` (Liveness's `RagCycleDetector` screening `TryGrant`); there is no longer a reactive deadlock-scan test, because that flow was removed.
 
 ---
 

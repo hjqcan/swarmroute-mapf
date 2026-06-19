@@ -71,8 +71,14 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
         _traffic = traffic ?? throw new ArgumentNullException(nameof(traffic));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _horizonWindowMs = (loopOptions ?? throw new ArgumentNullException(nameof(loopOptions))).Value.HorizonWindowMs;
-        _cbs = new CbsLocalSolver(new CbsOptions(TimeHorizonTicks: _horizonWindowMs));
+        var options = (loopOptions ?? throw new ArgumentNullException(nameof(loopOptions))).Value;
+        _horizonWindowMs = options.HorizonWindowMs;
+        // (v3) The cluster joint planner: discrete CBS by default, or continuous-time CCBS (motion-aware interval
+        // constraints over a SIPPwRT low level) when the run is continuous — so a cluster solve under the continuous
+        // executor returns continuous-time paths it can run. Default (discrete) is byte-identical.
+        _cbs = options.Continuous
+            ? new CbsLocalSolver(new CbsOptions(TimeHorizonTicks: _horizonWindowMs, Continuous: true), new SippwrtPathPlanner())
+            : new CbsLocalSolver(new CbsOptions(TimeHorizonTicks: _horizonWindowMs));
     }
 
     /// <summary>The rolling-horizon arrival ceiling for a cycle releasing at <paramref name="releaseTimeMs"/>:

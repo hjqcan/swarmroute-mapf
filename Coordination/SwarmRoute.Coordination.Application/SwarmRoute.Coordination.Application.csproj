@@ -8,8 +8,6 @@
     <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Domain\SwarmRoute.PathPlanning.Domain.csproj" />
     <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Application.Contract\SwarmRoute.TrafficControl.Application.Contract.csproj" />
     <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Domain.Shared\SwarmRoute.TrafficControl.Domain.Shared.csproj" />
-    <ProjectReference Include="..\..\Deadlock\SwarmRoute.Deadlock.Application.Contract\SwarmRoute.Deadlock.Application.Contract.csproj" />
-    <ProjectReference Include="..\..\Deadlock\SwarmRoute.Deadlock.Domain.Shared\SwarmRoute.Deadlock.Domain.Shared.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -2,7 +2,7 @@
 
 > 简体中文 · English version: [README.md](README.md)
 
-*为车队持有路权：谁可以在哪个时间区间占用哪个路网资源——授予、拒绝、释放——并将争用情况上报给 Deadlock。它不做路径规划，也不运行车队循环。*
+*为车队持有路权：谁可以在哪个时间区间占用哪个路网资源——授予、拒绝、释放。在授予时它会查询 Liveness 的 `IWouldCloseCycleDetector`，从而拒绝一个会闭合等待环的租约。它不做路径规划，也不运行车队循环。*
 
 ---
 
@@ -12,7 +12,7 @@ Traffic Control 是仲裁路网**时空占用**的限界上下文。它的单一
 
 - **现在能否为该 agent 预约这条完整路径？** → `IResourceAllocator.Allocate` / `ReservationTable.TryGrant`（`ReservationTable.cs:129`）。
 - **哪些是空闲的，何时空闲？** → `IReservationCalendar` / `FreeIntervals` / `IsFree`（`ReservationTable.cs:271`、`:323`），以只读的 `IReservationView` 暴露给 PathPlanning。
-- **谁在阻塞谁？** → `ITrafficControlSnapshotProvider` 构建 Deadlock 上下文扫描的 `ResourceAllocationGraphSnapshot`（Owns/Waits 边）。
+- **谁在阻塞谁？** → `ITrafficControlSnapshotProvider` 构建 `ResourceAllocationGraphSnapshot`（Owns/Waits 边），供 Liveness 的 `RagCycleDetector` 在其上运行环检测。
 
 它是原引擎可变 `GraphMap`（`_sites/_lines/_blocks` 状态 + `_agvPathDic`）的 DDD 继任者，从二元的 `Locked/Unlocked` 标志重新表达为真正的时间区间租约（`ReservationTable.cs:11-16`）。它刻意**不**承担两项职责:路径搜索（PathPlanning）和控制/执行循环（Coordination + Simulation）。Traffic Control 只负责说*是/排队/阻塞*以及*已释放*。
 
@@ -24,7 +24,8 @@ Traffic Control 是仲裁路网**时空占用**的限界上下文。它的单一
 | **单写者单例聚合根** | 一个车队、一个时钟、一张权威表 → 无分布式锁、无合并冲突。以 `AddSingleton` 注册（不变式 I5）。 | `TrafficControlNativeInjectorBootStrapper.cs:73-74` |
 | **热点路径用内存;EF 仅用于审计** | 预约的授予/释放在每次规划中会发生数千次;一次数据库往返就会成为主导开销。EF 在热点路径之外持久化快照/审计行（ADR-002 / R2）。 | `ReservationAuditRecord.cs:3-9`、`TrafficControlDbContext.cs:11-16` |
 | **拓扑闭包抽象出 Domain 之外** | 授予/释放时"还有哪些资源必须随之移动"的集合（父区块 + 干涉）属于 Map 的知识;通过 `IResourceTopology` 抽象它，可使 `TrafficControl.Domain` 不依赖任何 Map。 | `IResourceTopology.cs:5-19` |
-| **争用请求即 RAG 的"Waits"边** | 将拒绝记录为 `ReservationRequest`，使 Deadlock 能看到等待图，并让升级作业对等待者做老化处理 → 避免饥饿。 | `ReservationTable.cs:39`、`ReservationRequest.cs:13-17` |
+| **争用请求即 RAG 的"Waits"边** | 将拒绝记录为 `ReservationRequest`，暴露出等待图（即 Liveness 的 `RagCycleDetector` 读取的快照），并让升级作业对等待者做老化处理 → 避免饥饿。 | `ReservationTable.cs:39`、`ReservationRequest.cs:13-17` |
+| **经注入端口的授予时环预防** | 一个永不形成的等待环无需恢复。`TryGrant` 查询注入的 `IWouldCloseCycleDetector`（由 Liveness 的 `RagCycleDetector` 实现），拒绝一个会闭合环的授予 —— 经请求的 `PreventDeadlockCycles` 标志按运行可选开启；关闭 = Null 检测器 = 逐字节一致的基线。 | `IWouldCloseCycleDetector.cs`、`ReservationTable.cs` |
 
 ---
 
@@ -52,8 +53,8 @@ Infra.Data (EF audit)        Infra.BackgroundJobs (Hangfire)        Infra.CrossC
 | 项目 | 角色 | 关键依赖 |
 |---|---|---|
 | **Domain.Shared** | `AllocationOutcome`、`ConflictType`、`LeaseState`、`TrafficControlErrorCodes`。无项目引用。 | — |
-| **Domain** | `ReservationTable` 聚合根;值对象（`ResourceLease`、`ReservationRequest`、`Conflict`、`RightOfWay`）;领域服务（`ResourceAllocator`、`ConflictDetector`、`ReservationCalendar`）及其接口;`IResourceTopology`;租约的 `TrafficControlStateMachine` 及守卫。 | `SpatioTemporal.Kernel`、`StateMachine.Core`、`NetDevPack` |
-| **Application.Contract** | 三个冻结的接缝:`ITrafficCoordinatorAppService`（写）、`ITrafficControlSnapshotProvider`（读 → Deadlock）、`ITrafficControlOperatorAppService`（操作员）;DTO。 | `SpatioTemporal.Kernel` |
+| **Domain** | `ReservationTable` 聚合根;值对象（`ResourceLease`、`ReservationRequest`、`Conflict`、`RightOfWay`）;领域服务（`ResourceAllocator`、`ConflictDetector`、`ReservationCalendar`）及其接口;`IResourceTopology`;`IWouldCloseCycleDetector`（+ `NullWouldCloseCycleDetector`，即 Liveness 实现的授予时预防端口）;租约的 `TrafficControlStateMachine` 及守卫。 | `SpatioTemporal.Kernel`、`StateMachine.Core`、`NetDevPack` |
+| **Application.Contract** | 三个冻结的接缝:`ITrafficCoordinatorAppService`（写）、`ITrafficControlSnapshotProvider`（读 —— Liveness 检测器消费的 RAG 快照）、`ITrafficControlOperatorAppService`（操作员）;DTO。 | `SpatioTemporal.Kernel` |
 | **Application** | `TrafficCoordinatorAppService`、`TrafficControlSnapshotProvider`、`TrafficControlOperatorAppService`、`ReservationService`（实现 PathPlanning 的 `IReservationQuery`）、`SystemFleetClock`、`DictionaryResourceTopology`、`ReplanTriggerSubscriber`。 | `Domain`、`Application.Contract`、**`PathPlanning.Domain`** |
 | **Infra.Data** | `TrafficControlDbContext` + `ReservationAuditRecord` —— **仅快照/审计**。EF Core + Npgsql。 | `Domain`、`Infra.Data.Core` |
 | **Infra.BackgroundJobs** | `LeaseExpirySweepJob`、`StaleRequestEscalationJob`（Hangfire 周期作业）。 | `Application`、`Hangfire.Core` |
@@ -158,6 +159,8 @@ TryGrant(path, agent, priority)
   3. for each cell:
        blacklisted(member, agent)?       → record contended, mark blacklisted
        another agent overlaps (closure)? → record contended, mark contended  (Waits edge points at the blocker)
+       [prevention on] would these Waits edges close a wait-for cycle?
+                                         → _cycleDetector.WouldCloseCycle ⇒ refuse (mark contended)
   4. blacklisted → Blocked ;  contended → Queued
         (emit ReservationDenied + AllocationContended, create NO lease)
   5. all free → Insert() every closure cell  (Reserved)            ← whole-path lock
@@ -169,6 +172,8 @@ TryGrant(path, agent, priority)
 这是原引擎整条路径加锁的忠实移植:一条路径**只有在其每个资源（闭包展开后）对该 agent 均空闲时**才被授予;否则*不锁定任何东西*，请求被排队（`WholePath_grant_then_crossing_path_is_queued`，`ReservationTableTests.cs:58`）。结果（`AllocationOutcome.cs`）：**Granted**、**Queued**（争用;记为 Waits）、**Blocked**（被黑名单 —— 按原样永不可授予）。`Preempted` 为 v1 预留，目前永不产生。
 
 一次成功授予还会**剪除该 agent 的过期等待边**（`ReservationTable.cs:182-183`），使 RAG 反映当前争用，而非重试历史（`Successful_retry_removes_the_agents_stale_wait_edges`，`ReservationTableTests.cs:87`）。
+
+**授予时环预防。**当注入的 `IWouldCloseCycleDetector` 是真实实现时（经请求的 `PreventDeadlockCycles` 标志按运行可选开启），步骤 3 还会询问 Liveness 的 `RagCycleDetector.WouldCloseCycle(currentRag, agent, candidateWaitEdges)`（`ReservationTable.cs:194`）：若授予会闭合一个等待环，则拒绝该请求（视为争用），从而让规划器重路由，循环等待**永不形成**。关闭（`NullWouldCloseCycleDetector` 默认值）⇒ 逐字节一致的基线。这彻底取代了从前的反应式*检测环 → 请求解决 → 改道某犠牲车*路径。
 
 ### 后向释放（单调,随 agent 前进）
 
@@ -211,12 +216,13 @@ TryGrant(path, agent, priority)
 
 ### 集成
 
-- **→ Deadlock（已验证）。** Deadlock 上下文的 `AllocationContendedSubscriber` 绑定到 `"TrafficControl.Allocation.Contended"`（`Deadlock/.../Subscribers/AllocationContendedSubscriber.cs:21`），收到后拉取一份新的 `ResourceAllocationGraphSnapshot`（经由其 `IDeadlockSnapshotProvider`，底层由 Traffic Control 的 `ITrafficControlSnapshotProvider` 支撑）并运行环路检测 —— 从不持有 Traffic Control 的锁。该快照将**活跃租约 → Owns**、**争用请求 → Waits**（`TrafficControlSnapshotProvider.cs:25-36`）。
+- **→ Liveness（授予时预防,实际的耦合）。** Traffic Control **不**发布反应式的死锁解决事件。相反,它在授予内部*同步*依赖 Liveness 的环检测:`ReservationTable` 以一个 `IWouldCloseCycleDetector`（Liveness 的 `RagCycleDetector`）构造,`TryGrant` 在记录争用等待边之前调用 `WouldCloseCycle`（`ReservationTable.cs:194`,见 §5）。一个会闭合等待环的授予会被拒绝,从而让规划器重路由。这经请求的 `PreventDeadlockCycles` 按运行可选开启,默认采用 `NullWouldCloseCycleDetector`（关闭）。*（从前的 `AllocationContendedSubscriber` 反应式流程 —— 拉取快照、运行环检测、请求改道某犠牲车 —— 已被删除;那整条 检测 → 解决 → 改道 → 恢复 的路径不复存在。）*
+- **`ITrafficControlSnapshotProvider`（读接缝）。** 它构建的 `ResourceAllocationGraphSnapshot` 将**活跃租约 → Owns**、**争用请求 → Waits**（`TrafficControlSnapshotProvider.cs:25-36`）。这是 Liveness 的 `RagCycleDetector` 运行其上（授予时预防 + 事后检测）以及操作员 HTTP / 可观测性表面所暴露的 RAG —— 从不在 Traffic Control 的锁内持有。
 - **→ Coordination（桩）。** `ReplanTriggerSubscriber`（`Application/Subscribers/ReplanTriggerSubscriber.cs:14`）是 v0 占位实现,集成时它会把 `ReservationDenied` 载荷送入 Coordination 的重规划队列。它可独立编译和测试;仅 CAP 传输绑定为 `TODO(integration)`。
 
 ### 防饥饿/升级（无活锁,不变式 I7）
 
-争用请求携带 `HadWaitedTime`。`StaleRequestEscalationJob.Escalate`（`StaleRequestEscalationJob.cs:32`）→ `ReservationTable.EscalateStaleRequests`（`ReservationTable.cs:405-433`）将每个未决请求按 `agingSeconds`（默认 1）老化，使长期等待者的 `RightOfWay` 平局裁决最终胜过更新的、同优先级的争用者。每一轮还会剪除现已可满足的请求，并抛出一个 `AllocationContendedEvent`（主体 = 等待最久者）以促使 Deadlock 重新扫描。由 `StaleRequestEscalationJob_ages_contended_requests_and_emits_event`（`CalendarAndJobsTests.cs:48`）锁定。
+争用请求携带 `HadWaitedTime`。`StaleRequestEscalationJob.Escalate`（`StaleRequestEscalationJob.cs:32`）→ `ReservationTable.EscalateStaleRequests`（`ReservationTable.cs:405-433`）将每个未决请求按 `agingSeconds`（默认 1）老化，使长期等待者的 `RightOfWay` 平局裁决最终胜过更新的、同优先级的争用者。每一轮还会剪除现已可满足的请求，并抛出一个 `AllocationContendedEvent`（主体 = 等待最久者）作为老化/诊断信号。由 `StaleRequestEscalationJob_ages_contended_requests_and_emits_event`（`CalendarAndJobsTests.cs:48`）锁定。
 
 ### 租约生命周期状态机
 

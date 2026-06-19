@@ -1,6 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
 using SwarmRoute.Coordination.Application;
-using SwarmRoute.Deadlock.Domain.Events;
 using SwarmRoute.Integration.Tests.TestSupport;
 using SwarmRoute.Map.Domain.ValueObjects;
 using SwarmRoute.SpatioTemporal.Kernel;
@@ -193,29 +192,5 @@ public sealed class CoordinationCycleIntegrationTests
             .Select(c => c.Resource.Id)
             .ToList();
         Assert.Equal(new[] { "A", "C", "D" }, visitedSites);
-    }
-
-    [Fact]
-    public async Task M3_TrafficControlContention_TriggersDeadlockScanThroughEventBus()
-    {
-        using var host = CoordinationTestHost.Build(FakeRoadmapQueryService.Graph(["R1", "R2"], ("R1", "R2")));
-        var traffic = host.Services.GetRequiredService<ITrafficCoordinatorAppService>();
-
-        Assert.Equal(AllocationOutcome.Granted, await traffic.TryReserveAsync(SingleCell(RoadmapGraph.SiteRef("R1"), 0, 100), "A"));
-        Assert.Equal(AllocationOutcome.Granted, await traffic.TryReserveAsync(SingleCell(RoadmapGraph.SiteRef("R2"), 0, 100), "B"));
-
-        // A waits for B's resource; no cycle yet.
-        Assert.Equal(AllocationOutcome.Queued, await traffic.TryReserveAsync(SingleCell(RoadmapGraph.SiteRef("R2"), 50, 150), "A"));
-        Assert.DoesNotContain(host.Events.Handled, e => e is DeadlockCaseDetectedEvent);
-
-        // B waits for A's resource. The TrafficControl.Allocation.Contended event should now synchronously
-        // reach the Deadlock subscriber, which scans TrafficControl's snapshot and publishes Deadlock events.
-        Assert.Equal(AllocationOutcome.Queued, await traffic.TryReserveAsync(SingleCell(RoadmapGraph.SiteRef("R1"), 50, 150), "B"));
-
-        var events = host.Events.Handled;
-        Assert.Contains(events, e => e.GetType().Name == "AllocationContendedEvent");
-        Assert.Contains(events, e => e is DeadlockCaseDetectedEvent);
-        Assert.DoesNotContain(events, e => e is DeadlockCaseResolutionRequestedEvent);
-        Assert.Contains(events, e => e is DeadlockCaseEscalatedEvent);
     }
 }

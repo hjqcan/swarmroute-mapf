@@ -1,5 +1,5 @@
 using SwarmRoute.Map.Domain.ValueObjects;
-using SwarmRoute.Simulation.Application.Pibt;
+using SwarmRoute.Liveness.Domain.Resolution;
 using SwarmRoute.Simulation.Tests.TestSupport;
 
 namespace SwarmRoute.Simulation.Tests;
@@ -140,6 +140,24 @@ public sealed class PibtZoneResolverTests
         var move = PibtZoneResolver.Resolve(cluster, blocked, g, Hops(g));
 
         Assert.Equal("B", move["agv-1"]); // cannot enter the blocked goal cell → holds
+    }
+
+    // ── The IJointStepPlanner port wraps the resolver verbatim: identical joint step for the same input ─────────
+    [Fact]
+    public void Joint_step_planner_port_matches_the_resolver()
+    {
+        var g = new RoadmapGraphBuilder().Bidi("A", "B").Bidi("B", "C").Bidi("C", "D").Build();
+        var cluster = new List<PibtAgentView>
+        {
+            Agent("agv-1", "B", "D", priority: 0),
+            Agent("agv-2", "C", "A", priority: 1),
+        };
+
+        IJointStepPlanner port = new PibtJointStepPlanner();
+        var viaPort = port.PlanJointStep(cluster, NoneBlocked, g, Hops(g));
+        var viaResolver = PibtZoneResolver.Resolve(cluster, NoneBlocked, g, Hops(g));
+
+        Assert.Equal(Serialize(viaResolver), Serialize(viaPort)); // the host-seam port delegates faithfully
     }
 
     private static string Serialize(IReadOnlyDictionary<string, string> move)

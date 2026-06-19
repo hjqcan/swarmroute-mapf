@@ -13,6 +13,12 @@
 
     <!-- PathPlanning shared enums (PlannerKind, for per-request planner selection on SimulationRequest). -->
     <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Domain.Shared\SwarmRoute.PathPlanning.Domain.Shared.csproj" />
+
+    <!-- Liveness: the physical-standoff decision policy (ILivenessPolicy + directives + snapshot) the driver routes
+         every standoff decision through; the concrete LivenessPolicy lives in Liveness.Application. The driver
+         itself no longer references Liveness.Domain (PIBT/cluster code) — that is the policy's concern now. -->
+    <ProjectReference Include="..\..\Liveness\SwarmRoute.Liveness.Application.Contract\SwarmRoute.Liveness.Application.Contract.csproj" />
+    <ProjectReference Include="..\..\Liveness\SwarmRoute.Liveness.Application\SwarmRoute.Liveness.Application.csproj" />
   </ItemGroup>
 
   <ItemGroup>

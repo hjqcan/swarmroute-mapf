@@ -19,8 +19,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\SwarmRoute.Deadlock.Domain\SwarmRoute.Deadlock.Domain.csproj" />
-    <ProjectReference Include="..\SwarmRoute.Deadlock.Application\SwarmRoute.Deadlock.Application.csproj" />
+    <ProjectReference Include="..\SwarmRoute.Liveness.Domain\SwarmRoute.Liveness.Domain.csproj" />
+    <ProjectReference Include="..\SwarmRoute.Liveness.Application\SwarmRoute.Liveness.Application.csproj" />
   </ItemGroup>
 
 </Project>

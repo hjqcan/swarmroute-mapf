@@ -1,87 +1,127 @@
-# Deadlock Handling (死鎖處理)
+# Liveness (活性)
 
-*A reactive bounded context that detects circular-wait deadlocks from TrafficControl's reservation contention graph and requests resolution — it never holds reservations or plans paths.*
+*A bounded context that keeps the fleet making progress. It does this two ways, both decision-only: it
+**prevents** circular waits at reservation grant time (a RAG cycle check TrafficControl consults), and it owns the
+synchronous, phase-based **`ILivenessPolicy`** that resolves the **physical** standoffs the reservation table
+cannot see (head-on swaps, blocking chains, parked-sealed goals). It never holds a reservation, never plans a
+path, and never mutates engine state — it only decides.*
+
+> English · 简体中文版本: [README.zh-CN.md](README.zh-CN.md)
 
 ---
 
 ## 1. Purpose & responsibility
 
-The Deadlock context answers one question: **"given who currently *owns* and who currently *waits on* which resources, is the fleet stuck in a circular wait, and if so who should yield?"**
+A reservation table grants interval-exclusive cell/lane leases, so it makes time-disjoint plans collision-free.
+But two failure modes remain that a reservation table alone cannot fix:
 
-It is a **pure analyser**. Concretely it:
+1. **Circular wait at grant time.** Agent A holds r1 and requests r2; B holds r2 and requests r1. Each lease is
+   individually legal, but the *wait-for* graph has closed a cycle and neither will ever advance.
+2. **Physical standoff at execution time.** Two agents hold time-disjoint reservations yet are physically nose to
+   nose in a corridor (a head-on swap), or form a blocking chain / rotation, or a *finished* vehicle parks on the
+   only approach to another agent's goal. The reservation table sees no conflict — the agents simply never move.
 
-- **Reads** a point-in-time `ResourceAllocationGraphSnapshot` (the *Owns* / *Waits* edges) that TrafficControl produces — it never mutates TrafficControl, never holds its locks, never persists state. The seam comment is explicit: *"TrafficControl produces it; Deadlock consumes it (never mutating, never holding TrafficControl locks)"* (`Shared/SwarmRoute.SpatioTemporal.Kernel/ResourceAllocationGraphSnapshot.cs:4`).
-- **Detects** circular waits by building a Resource-Allocation-Graph (RAG) and running cycle detection over it (`SwarmRoute.Deadlock.Domain/Services/RagDeadlockDetector.cs:24`).
-- **Decides** a victim + strategy and **requests** resolution by raising integration events; the *fleet* (Coordination / TrafficControl / PathPlanning) reacts. Detour reservation itself is delegated back through a seam to TrafficControl's normal `TryReserve` path so the recovery move can never create a new collision (invariant **I1**).
+Liveness owns the policy for both, and **only** the policy:
+
+- **Prevention (constructive).** `RagCycleDetector` implements TrafficControl's `IWouldCloseCycleDetector`: before
+  a lease is granted, it asks "would this new wait edge close a wait-for cycle?" and, if so, the grant is refused so
+  the planner re-routes — the circular wait never forms. The same class also implements `IDeadlockDetector.Detect`
+  for post-hoc analysis (partition the live RAG into genuine cycles).
+- **Physical-standoff resolution (reactive, decision-only).** `ILivenessPolicy.Evaluate` is consulted by the
+  executor once per phase per tick. It observes the fleet's physical state and returns the cheapest safe resolution
+  as a list of `LivenessDirective`s. The executor performs the mechanism (drop a lease, move a pose, call the
+  cluster planner); the policy never does.
 
 What it explicitly does **not** do:
 
-- It does **not** hold or grant reservations — that is TrafficControl's job (the resolution detour goes back through `IDetourReservationService` → TrafficControl).
-- It does **not** plan paths — PathPlanning owns that.
-- It has **no EF/DbContext**: deadlocks are transient, so cases are modelled as aggregates only to use the domain-event channel and optimistic-concurrency convention; nothing is stored (`SwarmRoute.Deadlock.Domain/Aggregates/DeadlockCase.cs:14`).
+- It does **not** hold or grant reservations — that is TrafficControl's job. Prevention is a *veto* on a grant;
+  resolution emits *directives* the executor enacts through its normal reserve/plan paths.
+- It does **not** plan paths — PathPlanning owns that. A `YieldAndReplan` / `SolveClusterJointly` directive asks the
+  *executor* to re-plan or call the cluster planner.
+- It is **pure and synchronous**: `Evaluate` is a deterministic function of the `LivenessSnapshot` plus the policy's
+  own per-run working memory (the en-route stall streaks and a hop-distance cache). No I/O, no engine mutation.
 
-### Provenance (AJR.MAPF port)
+### History (what this context used to be)
 
-This context is a clean-architecture re-implementation of the original `AJR.MAPF` deadlock subsystem:
-
-| AJR.MAPF original | SwarmRoute Deadlock |
-| --- | --- |
-| `MapResourceAllocationGraph.GenerateGraph` | `ResourceAllocationGraph.Build()` (`.../ValueObjects/ResourceAllocationGraph.cs:107`) |
-| `ConflictDetect.IndependenceDetection.DeadlockDetect` | `IDeadlockDetector` / `RagDeadlockDetector` (`.../Services/RagDeadlockDetector.cs`) |
-| `CyclesDetector.CyclicVertices(graph, "agent_")` | reused verbatim (`src/vendor/SwarmRoute.Algorithms/Graphs/CyclesDetector.cs:175`) |
-| stubbed `ISolver.Solve()` + `Recover()`, `ConflictSolveStateMachine` | `IDeadlockResolver` + `AvoidancePlan` state machine |
-| "go to avoid point" recovery | `ResolutionStrategy.SendToAvoidSite` |
+This context began as a port of the `AJR.MAPF` *reactive* deadlock subsystem — an event-driven flow
+(`AllocationContended` → scan → `DeadlockCase`/`AvoidancePlan` aggregates → resolve/recover/escalate over the
+integration bus, with `IAvoidancePointSelector` / `IDetourReservationService` / `IClearanceConfirmer` seams). **That
+whole reactive flow has been removed.** Prevention front-runs it (a cycle that never forms needs no recovery), and
+physical standoffs are now resolved synchronously inside the executor loop through `ILivenessPolicy`. The RAG +
+`CyclesDetector` machinery survives because both surviving roles (prevention and detection) are exactly cycle
+detection. If you are looking for `DeadlockAppService`, `AvoidanceDeadlockResolver`, the avoid-point/detour/clearance
+seams, or the `Deadlock.Case.*` integration events — they are gone.
 
 ---
 
 ## 2. Layers & projects
 
-Six projects, clean-architecture layering (dependencies point inward). Only `Domain` and `Application.Contract` carry a compile-time dependency on the shared Kernel — the context is buildable **standalone** (no compile-time edge to TrafficControl).
+Clean-architecture layering (dependencies point inward). The context is buildable **standalone** — no compile-time
+edge to TrafficControl (it declares the prevention interface it implements via TrafficControl's *Domain*, the only
+shared edge being the frozen Kernel).
 
-| Project | Role | Depends on |
+| Project | Role | Key types |
 | --- | --- | --- |
-| `SwarmRoute.Deadlock.Domain.Shared` | Enums (`DeadlockKind`, `DeadlockCaseStatus`, `ResolutionStrategy`, `AvoidancePlanStep`) + `DeadlockErrorCodes`. | — (nothing) |
-| `SwarmRoute.Deadlock.Domain` | RAG value object, cycle detection, aggregates, domain services + integration seams, domain events. | Kernel, `Domain.Abstractions`, `Domain.Shared`, NetDevPack, `SwarmRoute.Algorithms` (graph + `CyclesDetector`) |
-| `SwarmRoute.Deadlock.Application.Contract` | `IDeadlockAppService` + DTOs (`DeadlockReportDto`, `DeadlockCycleDto`). | Kernel |
-| `SwarmRoute.Deadlock.Application` | `DeadlockAppService` orchestrator, `AllocationContendedSubscriber`, `IDeadlockSnapshotProvider` consumer seam. | `Domain`, `Application.Contract` |
-| `SwarmRoute.Deadlock.Infra.CrossCutting.IoC` | `DeadlockNativeInjectorBootStrapper` DI registration. | `Application` |
-| `SwarmRoute.Deadlock.Tests` | xUnit unit tests. | `Domain`, `Application` |
+| `SwarmRoute.Liveness.Domain.Shared` | Error codes. | `DeadlockErrorCodes` |
+| `SwarmRoute.Liveness.Domain` | The cycle-detection primitive + the pure resolution algorithms. | `Detection/RagCycleDetector`, `Detection/StuckClusterDetector`, `Resolution/PibtZoneResolver`, `Resolution/ParkedRelocationSelector`, `Resolution/HopDistances`, `Resolution/PibtAgentView`, `ValueObjects/ResourceAllocationGraph`, `ValueObjects/DeadlockCycle`, `Services/IDeadlockDetector` |
+| `SwarmRoute.Liveness.Application.Contract` | The policy **seam**: interface, snapshot, directives, options. | `Policy/ILivenessPolicy`, `Policy/LivenessSnapshot` (+ `LivenessPhase`, `AgentLivenessView`), `Policy/LivenessDirective` (9 variants), `Policy/LivenessOptions` (+ `JointResolverKind`), `Policy/NoOpLivenessPolicy` |
+| `SwarmRoute.Liveness.Application` | The concrete phase-based policy. | `Policy/LivenessPolicy` |
+| `SwarmRoute.Liveness.Infra.CrossCutting.IoC` | DI registration. | `DeadlockNativeInjectorBootStrapper` |
+| `SwarmRoute.Liveness.Tests` | xUnit unit tests. | — |
 
-Key external types: the graph machinery lives under the `AJR.Platform.Algorithms.*` namespaces but is vendored locally at `src/vendor/SwarmRoute.Algorithms*` (`DirectedSparseGraph<T>`, `CyclesDetector`). The cross-context vocabulary (`ResourceRef`, `ResourceKind`, `ResourceAllocationGraphSnapshot`) is the **frozen** `SwarmRoute.SpatioTemporal.Kernel`.
+Key external types: the graph machinery (`DirectedSparseGraph<T>`, `CyclesDetector`) is vendored at
+`src/vendor/SwarmRoute.Algorithms*`. The cross-context vocabulary (`ResourceRef`, `ResourceKind`,
+`ResourceAllocationGraphSnapshot`) is the **frozen** `SwarmRoute.SpatioTemporal.Kernel`. The roadmap graph the
+resolution algorithms walk is PathPlanning's `RoadmapGraph`.
 
 ---
 
-## 3. Domain model
+## 3. Grant-time cycle prevention — `RagCycleDetector`
 
-### `ResourceAllocationGraph` (value object) — `.../ValueObjects/ResourceAllocationGraph.cs`
+`RagCycleDetector` (`SwarmRoute.Liveness.Domain/Detection/RagCycleDetector.cs:23`) implements **both** surviving
+liveness roles on byte-identical cycle semantics:
 
-The RAG is an **immutable value object** (`ValueObject`, equality by sorted owns/waits edge sets — `:152`). It adapts the frozen `ResourceAllocationGraphSnapshot` into a directed graph that cycle detection runs over. `FromSnapshot` validates that every agent/resource id is non-blank and trims them (`:71`, `:81`).
+```csharp
+public sealed class RagCycleDetector : IDeadlockDetector, IWouldCloseCycleDetector
+```
 
-It carries two edge families, matching the AJR source's three vertex families (`agent_`, `occupySite_`, `applySite_` — `:39`):
+### Prevention — `IWouldCloseCycleDetector.WouldCloseCycle`
 
-- **Ownership** (held): `occupySite_<resource> → agent_<owner>` — "this resource is held by that agent" (`:140`).
-- **Wait-for** (request): `agent_<waiter> → occupySite_<resource>` — "this agent is blocked on that resource" (`:144`).
+`IWouldCloseCycleDetector` is declared by TrafficControl
+(`TrafficControl/SwarmRoute.TrafficControl.Domain/Services/IWouldCloseCycleDetector.cs`); `ReservationTable` is
+constructed with one and calls it inside `TryGrant` **before** recording a contended wait edge:
 
-The crucial modelling decision (faithful to AJR): **both** ownership and wait-for edges pivot on a *single shared* `occupySite_` vertex per resource, so an `agent → resource → agent → resource → …` path can close into a cycle. The `applySite_` marker vertices are added for fidelity/observability but carry **no edges** (`:133`). `ResourceKey` namespaces a resource as `Kind:Id` so a CP and a Lane with the same id are distinct vertices (`:150`).
+```csharp
+bool WouldCloseCycle(
+    ResourceAllocationGraphSnapshot currentEdges,
+    string candidateAgentId,
+    IReadOnlyCollection<(string OwnerAgentId, ResourceRef Resource)> candidateWaitEdges);
+```
 
-`Build()` is two-phase (vertices first, then edges) because the vendored `DirectedSparseGraph<T>.AddEdge` silently returns `false` if an endpoint vertex is missing (`src/vendor/SwarmRoute.Algorithms.DataStructures/Graphs/DirectedSparseGraph.cs:167`) — adding all vertices first guarantees every edge lands.
+The detector builds the *hypothetical* RAG = the current owns/waits edges **plus** the candidate's would-be wait
+edges, runs `CyclesDetector.CyclicVertices(graph, "agent_")`, and returns whether the candidate now lies on a cycle.
+True ⇒ the grant is refused and the planner re-routes, so the circular wait never forms. This is opt-in per run
+(`SimulationRequest.PreventDeadlockCycles`); off = the Null detector = byte-identical baseline.
+
+### The RAG (`ResourceAllocationGraph` value object)
+
+`ResourceAllocationGraph` (`.../ValueObjects/ResourceAllocationGraph.cs`) adapts the frozen
+`ResourceAllocationGraphSnapshot` into a directed graph cycle detection runs over. Three vertex families
+(`agent_`, `occupySite_`, `applySite_`), two edge families:
+
+- **Ownership** (held): `occupySite_<resource> → agent_<owner>`.
+- **Wait-for** (request): `agent_<waiter> → occupySite_<resource>`.
+
+Both pivot on a *single shared* `occupySite_` vertex per resource, so an `agent → resource → agent → resource → …`
+path can close into a cycle. `ResourceKey` namespaces a resource as `Kind:Id`, so a CP and a Lane with the same id
+are distinct vertices.
 
 #### ASCII: a 2-agent circular wait
 
 `A` owns `r1` and wants `r2`; `B` owns `r2` and wants `r1`:
 
 ```
-        owns                       wait
-   ┌───────────────┐      ┌────────────────────┐
-   ▼               │      ▼                     │
-occupySite_CP:r1   │   occupySite_CP:r2         │
-   │               │      │                     │
-   │ owns          │ wait │ owns          wait  │
-   ▼               │      ▼                     │
- agent_A ──────────┘    agent_B ────────────────┘
-   (A waits r2)            (B waits r1)
-
-Edges actually built:
+Edges built:
   occupySite_CP:r1 → agent_A        (ownership)
   occupySite_CP:r2 → agent_B        (ownership)
   agent_A          → occupySite_CP:r2   (wait-for)
@@ -91,195 +131,223 @@ Cycle through agent vertices:
   agent_A → occupySite_CP:r2 → agent_B → occupySite_CP:r1 → agent_A
 ```
 
-`CyclesDetector.CyclicVertices(graph, "agent_")` returns `[agent_A, agent_B]`. (Verified by `ResourceAllocationGraphTests.Build_ProducesGraphThatCycleDetectorFlags`.)
+`CyclesDetector.CyclicVertices(graph, "agent_")` flags `[agent_A, agent_B]`.
 
-### `DeadlockCycle` (value object) — `.../ValueObjects/DeadlockCycle.cs`
+### Detection — `IDeadlockDetector.Detect`
 
-The set of agent ids in one circular wait, stored **without** the `agent_` prefix, deduplicated, and **sorted ordinal-ascending** so identity is deterministic regardless of discovery order (`:37`). `FromVertices` strips the `agent_` prefix from RAG vertex names (`:55`). This stable ordering is what makes victim selection reproducible (§6).
-
-### Cycle-detection algorithm — `RagDeadlockDetector` (`.../Services/RagDeadlockDetector.cs`)
-
-Two stages:
-
-1. **Faithful AJR port.** Build the RAG, run `CyclesDetector.CyclicVertices(graph, "agent_")` (`:30`). The vendored detector does a directed DFS with a recursion stack and flags every `agent_` vertex *from which a cycle is reachable* (`src/vendor/.../CyclesDetector.cs:175`). This **over-approximates**: a starving waiter that merely queues *behind* a deadlock is flagged even though it is not part of any mutual wait.
-
-2. **SwarmRoute refinement — partition into genuine cycles** (`PartitionIntoCycles`, `:63`). To make resolution actionable and to satisfy *"two independent cycles must be reported separately"*, the detector builds the **agent-blocking digraph** restricted to cyclic agents — edge `a → b` when `a` waits on a resource `b` owns (`:84`) — and returns its **non-trivial strongly-connected components**: an SCC of size ≥ 2, or a singleton with a self blocking-edge (`:99`). SCCs are found by an iterative (stack-based, no recursion-depth risk) **Tarjan** implementation (`StronglyConnectedComponents`, `:121`), with deterministic ordinal iteration order. A trivial singleton (the starving waiter) is dropped.
-
-The reported cycles are ordered by smallest member agent id (`:46`), so detection is **deterministic across repeated runs** (asserted by `DeadlockDetectorTests.Detection_IsDeterministic_AcrossRepeatedRuns`).
-
-### Aggregates
-
-**`DeadlockCase`** (`.../Aggregates/DeadlockCase.cs`) — aggregate root for one detected deadlock. Lifecycle `Detected → Resolving → Resolved | Escalated`:
-
-- `Detect(cycle)` opens a case in `Detected` and raises `DeadlockCaseDetectedEvent` (`:68`).
-- `RequestResolution(victim, strategy, suggestedAvoidTarget?)`: `Detected → Resolving`, raises `DeadlockCaseResolutionRequestedEvent`; rejects a victim not in the cycle (`:105`, `:115`).
-- `MarkResolved()`: `Resolving → Resolved`, raises `DeadlockCaseResolvedEvent` (`:130`).
-- `Escalate(reason?)`: `Detected/Resolving → Escalated`, idempotent (`:146`).
-- Carries `StateVersion` (checked-increment optimistic concurrency) per house convention (`:160`).
-
-**`AvoidancePlan`** (`.../Aggregates/AvoidancePlan.cs`) — the forward-only recovery state machine (ports AJR `ISolver.Solve+Recover` / `ConflictSolveStateMachine`):
-
-```
-SelectVictim → SelectAvoidancePoint → ReserveDetour → DispatchToAvoid → ConfirmCleared → Recover → Completed
-                                                                                                  ↘ Aborted (terminal failure)
-```
-
-Each `RecordX`/`AdvanceX` enforces the expected current step (`Expect`, `:152`) and bumps `StateVersion`. The aggregate is transport-agnostic: it records *what* was decided (victim, avoid site) and *how far* recovery progressed; the side effects are performed by the resolver via the seams and fed back in.
+For post-hoc analysis, `Detect(snapshot)` runs the same cycle detection, then refines the result: the vendored
+detector *over-approximates* (a waiter merely queued behind a deadlock is flagged), so the detector builds the
+**agent-blocking digraph** restricted to cyclic agents and returns its **non-trivial strongly-connected components**
+(an SCC of size ≥ 2, or a singleton with a self blocking-edge) via an iterative **Tarjan** implementation. Cycles are
+returned ordered by smallest member id, so detection is deterministic. `DeadlockCycle` (`.../ValueObjects/`) is the
+result value object — the agent ids in one cycle, deduplicated and sorted ordinal-ascending.
 
 ---
 
-## 4. Reactive flow (event-driven)
+## 4. The synchronous liveness policy
 
-The whole context is triggered by **one** inbound integration event and emits **three** outbound ones, all over the in-process event bus.
+### The seam — `ILivenessPolicy`
 
-```
-TrafficControl.ReservationTable
-    │  request queued behind a held resource (or a stale request aged)
-    │  AddDomainEvent(new AllocationContendedEvent(...))      [ReservationTable.cs:168 / :429]
-    ▼
-"TrafficControl.Allocation.Contended"  (IIntegrationEvent, v1)
-    │  in-process bus → handler.CanHandle / HandleAsync
-    ▼
-AllocationContendedSubscriber.HandleAsync          [Application/Subscribers/AllocationContendedSubscriber.cs:42]
-    │  (1) re-entrancy guard (AsyncLocal ScanDepth)  ── §see note
-    │  (2) snapshot = IDeadlockSnapshotProvider.GetSnapshotAsync()
-    ▼
-DeadlockAppService.ScanAsync(snapshot)             [Application/Services/DeadlockAppService.cs:48]
-    │  cycles = IDeadlockDetector.Detect(snapshot)
-    │  for each cycle:
-    │     case = DeadlockCase.Detect(cycle)         ── raises Deadlock.Case.Detected
-    │     IDeadlockResolver.SolveAsync(case)        ── raises Deadlock.Case.ResolutionRequested
-    │                                                   (and Resolved on recovery, or Escalate)
-    │  drain case.DomainEvents → IIntegrationEventPublisher.PublishAsync(...)
-    ▼
-Published integration events (consumed by Coordination / TrafficControl / PathPlanning):
-    • "Deadlock.Case.Detected"             (DeadlockCaseDetectedEvent,            v1)
-    • "Deadlock.Case.ResolutionRequested"  (DeadlockCaseResolutionRequestedEvent, v1)  → victim + suggested avoid target
-    • "Deadlock.Case.Resolved"             (DeadlockCaseResolvedEvent,            v1)
-```
-
-**Actual event types & names** (all `DomainEvent, IIntegrationEvent`, `Version = "v1"`):
-
-| Direction | `EventName` | Type | Payload |
-| --- | --- | --- | --- |
-| **in** | `TrafficControl.Allocation.Contended` | `AllocationContendedEvent` (`TrafficControl/.../Events/AllocationContendedEvent.cs`) | reservationTableId, agentId, contendedRequestCount |
-| out | `Deadlock.Case.Detected` | `DeadlockCaseDetectedEvent` (`.../Events/DeadlockCaseDetectedEvent.cs`) | caseId, kind, agentIds |
-| out | `Deadlock.Case.ResolutionRequested` | `DeadlockCaseResolutionRequestedEvent` | caseId, victimAgentId, strategy, suggestedAvoidTarget |
-| out | `Deadlock.Case.Resolved` | `DeadlockCaseResolvedEvent` | caseId, victimAgentId |
-
-**The subscriber** (`AllocationContendedSubscriber.cs:19`) implements `IIntegrationEventHandler`. `CanHandle` matches strictly on `EventName == "TrafficControl.Allocation.Contended"` (`:37`). **v0 ignores the payload** — any contention triggers a full re-scan (`:57` remark).
-
-**Re-entrancy guard.** A detour reservation can itself publish `Allocation.Contended` synchronously through the in-process bus; an `AsyncLocal<int> ScanDepth` short-circuits a nested scan to `DeadlockReportDto.Empty` so a resolution-in-flight cannot recursively open a second case (`AllocationContendedSubscriber.cs:23`, `:61`). This is the single most subtle piece of the flow and is covered by a dedicated test (§8).
-
-**The "Commit" role.** Because the context has no DbContext, `DeadlockAppService` plays the role `BaseDbContext.Commit()` plays elsewhere: after running the cases it drains `Entity.DomainEvents` from every case and hands the integration-flagged subset to `IIntegrationEventPublisher.PublishAsync` itself (`DeadlockAppService.cs:79`).
-
----
-
-## 5. Snapshot seam
-
-`IDeadlockSnapshotProvider` (`.../Application/Abstractions/IDeadlockSnapshotProvider.cs:14`) is the **consumer-side** seam — Deadlock declares it so it stays buildable without a compile-time dependency on TrafficControl:
+`ILivenessPolicy` (`.../Application.Contract/Policy/ILivenessPolicy.cs`) is the single owner of physical-standoff
+policy. One method:
 
 ```csharp
-Task<ResourceAllocationGraphSnapshot> GetSnapshotAsync(CancellationToken ct = default);
+IReadOnlyList<LivenessDirective> Evaluate(LivenessSnapshot snapshot);
 ```
 
-- **Standalone default:** `NullDeadlockSnapshotProvider` returns an empty (healthy) snapshot `new ResourceAllocationGraphSnapshot([], [])` (`:25`).
-- **Integration adapter (Host):** `TrafficSnapshotDeadlockAdapter` (`host/SwarmRoute.Host/Adapters/TrafficSnapshotDeadlockAdapter.cs`) bridges the async Deadlock seam to TrafficControl's **authoritative, synchronous** `ITrafficControlSnapshotProvider.GetSnapshot()` (`TrafficControl/.../Services/ITrafficControlSnapshotProvider.cs:11`), wrapping it in `Task.FromResult`. TrafficControl is the single writer; Deadlock just reads. There, `Owns` = one edge per active lease, `Waits` = one edge per queued/contended request.
-- **Test adapter:** `AllocationContendedSubscriberTests.EmptySnapshotProvider` is the in-test stand-in returning an empty snapshot.
+Pure and synchronous (§1). The roadmap graph and `LivenessOptions` are bound for the run at construction, so they
+are not snapshot fields. `NoOpLivenessPolicy.Instance` is the always-empty default (used when the executor is given
+no policy).
 
-The shape both sides agree on is the frozen Kernel record `ResourceAllocationGraphSnapshot(Owns, Waits)` where each edge is a `(string AgentId, ResourceRef Resource)`.
+### What the policy sees — `LivenessSnapshot`
+
+```csharp
+public sealed record LivenessSnapshot(
+    long Tick,                                 // diagnostics only
+    LivenessPhase Phase,                       // which mechanism point this consult is
+    bool ScheduleFaithful,                     // true under the schedule-faithful (SIPP) executor
+    IReadOnlyList<AgentLivenessView> Agents,   // every agent's physical view this tick
+    IReadOnlySet<string> ParkedCells);         // cells a finished vehicle is parked on
+```
+
+`AgentLivenessView` is the read-only per-agent view (`Position`, `Goal`, `EffectiveGoal`, `Priority`,
+`EnRouteNextCell`, the streaks `BlockedTicks` / `StuckTicks` / `PibtHeldTicks`, the joint-resolver flags, and the
+`Advance`-phase-only fields `AtRouteEnd` / `NextCellIsParked` / `ScheduledToAdvance` / `ScheduledToMoveThisTick`).
+The executor builds it from its mutable `RunAgent`; the policy never sees or mutates engine state directly.
+
+### What the policy returns — `LivenessDirective`
+
+Every directive maps 1:1 to an existing executor mutation (`.../Policy/LivenessDirective.cs`):
+
+| Directive | The executor does |
+| --- | --- |
+| `YieldAndReplan(AgentId, Reason)` | drop the agent's lease and re-plan from its current pose. `Reason` is `head-on-yield` or `stall-reroute`. |
+| `EnterJointResolver(AgentIds)` | release the agents' stalled leases and begin a PIBT episode. |
+| `MoveTo(AgentId, Cell)` | move one PIBT agent one hop to `Cell` this tick (hold when `Cell` == current). |
+| `ExitJointResolver(AgentId, Reason)` | end the agent's PIBT episode (goal reached / held too long / budget elapsed) → it re-plans normally. |
+| `SolveClusterJointly(AgentIds)` | call the cluster (CBS) planner over the cluster and reserve the conflict-free result atomically. |
+| `RelocateParked(BlockerId, Dest, YieldWindow, WalledAgentId)` | step a parked blocker aside to `Dest` for `YieldWindow` ticks so the walled-out agent's goal approach opens. |
+| `RestoreGoal(AgentId)` | a relocated gatekeeper's yield window elapsed → let it re-plan back to its own goal. |
+| `EscalateLivelock(AgentId, Reason)` | anti-livelock terminal: stop trying to relocate/resolve this agent. |
+| `Diagnostic(Message)` | forward a human-facing standoff message to the log sink. |
+
+### Why phases — `LivenessPhase`
+
+Physical-standoff decisions are inherently *staged*: a parked blocker must be relocated **before** the planner
+re-routes the walled-out agent; a congestion cluster is formed **after** plan+reserve (so it sees the freshly-planned
+poses) but **before** the schedule resolves who advances; the joint-resolver drive and the per-agent yields are
+decided **after** the schedule is resolved. So the executor consults the policy **once per phase per tick**, each at
+the exact mechanism point its inputs become available — which makes the extraction from the executor's old inlined
+logic behaviour-preserving by construction.
+
+| Phase | When | The policy decides |
+| --- | --- | --- |
+| `BeforePlanning` | before plan+reserve | recover gatekeepers whose yield window elapsed (`RestoreGoal`), then relocate parked blockers off a walled-out approach (`RelocateParked`, when `StepAside` is on). |
+| `ClusterFormation` | after plan+reserve, before advances resolve | form physical-standoff clusters and hand them to the joint resolver — `EnterJointResolver` (PIBT) or `SolveClusterJointly` (CBS). No-op when `JointResolver == None`. |
+| `JointDrive` | after advances resolve, before the gate | drive each PIBT agent one hop (`MoveTo`) and decide which agents exit the episode (`ExitJointResolver`). |
+| `Advance` | after the joint drive, before the gate | the schedule-faithful per-agent `stall-reroute` / `head-on-yield` (`YieldAndReplan` + a head-on `Diagnostic`). No-op unless `ScheduleFaithful`. |
+
+`LivenessPolicy` (`.../Application/Policy/LivenessPolicy.cs`) dispatches `Evaluate` on `snapshot.Phase` to one
+`EvaluateBeforePlanning` / `EvaluateClusterFormation` / `EvaluateJointDrive` / `EvaluateAdvance` method, holding a
+memoized reverse-BFS hop-distance cache (`HopDistances.To`, one per goal) as the greedy next-hop heuristic.
 
 ---
 
-## 6. Resolution
+## 5. Joint resolvers (PIBT / CBS) and cluster detection
 
-Resolution is orchestrated by `IDeadlockResolver` → `AvoidanceDeadlockResolver` (`.../Services/AvoidanceDeadlockResolver.cs`), which walks an `AvoidancePlan` through the AJR avoidance/recovery state machine.
+The joint resolver is the cluster owner for a physical standoff — exactly one per cluster, selected by
+`JointResolverKind` (`.../Policy/LivenessOptions.cs`):
 
-**`SolveAsync(case)`** (`:40`):
+```csharp
+public enum JointResolverKind { None = 0, Pibt = 1, Cbs = 2 }
+```
 
-1. **SelectVictim** — `IVictimSelector` → `DeterministicVictimSelector`. Heuristic: operate on the smallest cycle; within it pick the **lexicographically-smallest (ordinal) agent id**, which is simply `cycle.AgentIds[0]` since the cycle is pre-sorted (`DeterministicVictimSelector.cs:30`). Deterministic by design — *the same deadlock always nominates the same victim*, which is what prevents **livelock** (R6).
-2. **SelectAvoidancePoint** — `IAvoidancePointSelector.SelectAvoidancePoint(victim)`.
-3. `case.RequestResolution(victim, SendToAvoidSite, avoidSite)` — raised **unconditionally** so Coordination always learns the intended victim, *even if* the detour later fails (`:59`).
-4. If no avoid site → `plan.Abort` + `case.Escalate` (`:61`).
-5. **ReserveDetour** — `IDetourReservationService.TryReserveDetourAsync(victim, avoidSite)`; on denial → abort + escalate (`:72`).
-6. **DispatchToAvoid** — record dispatched; plan is now at `ConfirmCleared`.
+> This single enum is the user-facing lever; it was previously two mutually-exclusive `UsePibt` / `UseCbs` request
+> bools. The simulation HTTP request now carries one `JointResolver` field, mapped onto `LivenessOptions.JointResolver`.
 
-**`Recover(case, plan)`** (`:88`): only from `ConfirmCleared`; checks `IClearanceConfirmer.IsCleared(victim)`; on success walks `ConfirmCleared → Recover → Completed` and `case.MarkResolved()` (raising `Deadlock.Case.Resolved`).
+### Cluster detection — `StuckClusterDetector`
 
-### Strategies
+`StuckClusterDetector.Assemble` (`.../Detection/StuckClusterDetector.cs`) is a static, reservation-agnostic
+detector. From each agent's INTENDED next cell + pose + a unified stuckness counter (`StuckAgentSnapshot`), it
+union-finds candidates (active goal-seekers whose intended cell is physically occupied) to the occupant blocking
+them, and returns the components of size ≥ 2 that contain a member at/over the trigger threshold — ordered by
+smallest id (deterministic). Keying off *intent + pose* (not the en-route reservation flag) is what lets a head-on
+swap whose member has dropped to a pending/walled-out state still be seen as a cluster.
 
-`ResolutionStrategy` (`Domain.Shared/Enums/ResolutionStrategy.cs`): **`SendToAvoidSite` (v0 baseline, implemented)**; `Preempt` and `Requeue` are declared but *reserved for later evolution* (not used in v0).
+### PIBT — `PibtZoneResolver`
 
-### Integration seams — what is stubbed vs implemented
+For `JointResolverKind.Pibt`, `ClusterFormation` emits an `EnterJointResolver` per cluster member, and `JointDrive`
+calls `PibtZoneResolver.Resolve` (`.../Resolution/PibtZoneResolver.cs`):
 
-Three seams are declared in the Deadlock **domain** but deliberately left without production implementations there (TrafficControl/Map own the real work). Each ships a `Null*` default:
+```csharp
+public static IReadOnlyDictionary<string, string> Resolve(
+    IReadOnlyList<PibtAgentView> cluster,
+    IReadOnlySet<string> blockedCells,
+    RoadmapGraph graph,
+    Func<string, IReadOnlyDictionary<string, int>> hopsToGoal);
+```
 
-| Seam | Standalone default (in this context) | Host adapter (integrated) |
-| --- | --- | --- |
-| `IAvoidancePointSelector` | `NullAvoidancePointSelector` → always `null` → resolver escalates (`NullIntegrationSeams.cs:9`) | `MapAvoidancePointSelector` — picks a free `AvoidSite`/`RelaySite` from the active roadmap, respecting topology closure + blacklist, ordinal-deterministic (`host/.../Adapters/MapAvoidancePointSelector.cs`) |
-| `IDetourReservationService` | `NullDetourReservationService` → always `false` (`:20`) | `TrafficDetourReservationAdapter` — reserves the avoid site via TrafficControl's `ITrafficCoordinatorAppService.TryReserveAsync` for a bounded 60 s window, so the detour respects every lease and cannot collide (`host/.../Adapters/TrafficDetourReservationAdapter.cs`) |
-| `IClearanceConfirmer` | `NullClearanceConfirmer` → optimistic `true` (`:35`) | *(not yet overridden in Host — still optimistic in v0)* |
+It plans one joint hop for the cluster by **Priority Inheritance with Backtracking**: process agents most-waited
+first (anti-livelock), then static priority, then ordinal id; each agent tries its out-neighbours + stay ordered by
+hop-distance to goal, tentatively claims a target, and recursively pushes a lower-priority occupant out of the way,
+backtracking on failure. Guarantees: vertex-distinct next cells, no immediate 2-cycle swaps, and the
+highest-priority agent gets its best reachable cell. Cells held by non-cluster agents are passed as `blockedCells`
+(immovable). The episode ends per agent (`ExitJointResolver`) when it reaches goal, is held too long
+(`JointResolverHeldExitThreshold`), or its drive budget elapses — handing it back to prioritized SIPP.
 
-So in a **standalone** build, `SolveAsync` always escalates (no avoid site) — but the victim/strategy and the `ResolutionRequested` event are *still produced*, which is the intended "Deadlock analyses, the fleet acts" contract. The detour adapter's own comment flags that v0 is only a bounded destination hold, not a full path-to-avoid reservation, because the victim's current pose belongs to a not-yet-present fleet-state/dispatch integration.
+### CBS — `SolveClusterJointly`
+
+For `JointResolverKind.Cbs`, `ClusterFormation` emits one `SolveClusterJointly` per multi-member cluster. The
+*executor* (not the policy) releases the members' leases and calls its cluster planner (a complete/optimal local
+Conflict-Based Search reusing SIPP as the constrained low level, honoring the rolling-horizon window through it),
+then reserves the conflict-free result atomically and resumes schedule-faithful execution. CBS cracks the dense
+swaps/chains greedy PIBT cannot, at higher cost. CBS therefore **requires the SIPP planner** (it returns time-axis
+paths the schedule-faithful executor must run) — `SimulationService.Validate` enforces this.
+
+---
+
+## 6. How the executor consumes the policy
+
+The consumer is `FleetLoopDriver` in the Simulation context
+(`Simulation/SwarmRoute.Simulation.Application/FleetLoopDriver.cs`). It takes an optional `ILivenessPolicy` (default
+`NoOpLivenessPolicy.Instance`) and consults it exactly **four times per tick** — one `Evaluate` per `LivenessPhase`,
+each at its mechanism point — and applies the returned directives by mutating its own `RunAgent` state:
+
+```
+per tick:
+  ── BeforePlanning ──  RestoreGoal → clear redirect;  RelocateParked → park blocker aside, reset walled streak
+  (plan + reserve)
+  ── ClusterFormation ──  EnterJointResolver → release leases, begin PIBT;  SolveClusterJointly → release + cluster-plan + reserve
+  (schedule resolves which en-route agents advance)
+  ── JointDrive ──  MoveTo → step one PIBT hop;  ExitJointResolver → park / disband back to pending
+  ── Advance ──  YieldAndReplan(stall-reroute|head-on-yield) → release + re-plan at the gate;  Diagnostic → log
+  (right-of-way gate steps the granted agents)
+```
+
+By construction the executor is a mechanical invoker of directives: the policy owns *all* the standoff
+decision/PIBT/cluster logic. The driver's project reference to Liveness is `Application.Contract` (the seam) +
+`Application` (the concrete `LivenessPolicy`); it no longer references `Liveness.Domain` — the PIBT/cluster code is
+the policy's concern.
+
+`SimulationService` (`Simulation/.../SimulationService.cs`) builds the policy per run from the request:
+`new LivenessPolicy(field.Graph, new LivenessOptions { JointResolver = request.JointResolver, StepAside = request.StepAside })`.
 
 ---
 
 ## 7. Composition / wiring
 
-`DeadlockNativeInjectorBootStrapper.RegisterServices(...)` (`.../Infra.CrossCutting.IoC/DeadlockNativeInjectorBootStrapper.cs`) follows the house `*NativeInjectorBootStrapper` convention with both a `WebApplicationBuilder` overload (`:31`) and a web-agnostic `IServiceCollection` overload (`:42`). `RegisterCore` (`:49`):
+`DeadlockNativeInjectorBootStrapper.RegisterServices(...)`
+(`.../Infra.CrossCutting.IoC/DeadlockNativeInjectorBootStrapper.cs`) registers only the surviving primitive:
 
-- **Domain (always concrete):** `IDeadlockDetector → RagDeadlockDetector`, `IVictimSelector → DeterministicVictimSelector`, `IDeadlockResolver → AvoidanceDeadlockResolver` (`AddScoped`).
-- **Integration seams via `TryAdd`:** `IAvoidancePointSelector`, `IDetourReservationService`, `IClearanceConfirmer`, `IDeadlockSnapshotProvider` get their `Null*` defaults — so the context is fully resolvable standalone, **and** the Host can override each simply by registering a real adapter (the explicit registration wins because the bootstrapper used `TryAdd`).
-- **Application:** `IDeadlockAppService → DeadlockAppService`; `AllocationContendedSubscriber` registered concretely *and* as `IIntegrationEventHandler` via a factory delegate (`:65`) so the in-process bus discovers it through `GetServices<IIntegrationEventHandler>()`.
-- **Intentionally NOT registered here:** `IIntegrationEventPublisher` — owned by the EventBus/Host wiring (`:27`).
+```csharp
+services.AddScoped<IDeadlockDetector, RagCycleDetector>();   // post-hoc detection role
+```
 
-**Host order matters** (`host/SwarmRoute.Host/Program.cs`): `AddEventBus()` (step 1, supplies the in-process publisher + dispatcher) → `DeadlockBootStrapper.RegisterServices` (step 5, the `TryAdd` Null seams) → step 6b explicitly registers `TrafficSnapshotDeadlockAdapter`, `MapAvoidancePointSelector`, `TrafficDetourReservationAdapter` *after* the bootstrapper so they override the nulls (`Program.cs:69-71`).
+The **prevention** role (`IWouldCloseCycleDetector`) is **not** wired here — it is opt-in per run, wired by the
+simulation engine factory. `InMemorySimulationEngineFactory`
+(`host/SwarmRoute.Host/Adapters/InMemorySimulationEngineFactory.cs`) pre-registers
+`AddSingleton<IWouldCloseCycleDetector, RagCycleDetector>()` **before** the TrafficControl bootstrapper, *only when*
+`PreventDeadlockCycles` is on, so TrafficControl's `TryAddSingleton` Null default defers to it — turning prevention
+on for that isolated, per-request container. (The former host adapter `RagWouldCloseCycleDetector.cs` is deleted;
+the Liveness-domain `RagCycleDetector` now serves the role directly.)
 
-The in-process publisher (`Shared/SwarmRoute.EventBus/InProcessIntegrationEventPublisher.cs`) filters to `IIntegrationEvent`, fetches all `IIntegrationEventHandler`s in scope, and dispatches via `CanHandle`/`HandleAsync` — swallowing/logging handler exceptions so one failing subscriber cannot break the publish loop (`:53`). A CAP/RabbitMQ host can later bind the same handler to the same event name with no application change.
+The `ILivenessPolicy` is **not** registered in DI at all: it is sim/executor-scoped, constructed per run by
+`SimulationService` because it binds the run's roadmap graph + options. Production has no executor loop, so it has
+no `ILivenessPolicy`.
 
 ---
 
-## 8. Tests (`SwarmRoute.Deadlock.Tests`, xUnit)
+## 8. Tests
 
-Pure in-memory tests — no host, no DB. A fluent `SnapshotBuilder` fabricates RAG snapshots (`SnapshotBuilder.cs`, incl. `SnapshotBuilder.Cycle(n)` for a canonical n-agent ring); `Fakes.cs` provides a `CapturingIntegrationEventPublisher` plus "integrated" fakes (`FixedAvoidancePointSelector`, `AlwaysGrantDetourReservationService`, `StubClearanceConfirmer`).
+**`SwarmRoute.Liveness.Tests`** (pure, in-memory):
 
 | File | Covers |
 | --- | --- |
-| `ResourceAllocationGraphTests` | RAG build: agent/`occupySite`/`applySite` vertices + ownership/wait edges; resource key includes `Kind`; value equality is by edge sets (order-independent) and distinguishes Owns from Waits; that the built graph is what `CyclesDetector` flags. |
-| `DeadlockDetectorTests` | 2/3/4-agent cycles flag all members; acyclic snapshot → none; everyone-holds-nobody-waits → none; a self-cycle (own+wait same resource) is flagged deterministically; **two independent cycles reported separately**; an extra non-cyclic waiter (`Z`) is excluded; **determinism across repeated runs**; null snapshot throws. |
-| `VictimSelectionTests` | Smallest-ordinal-id victim, stable regardless of input order, ordinal (not numeric/length) comparison (`"10" < "2"`), repeated calls identical. |
-| `DeadlockCaseTests` | Lifecycle: `Detect` raises `Deadlock.Case.Detected`; `RequestResolution` → `Resolving` + event, rejects victim-not-in-cycle; `MarkResolved` from `Resolving` (and throws from `Detected`); `Escalate` idempotent; empty cycle rejected. |
-| `AvoidancePlanTests` | Starts at `SelectVictim`/version 1; full happy path to `Completed` bumping version each step; out-of-order transition throws; blank avoid site rejected; `Abort` records reason; abort-when-terminal is a no-op. |
-| `DeadlockResolverTests` | With integrated seams → victim `A` dispatched to avoid site, case `Resolving`; `Recover` completes + resolves; recover when not cleared does nothing; **no avoid site → escalate (victim still chosen)**; **detour denied → escalate**. |
-| `DeadlockAppServiceTests` | Healthy snapshot → empty report, nothing published; 2-agent cycle → opens case, picks victim, publishes both `Detected` + `ResolutionRequested`; two independent cycles → two reported; **without integrated seams the victim is still reported via `ResolutionRequested`** (escalation path). |
-| `AllocationContendedSubscriberTests` | The **re-entrancy guard**: a reservation that re-publishes `Allocation.Contended` mid-scan does *not* trigger a nested scan (`ScanCount == 1`). |
+| `DeadlockDetectorTests` | `RagCycleDetector.Detect`: 2/3/4-agent cycles, acyclic → none, self-cycle, two independent cycles reported separately, an extra non-cyclic waiter excluded, determinism across runs. |
+| `ResourceAllocationGraphTests` | RAG build (agent/`occupySite`/`applySite` vertices + ownership/wait edges; key includes `Kind`; value equality by edge sets) and that the built graph is what `CyclesDetector` flags. |
+| `LivenessPolicyTests` | the pure `LivenessPolicy` at each phase: head-on yield, cluster formation + PIBT entry, parked step-aside, gatekeeper recovery, schedule-faithful stall-reroute. Hand-built `LivenessSnapshot` in → asserted directives out. |
 
----
+**`SwarmRoute.Simulation.Tests`** (liveness-related):
 
-## 9. v0 status & v1 roadmap
+| File | Covers |
+| --- | --- |
+| `PibtZoneResolverTests` | pure `PibtZoneResolver`: head-on resolution, rotations, priority inheritance, deterministic ordering, gridlock floors, lane directionality, the blocked-cell gate. |
+| `StuckClusterDetectorTests` | `StuckClusterDetector.Assemble`: standoff component isolation, free-agent / singleton exclusion, threshold triggering. |
 
-### Implemented in v0
-
-- RAG construction faithful to `AJR.MAPF.MapResourceAllocationGraph`, reusing the vendored `CyclesDetector.CyclicVertices`.
-- **Cyclic** deadlock detection with SCC-based partitioning into independent, deterministically-ordered cycles (over-approximation correctly pruned).
-- Deterministic victim selection (livelock-free).
-- Full `DeadlockCase` + `AvoidancePlan` lifecycles with optimistic-concurrency versioning.
-- Reactive trigger (`AllocationContended` → scan) with a re-entrancy guard, and the three outbound integration events.
-- Real Host adapters for the snapshot read, avoid-point selection, and detour reservation (going through TrafficControl's `TryReserve` — invariant I1 honoured).
-
-### Deferred / stubbed (v1+)
-
-- **`DeadlockKind.Livelock`** — declared but *not detected* by RAG cycle detection in v0 (`DeadlockKind.cs:14`). Detecting "moving but no net progress" needs temporal/progress signals, not a static RAG.
-- **`ResolutionStrategy.Preempt` / `Requeue`** — declared, unused; only `SendToAvoidSite` is wired.
-- **`IClearanceConfirmer`** — still the optimistic `NullClearanceConfirmer` even in the Host; real confirmation should re-snapshot / re-detect that the cycle actually cleared.
-- **Detour completeness** — `TrafficDetourReservationAdapter` reserves only a bounded *destination hold*, not the full path-to-avoid-site, pending the fleet-state/dispatch integration (victim pose).
-- **Persistence** — none; cases are transient by design. If audit/history is ever required, the aggregates are already event-sourcing-friendly.
-- **Transport** — in-process event bus only; the handler is shaped so a CAP/RabbitMQ binding needs no application change.
+**`SwarmRoute.Integration.Tests`** (end-to-end through the REAL engine, exercising the policy seam): `PibtClosedLoopTests`,
+`CbsClosedLoopTests` (incl. the `CBS requires Planner=Sipp` validation), `SwapStandoffDetectionTests`,
+`WalledLoneSurvivorTests`, `PibtHeldExitTests`, and `LivenessDeterminismTests` (a fixed dense PIBT scenario run
+twice is byte-identical — reproducibility through the policy seam).
 
 ---
 
 ### Cross-context dependencies (summary)
 
-- **Consumes (in):** `TrafficControl.Allocation.Contended` (`AllocationContendedEvent`) — the trigger; `ITrafficControlSnapshotProvider.GetSnapshot()` — the RAG read, via `TrafficSnapshotDeadlockAdapter`; `ITrafficCoordinatorAppService.TryReserveAsync` — the detour write, via `TrafficDetourReservationAdapter`; Map's roadmap (`IRoadmapRepository` + `IResourceTopology`, `MapSiteType.AvoidSite/RelaySite`) — avoid-point selection, via `MapAvoidancePointSelector`.
-- **Produces (out):** `Deadlock.Case.Detected`, `Deadlock.Case.ResolutionRequested`, `Deadlock.Case.Resolved` — consumed by Coordination / TrafficControl / PathPlanning.
-- **Shared kernel:** `SwarmRoute.SpatioTemporal.Kernel` (`ResourceRef`, `ResourceKind`, `ResourceAllocationGraphSnapshot`) and `SwarmRoute.Domain.Abstractions.EventBus` (`IIntegrationEvent`, `IIntegrationEventHandler`, `IIntegrationEventPublisher`).
+- **Implements (for TrafficControl):** `IWouldCloseCycleDetector` — the grant-time veto, consulted inside
+  `ReservationTable.TryGrant`.
+- **Implements (for the executor):** `ILivenessPolicy` — the synchronous physical-standoff policy, consulted by
+  `FleetLoopDriver` once per phase per tick.
+- **Consumes:** the frozen Kernel `ResourceAllocationGraphSnapshot` (the RAG read), PathPlanning's `RoadmapGraph`
+  (the surface the resolution algorithms walk).
+- **Shared kernel:** `SwarmRoute.SpatioTemporal.Kernel` (`ResourceRef`, `ResourceKind`,
+  `ResourceAllocationGraphSnapshot`).

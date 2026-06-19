@@ -38,9 +38,9 @@
     <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Domain.Shared\SwarmRoute.TrafficControl.Domain.Shared.csproj" />
     <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Application.Contract\SwarmRoute.TrafficControl.Application.Contract.csproj" />
     <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Infra.CrossCutting.IoC\SwarmRoute.TrafficControl.Infra.CrossCutting.IoC.csproj" />
-    <ProjectReference Include="..\..\Deadlock\SwarmRoute.Deadlock.Domain\SwarmRoute.Deadlock.Domain.csproj" />
-    <ProjectReference Include="..\..\Deadlock\SwarmRoute.Deadlock.Application.Contract\SwarmRoute.Deadlock.Application.Contract.csproj" />
-    <ProjectReference Include="..\..\Deadlock\SwarmRoute.Deadlock.Infra.CrossCutting.IoC\SwarmRoute.Deadlock.Infra.CrossCutting.IoC.csproj" />
+    <ProjectReference Include="..\..\Liveness\SwarmRoute.Liveness.Domain\SwarmRoute.Liveness.Domain.csproj" />
+    <ProjectReference Include="..\..\Liveness\SwarmRoute.Liveness.Application.Contract\SwarmRoute.Liveness.Application.Contract.csproj" />
+    <ProjectReference Include="..\..\Liveness\SwarmRoute.Liveness.Infra.CrossCutting.IoC\SwarmRoute.Liveness.Infra.CrossCutting.IoC.csproj" />
 
     <!-- Coordination cycle under test. -->
     <ProjectReference Include="..\..\Coordination\SwarmRoute.Coordination.Application\SwarmRoute.Coordination.Application.csproj" />

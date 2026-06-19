@@ -4,8 +4,14 @@
     <ProjectReference Include="..\..\Shared\SwarmRoute.SpatioTemporal.Kernel\SwarmRoute.SpatioTemporal.Kernel.csproj" />
     <ProjectReference Include="..\..\Shared\SwarmRoute.Domain.Abstractions\SwarmRoute.Domain.Abstractions.csproj" />
     <ProjectReference Include="..\..\lib\NetDevPack\src\NetDevPack\NetDevPack.csproj" />
-    <ProjectReference Include="..\SwarmRoute.Deadlock.Domain.Shared\SwarmRoute.Deadlock.Domain.Shared.csproj" />
+    <ProjectReference Include="..\SwarmRoute.Liveness.Domain.Shared\SwarmRoute.Liveness.Domain.Shared.csproj" />
     <ProjectReference Include="..\..\src\vendor\SwarmRoute.Algorithms\SwarmRoute.Algorithms.csproj" />
+    <!-- The grant-time IWouldCloseCycleDetector port lives in TrafficControl.Domain; RagCycleDetector implements
+         it here so prevention and post-hoc detection share one cycle-detection primitive. One-way ref
+         (TrafficControl never references Liveness) — no cycle. -->
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Domain\SwarmRoute.TrafficControl.Domain.csproj" />
+    <!-- Map roadmap graph: the PIBT resolver / hop-distance oracle / standoff cluster detector plan over it. -->
+    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Domain\SwarmRoute.Map.Domain.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

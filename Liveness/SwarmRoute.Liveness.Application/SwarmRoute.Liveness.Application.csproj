@@ -1,8 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\SwarmRoute.Deadlock.Domain\SwarmRoute.Deadlock.Domain.csproj" />
-    <ProjectReference Include="..\SwarmRoute.Deadlock.Application.Contract\SwarmRoute.Deadlock.Application.Contract.csproj" />
+    <ProjectReference Include="..\SwarmRoute.Liveness.Domain\SwarmRoute.Liveness.Domain.csproj" />
+    <ProjectReference Include="..\SwarmRoute.Liveness.Application.Contract\SwarmRoute.Liveness.Application.Contract.csproj" />
   </ItemGroup>
 
   <ItemGroup>

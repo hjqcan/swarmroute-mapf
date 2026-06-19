@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using SwarmRoute.Host.Adapters;
+using SwarmRoute.Liveness.Application.Contract.Policy;
 using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 using SwarmRoute.Simulation.Application;
 using Xunit;
@@ -31,7 +32,7 @@ public sealed class SwapStandoffDetectionTests
             new InMemorySimulationEngineFactory(), NullLogger<SimulationService>.Instance);
         var s = svc.RunAsync(new SimulationRequest(
             7, 7, 16, Seed: 59359, Planner: PlannerKind.Sipp,
-            HorizonWindowMs: 8, StepAside: true, UsePibt: false, UseCbs: true, Starts: starts)).GetAwaiter().GetResult();
+            HorizonWindowMs: 8, StepAside: true, JointResolver: JointResolverKind.Cbs, Starts: starts)).GetAwaiter().GetResult();
 
         Assert.Equal("Completed", s.Stats.Status);
         Assert.Equal(16, s.Stats.Arrived);

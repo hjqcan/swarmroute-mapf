@@ -17,7 +17,7 @@ DDD 约定进行整洁架构重构后的产物。车队控制问题被拆解为
 | **Map — 資源 / 地圖** | 静态路网：控制点（CP）、有向车道、互斥块；纯内存的 `RoadmapGraph` 读模型。 | [Map/README.zh-CN.md](Map/README.zh-CN.md) |
 | **Path Planning — 路徑規劃** | 在图上进行单体路线搜索；将路线提升为时空路径。 | [PathPlanning/README.zh-CN.md](PathPlanning/README.zh-CN.md) |
 | **Traffic Control — 交通管制** | 路权：基于区间的时空预约（谁可以在何时占用哪个资源）；授予 / 拒绝 / 释放。 | [TrafficControl/README.zh-CN.md](TrafficControl/README.zh-CN.md) |
-| **Deadlock Handling — 死鎖處理** | 从预约竞争图中反应式地检测环形等待；请求解决（绕行 / 重路由）。 | [Deadlock/README.zh-CN.md](Deadlock/README.zh-CN.md) |
+| **Liveness — 活性** | 让车队持续推进，两种纯决策方式：在预约授予时**预防**等待环（TrafficControl 所查询的 RAG 环检测），并拥有同步的 `ILivenessPolicy`，解决预约表看不见的**物理**僵局（对头让行、PIBT、CBS、停放车辆侧让）。 | [Liveness/README.zh-CN.md](Liveness/README.zh-CN.md) |
 | **Coordination — 協調** | RHCR 滚动时域控制循环，将四个领域编排为一个车队 tick。 | [Coordination/README.zh-CN.md](Coordination/README.zh-CN.md) |
 | **Simulation — 模擬** | 无数据库的闭环 **执行器 + 校验器**，以及驱动整个技术栈的 HTTP 回放 API。 | [Simulation/README.zh-CN.md](Simulation/README.zh-CN.md) |
 | **SwarmRoute Web — 前端** | React/Vite 实现的「调度员控制台」，可运行场景并在画布上回放。 | [host/swarmroute-web/README.zh-CN.md](host/swarmroute-web/README.zh-CN.md) |
@@ -41,7 +41,7 @@ DDD 约定进行整洁架构重构后的产物。车队控制问题被拆解为
                                    │  POST /api/simulation/run   (Vite dev-proxy)
 ┌─────────────────────────────────▼──────────────────────────────────────────────┐
 │ Host   ASP.NET Core — composition root, SimulationController, integration       │
-│        adapters (topology / detour / deadlock-snapshot / in-memory engine)      │
+│        adapters (Map-backed topology, in-memory simulation engine)              │
 └─────────────────────────────────┬──────────────────────────────────────────────┘
 ┌─────────────────────────────────▼──────────────────────────────────────────────┐
 │ Simulation 模擬   FleetLoopDriver (tick executor + right-of-way gate),           │
@@ -52,11 +52,11 @@ DDD 约定进行整洁架构重构后的产物。车队控制问题被拆解为
 │ Coordination 協調   RHCR rolling-horizon cycle — orchestrates the four domains   │
 └────┬──────────────────────┬───────────────────────┬─────────────────────────────┘
      │ IRoadmapQueryService  │ IPathPlanner           │ ITrafficCoordinatorAppService
-     │                       │ IReservationQuery      │           │  AllocationContended
+     │                       │ IReservationQuery      │           │  IWouldCloseCycleDetector
 ┌────▼─────────┐   ┌─────────▼────────┐   ┌───────────▼──────┐    │   ┌───────────────┐
-│ Map 資源/地圖 │   │ PathPlanning      │   │ TrafficControl   │────┼──►│ Deadlock 死鎖  │
-│ RoadmapGraph │   │ Dijkstra / SIPP │   │ 交通管制 (預約表) │◄───┼───│ 死鎖處理 (RAG)  │
-└──────────────┘   └──────────────────┘   └──────────────────┘  snapshot └───────────────┘
+│ Map 資源/地圖 │   │ PathPlanning      │   │ TrafficControl   │◄───┼───│ Liveness 活性  │
+│ RoadmapGraph │   │ Dijkstra / SIPP │   │ 交通管制 (預約表) │ grant-time│ RagCycleDetector│
+└──────────────┘   └──────────────────┘   └──────────────────┘  veto  └───────────────┘
        └───────────────────────┴───────────────────────┴────────────────┬───────────┘
 ┌─────────────────────────────────────────────────────────────────────────▼──────────┐
 │ Shared / Kernel   SpatioTemporal.Kernel (ResourceRef, SpaceTimePath, TimeInterval,   │
@@ -71,7 +71,8 @@ DDD 约定进行整洁架构重构后的产物。车队控制问题被拆解为
 - **`IPathPlanner`**（PathPlanning）→ 单体规划，由 Coordination 调用。
 - **`IReservationQuery`** —— 由 PathPlanning *声明*（默认 `NullReservationQuery`），由 TrafficControl *实现*（`ReservationService`），后者在组合根处覆盖该注册。
 - **`ITrafficCoordinatorAppService`**（TrafficControl）→ `TryReserve` / `Release` / `BlockedResources`，即 Coordination 驱动的写入接缝。
-- **`AllocationContended`** 集成事件（TrafficControl → Deadlock），外加一个反向的预约 **快照** 读取接缝。
+- **`IWouldCloseCycleDetector`** —— 由 TrafficControl *声明*，由 Liveness 的 `RagCycleDetector` *实现*。在 `ReservationTable.TryGrant` **内部**被查询（仅当请求的 `PreventDeadlockCycles` 标志开启时），以拒绝一个会闭合等待环的授予 —— 是授予时的预防，而非反应式事件。
+- **`ILivenessPolicy`**（Liveness）→ Simulation 执行器（`FleetLoopDriver`）每 tick 每阶段查询一次的同步物理僵局策略，解决对头交换 / 阻塞链 / 停放封锁的目标。
 - **`IFleetClock`**（Kernel）→ 每个预约区间所参照的时间轴。
 
 ---
@@ -139,7 +140,7 @@ each tick t:
 ## Repository layout
 
 ```
-Map/  PathPlanning/  TrafficControl/  Deadlock/   # the four domains (each: per-context README + DDD layers)
+Map/  PathPlanning/  TrafficControl/  Liveness/   # the four domains (each: per-context README + DDD layers)
 Coordination/                                     # RHCR orchestration loop
 Simulation/                                       # closed-loop executor + in-memory engine + replay DTOs
 Shared/                                           # Kernel, EventBus, Domain.Abstractions, Infra.Data.Core, StateMachine.Core
@@ -169,7 +170,7 @@ SwarmRoute.Mapf.sln
 ### Build & test
 ```bash
 dotnet build                       # whole solution
-dotnet test                        # full suite (Map, PathPlanning, TrafficControl, Deadlock, Integration)
+dotnet test                        # full suite (Map, PathPlanning, TrafficControl, Liveness, Integration)
 ```
 
 ### Run the backend (no DB)
@@ -203,7 +204,7 @@ npm run dev            # http://localhost:5173  (Vite proxies /api → http://lo
 **v0（已闭环）。** 端到端闭环，全部测试通过，构造上即无碰撞：
 - Dijkstra 最短路径规划 + 黑名单驱动的剪枝重规划。
 - 整条路径、基于区间的预约（SIPP-ready 模型）。
-- 在资源分配图上进行反应式死锁检测。
+- 活性：可选开启的授予时等待环预防（在资源分配图上运行的 `RagCycleDetector`），外加执行器所查询的同步物理僵局策略。
 - 带路权门控与已停放车辆重路由的 tick 同步执行器。
 - 内存模拟 API + 画布回放前端。
 

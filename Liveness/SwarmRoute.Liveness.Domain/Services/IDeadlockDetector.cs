@@ -1,8 +1,8 @@
 using System.Collections.Generic;
-using SwarmRoute.Deadlock.Domain.ValueObjects;
+using SwarmRoute.Liveness.Domain.ValueObjects;
 using SwarmRoute.SpatioTemporal.Kernel;
 
-namespace SwarmRoute.Deadlock.Domain.Services;
+namespace SwarmRoute.Liveness.Domain.Services;
 
 /// <summary>
 /// Detects circular-wait deadlocks from a point-in-time Resource-Allocation-Graph snapshot.

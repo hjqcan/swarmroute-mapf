@@ -1,5 +1,7 @@
 # SwarmRoute MAPF — 團隊實現計劃（Team Implementation Plan）
 
+> _已被取代（Superseded）：本文描述的反應式死鎖解除流程已被 `Liveness` 上下文取代（授予時預防 + 同步的僵局解除策略）。詳見 `Liveness/README.md`。_
+
 > 目標框架：**.NET 10 (LTS, C# 14)** ｜ 範圍：**首個里程碑 = 腳手架 + v0 基線（Phase 0–4）** ｜ 設計依據：[`architecture-design.md`](./architecture-design.md)
 >
 > 本文是「**怎麼做、誰做、何時做、做到什麼算完成**」。架構「做什麼」見設計文件。

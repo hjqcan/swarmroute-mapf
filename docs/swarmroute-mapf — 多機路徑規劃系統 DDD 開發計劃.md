@@ -1,5 +1,7 @@
 # swarmroute-mapf — 多機路徑規劃系統 DDD 開發計劃
 
+> _已被取代（Superseded）：本文描述的反應式死鎖解除流程已被 `Liveness` 上下文取代（授予時預防 + 同步的僵局解除策略）。詳見 `Liveness/README.md`。_
+
 ## Context（為什麼做這件事）
 
 `swarmroute-mapf` 是一套**多機（AGV/AMR）路徑規劃與車隊協調系統**。本文件最初用於從空 repo 啟動 DDD 重構；截至目前，repo 已具備可編譯的 `SwarmRoute.Mapf.sln`、四個限界上下文、Coordination/Simulation/Host/Web，以及 v0 + v1 的閉環驗證。

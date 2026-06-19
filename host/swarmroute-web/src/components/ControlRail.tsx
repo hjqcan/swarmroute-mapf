@@ -37,21 +37,24 @@ export default function ControlRail() {
   const horizonEnabled = params.horizonWindowMs !== undefined
   const horizonWindow = params.horizonWindowMs ?? DEFAULT_RHCR_WINDOW_MS
 
-  // The local standoff resolver (PIBT/CBS) is SIPP-only: v0 Dijkstra and the continuous SIPPwRT executor don't run
-  // it, and the backend rejects useCbs with a non-SIPP planner. So it is a single mutually-exclusive choice mapped
-  // onto the two backend flags (never both true), available only under SIPP.
+  // The local standoff resolver is available under both reservation-aware planners. PIBT is the fast greedy discrete
+  // tick-stepper, so it pairs with SIPP only; the continuous SIPPwRT executor resolves standoffs with CCBS
+  // (continuous-time CBS), so under SIPPwRT only Off/CBS are offered. v0 Dijkstra runs no resolver. The choice maps
+  // directly onto the one `jointResolver` enum (None/Pibt/Cbs); the backend rejects Cbs+Dijkstra and Pibt+SIPPwRT.
   const planner: PlannerKind = params.planner ?? 'Sipp'
-  const resolverEnabled = planner === 'Sipp'
-  const resolverMode: ResolverMode = params.useCbs ? 'cbs' : params.usePibt ? 'pibt' : 'off'
+  const resolverEnabled = planner === 'Sipp' || planner === 'Sippwrt'
+  const pibtEnabled = planner === 'Sipp'
+  const resolverMode: ResolverMode =
+    params.jointResolver === 'Cbs' ? 'cbs' : params.jointResolver === 'Pibt' ? 'pibt' : 'off'
   const setResolver = (mode: ResolverMode) => {
-    setParam('usePibt', mode === 'pibt')
-    setParam('useCbs', mode === 'cbs')
+    setParam('jointResolver', mode === 'cbs' ? 'Cbs' : mode === 'pibt' ? 'Pibt' : 'None')
   }
-  // Switching to a non-SIPP planner clears the SIPP-only resolver so a stale useCbs/usePibt can't ride along (the
-  // backend 400s on useCbs + non-SIPP, and the continuous executor ignores both).
+  // Clear an incompatible resolver when switching planner so a stale selection can't 400: Dijkstra runs none, and
+  // SIPPwRT can't run PIBT (it uses CCBS), so a PIBT selection falls back to CBS under SIPPwRT.
   const setPlanner = (next: PlannerKind) => {
     setParam('planner', next)
-    if (next !== 'Sipp') setResolver('off')
+    if (next === 'Dijkstra') setResolver('off')
+    else if (next === 'Sippwrt' && params.jointResolver === 'Pibt') setResolver('cbs')
   }
   const plannerTag =
     planner === 'Dijkstra'
@@ -156,9 +159,10 @@ export default function ControlRail() {
         )}
       </div>
 
-      {/* Local standoff resolver (SIPP-only): the mutually-exclusive cluster owner for physical standoffs.
-          Off = raw baseline; PIBT = fast greedy priority-inheritance (v3); CBS = complete local conflict-based
-          search (v4), which cracks the corridor swaps / blocking chains PIBT's greedy ordering can't. */}
+      {/* Local standoff resolver: the mutually-exclusive cluster owner for physical standoffs. Off = raw baseline;
+          PIBT = fast greedy priority-inheritance (SIPP only); CBS = complete local conflict-based search, which
+          cracks the corridor swaps / blocking chains PIBT's greedy ordering can't — and under SIPPwRT runs as
+          continuous-time CCBS. */}
       <div>
         <div className="mb-1.5 flex items-baseline justify-between">
           <label className="text-sm text-text-muted">
@@ -175,7 +179,7 @@ export default function ControlRail() {
           onChange={(v) => setResolver(v as ResolverMode)}
           options={[
             { label: intl.formatMessage({ id: 'controls.resolver.off' }), value: 'off' },
-            { label: 'PIBT', value: 'pibt' },
+            { label: 'PIBT', value: 'pibt', disabled: !pibtEnabled },
             { label: 'CBS', value: 'cbs' },
           ]}
         />

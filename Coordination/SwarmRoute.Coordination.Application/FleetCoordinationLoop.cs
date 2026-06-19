@@ -27,6 +27,14 @@ public sealed class CoordinationLoopOptions
     /// <see cref="long.MaxValue"/> = unbounded (RHCR off = whole-path planning, byte-identical to v0/v1).
     /// </summary>
     public long HorizonWindowMs { get; set; } = long.MaxValue;
+
+    /// <summary>
+    /// Continuous-time (CCBS) mode for the cluster joint planner: when true, <c>CoordinationCycleService</c>'s
+    /// <c>PlanClusterAsync</c> solves with continuous-time CBS (motion-aware interval constraints over a SIPPwRT low
+    /// level) instead of discrete CBS, so a cluster solve under the continuous executor returns continuous-time paths.
+    /// Set per-run by the engine factory for the SIPPwRT planner. Default false = discrete CBS, byte-identical.
+    /// </summary>
+    public bool Continuous { get; set; }
 }
 
 /// <summary>

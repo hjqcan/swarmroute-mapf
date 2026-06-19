@@ -1,4 +1,4 @@
-namespace SwarmRoute.Deadlock.Domain.Shared;
+namespace SwarmRoute.Liveness.Domain.Shared;
 
 /// <summary>
 /// Stable, machine-readable error/validation codes for the Deadlock bounded context.
@@ -18,19 +18,4 @@ public static class DeadlockErrorCodes
 
     /// <summary>The supplied Resource-Allocation-Graph snapshot was null.</summary>
     public const string NullSnapshot = "Deadlock.Graph.NullSnapshot";
-
-    /// <summary>A lifecycle transition was requested that is not legal from the current state.</summary>
-    public const string InvalidTransition = "Deadlock.Case.InvalidTransition";
-
-    /// <summary>The avoidance plan was asked to advance from a step that does not allow it.</summary>
-    public const string InvalidPlanStep = "Deadlock.AvoidancePlan.InvalidStep";
-
-    /// <summary>No victim agent could be selected for the case (e.g. empty cycle set).</summary>
-    public const string NoVictim = "Deadlock.AvoidancePlan.NoVictim";
-
-    /// <summary>No valid avoidance site could be selected for the victim.</summary>
-    public const string NoAvoidanceSite = "Deadlock.AvoidancePlan.NoAvoidanceSite";
-
-    /// <summary>TrafficControl denied the reservation needed to route the victim to the avoidance site.</summary>
-    public const string DetourDenied = "Deadlock.AvoidancePlan.DetourDenied";
 }

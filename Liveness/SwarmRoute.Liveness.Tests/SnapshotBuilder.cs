@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using SwarmRoute.SpatioTemporal.Kernel;
 
-namespace SwarmRoute.Deadlock.Tests;
+namespace SwarmRoute.Liveness.Tests;
 
 /// <summary>
 /// Small fluent helper to fabricate <see cref="ResourceAllocationGraphSnapshot"/>s in tests.

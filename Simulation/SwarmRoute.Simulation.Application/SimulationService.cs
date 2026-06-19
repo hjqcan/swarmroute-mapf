@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Logging;
+using SwarmRoute.Liveness.Application.Contract.Policy;
+using SwarmRoute.Liveness.Application.Policy;
 using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 
 namespace SwarmRoute.Simulation.Application;
@@ -82,17 +84,23 @@ public sealed class SimulationService : ISimulationService
             _ => FleetExecutionMode.Greedy,
         };
         var maxTicks = MaxTicks(request);
+
+        // Build the liveness policy from the request's standoff levers (JointResolver + StepAside are mapped onto
+        // LivenessOptions here, not carried on the policy's wire). Exactly one joint resolver owns a cluster.
+        var policy = new LivenessPolicy(
+            field.Graph,
+            new LivenessOptions
+            {
+                JointResolver = request.JointResolver,
+                StepAside = request.StepAside,
+            });
+
         var loop = await _loopDriver
             .RunToCompletionAsync(
                 engine.Cycle, engine.RoadmapId, field.Graph, agentSpecs, maxTicks,
                 advanceClock: engine.Clock.SetTick,
-                redirects: engine.Redirects,
-                recoverTick: engine.RecoverTick,
-                escalateLivelock: engine.EscalateLivelock,
                 executionMode: executionMode,
-                stepAside: request.StepAside,
-                usePibt: request.UsePibt,
-                useCbs: request.UseCbs,
+                policy: policy,
                 log: msg => _logger.LogWarning("[standoff] {Detail}", msg),
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
@@ -104,14 +112,13 @@ public sealed class SimulationService : ISimulationService
         {
             var starts = "[\"" + string.Join("\",\"", agentSpecs.Select(a => a.StartSiteId)) + "\"]";
             // Capture EVERY field that changes execution, or the repro won't reproduce: planner, the RHCR window,
-            // the StepAside executor recovery, the deadlock-prevention toggle, and the PIBT toggle — not just seed + starts.
+            // the StepAside executor recovery, the deadlock-prevention toggle, and the joint resolver — not just seed + starts.
             var repro = $"{{\"width\":{request.Width},\"height\":{request.Height},\"agvCount\":{request.AgvCount}," +
                         $"\"seed\":{request.Seed?.ToString() ?? "null"},\"planner\":\"{request.Planner}\"," +
                         $"\"horizonWindowMs\":{request.HorizonWindowMs}," +
                         $"\"stepAside\":{(request.StepAside ? "true" : "false")}," +
                         $"\"preventDeadlockCycles\":{(request.PreventDeadlockCycles ? "true" : "false")}," +
-                        $"\"usePibt\":{(request.UsePibt ? "true" : "false")}," +
-                        $"\"useCbs\":{(request.UseCbs ? "true" : "false")},\"starts\":{starts}}}";
+                        $"\"jointResolver\":\"{request.JointResolver}\",\"starts\":{starts}}}";
             _logger.LogWarning("[did-not-converge] arrived {Arrived}/{Total} in {Ticks} ticks. Repro: {Repro}",
                 loop.Stats.Arrived, request.AgvCount, loop.Stats.Ticks, repro);
         }
@@ -137,15 +144,20 @@ public sealed class SimulationService : ISimulationService
                 $"must be >= 2*AgvCount ({required}) so every AGV gets a distinct start and a distinct goal.",
                 nameof(request));
 
-        if (request.UseCbs && request.Planner != PlannerKind.Sipp)
+        // CBS returns time-axis paths only a reservation-aware executor can run, so it requires SIPP (discrete CBS,
+        // schedule-faithful executor) or SIPPwRT (continuous CCBS, continuous executor). PIBT is the fast greedy
+        // discrete tick-stepper; the continuous event loop has no per-tick drive, so PIBT pairs with SIPP only and
+        // the continuous executor uses CCBS (JointResolver=Cbs) for joint standoff resolution.
+        if (request.JointResolver == JointResolverKind.Cbs
+            && request.Planner != PlannerKind.Sipp && request.Planner != PlannerKind.Sippwrt)
             throw new ArgumentException(
-                "UseCbs requires Planner=Sipp because CBS returns time-axis SIPP paths that must be executed " +
-                "by the schedule-faithful executor.",
+                "JointResolver=Cbs requires Planner=Sipp (discrete CBS) or Planner=Sippwrt (continuous CCBS), " +
+                "because CBS returns time-axis paths a reservation-aware executor must run.",
                 nameof(request));
-
-        if (request.UseCbs && request.UsePibt)
+        if (request.JointResolver == JointResolverKind.Pibt && request.Planner == PlannerKind.Sippwrt)
             throw new ArgumentException(
-                "UseCbs and UsePibt are mutually exclusive local standoff solvers; enable exactly one cluster owner.",
+                "JointResolver=Pibt is not supported with Planner=Sippwrt; the continuous-time executor resolves " +
+                "physical standoffs with CCBS (JointResolver=Cbs).",
                 nameof(request));
     }
 
@@ -239,8 +251,6 @@ public sealed class SimulationService : ISimulationService
             loop.Stats.Status.ToString(),
             loop.Collision?.Tick,
             loop.Collision?.AgentIds,
-            loop.Stats.Redirects,
-            loop.Stats.Recoveries,
             loop.Stats.FlowtimeTicks);
 
         // (v3 SIPPwRT) When the run used the continuous executor, attach the real-ms trajectory replay (CP

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using SwarmRoute.Host.Adapters;
+using SwarmRoute.Liveness.Application.Contract.Policy;
 using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 using SwarmRoute.Simulation.Application;
 using Xunit;
@@ -31,6 +32,17 @@ public sealed class SippwrtClosedLoopTests
             new InMemorySimulationEngineFactory(),
             NullLogger<SimulationService>.Instance);
         return service.RunAsync(new SimulationRequest(width, height, agv, seed, planner)).GetAwaiter().GetResult();
+    }
+
+    private static SimulationResultDto Run(int width, int height, int agv, int seed, PlannerKind planner, JointResolverKind resolver)
+    {
+        var service = new SimulationService(
+            new GridFieldFactory(),
+            new FleetLoopDriver(),
+            new InMemorySimulationEngineFactory(),
+            NullLogger<SimulationService>.Instance);
+        return service.RunAsync(new SimulationRequest(width, height, agv, seed, planner, JointResolver: resolver))
+            .GetAwaiter().GetResult();
     }
 
     // ── Hard invariant: SIPPwRT + the continuous executor is collision-free and converges on solvable densities ──
@@ -124,6 +136,78 @@ public sealed class SippwrtClosedLoopTests
     {
         var first = Run(6, 6, 6, seed: 99, PlannerKind.Sippwrt);
         var second = Run(6, 6, 6, seed: 99, PlannerKind.Sippwrt);
+
+        Assert.Equal(first.Stats.Status, second.Stats.Status);
+        Assert.Equal(SerializeContinuous(first), SerializeContinuous(second));
+    }
+
+    // ── CCBS (JointResolver=Cbs under the continuous executor). The API forbade Cbs+SIPPwRT until v3 closed the
+    //    continuous-CBS gap; now a persistent continuous standoff is handed to CCBS (continuous CBS over a SIPPwRT
+    //    low level), solved jointly, and reserved atomically. These prove it is allowed, safe, and deterministic. ──
+
+    // Hard floor: CCBS is collision-free and never crashes across densities (Completed or DidNotConverge only).
+    [Theory]
+    [InlineData(6, 6, 6)]
+    [InlineData(7, 7, 16)]
+    [InlineData(10, 8, 12)]
+    public void Sippwrt_ccbs_is_collision_free_and_never_crashes(int width, int height, int agv)
+    {
+        for (var seed = 1; seed <= 6; seed++)
+        {
+            var r = Run(width, height, agv, seed, PlannerKind.Sippwrt, JointResolverKind.Cbs);
+            Assert.Equal(0, r.Stats.Collisions);
+            Assert.NotEqual("CollisionDetected", r.Stats.Status);
+        }
+    }
+
+    // Inert when no standoff forms: on a sparse density the continuous loop never stalls, so CCBS never engages and
+    // the continuous timeline is byte-identical to the bare SIPPwRT run (opt-in, zero effect until a jam appears).
+    [Theory]
+    [InlineData(4, 4, 3)]
+    [InlineData(5, 5, 4)]
+    public void Sippwrt_ccbs_is_inert_when_no_standoff_forms(int width, int height, int agv)
+    {
+        for (var seed = 1; seed <= 6; seed++)
+        {
+            var none = Run(width, height, agv, seed, PlannerKind.Sippwrt, JointResolverKind.None);
+            var ccbs = Run(width, height, agv, seed, PlannerKind.Sippwrt, JointResolverKind.Cbs);
+            Assert.Equal(SerializeContinuous(none), SerializeContinuous(ccbs));
+        }
+    }
+
+    // Value: CCBS converges (or arrives strictly more) on dense continuous seeds the bare SIPPwRT executor cannot
+    // crack, never colliding — the standoff resolution the continuous-CBS gap (Cbs+Sippwrt, once forbidden) unlocks.
+    [Fact]
+    public void Sippwrt_ccbs_cracks_standoffs_the_bare_continuous_run_cannot()
+    {
+        int noneTotal = 0, ccbsTotal = 0;
+        var anyNewlyCompleted = false;
+
+        for (var seed = 1; seed <= 6; seed++)
+        {
+            var none = Run(7, 7, 16, seed, PlannerKind.Sippwrt, JointResolverKind.None);
+            var ccbs = Run(7, 7, 16, seed, PlannerKind.Sippwrt, JointResolverKind.Cbs);
+
+            Assert.Equal(0, ccbs.Stats.Collisions);                      // never trades convergence for a collision
+            Assert.NotEqual("CollisionDetected", ccbs.Stats.Status);
+            Assert.True(ccbs.Stats.Arrived >= none.Stats.Arrived,
+                $"seed {seed}: CCBS arrived {ccbs.Stats.Arrived} < SIPPwRT-none {none.Stats.Arrived} (regression).");
+
+            if (ccbs.Stats.Status == "Completed" && none.Stats.Status != "Completed") anyNewlyCompleted = true;
+            noneTotal += none.Stats.Arrived;
+            ccbsTotal += ccbs.Stats.Arrived;
+        }
+
+        Assert.True(ccbsTotal > noneTotal, $"CCBS total arrivals {ccbsTotal} should exceed bare SIPPwRT {noneTotal}.");
+        Assert.True(anyNewlyCompleted, "CCBS should fully converge at least one dense seed the bare continuous run cannot.");
+    }
+
+    // Determinism through a CCBS cluster solve: same seed ⇒ identical continuous timeline.
+    [Fact]
+    public void Sippwrt_ccbs_is_deterministic()
+    {
+        var first = Run(7, 7, 16, seed: 5, PlannerKind.Sippwrt, JointResolverKind.Cbs);
+        var second = Run(7, 7, 16, seed: 5, PlannerKind.Sippwrt, JointResolverKind.Cbs);
 
         Assert.Equal(first.Stats.Status, second.Stats.Status);
         Assert.Equal(SerializeContinuous(first), SerializeContinuous(second));

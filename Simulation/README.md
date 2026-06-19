@@ -199,8 +199,6 @@ The gate guarantees safety, but the whole point of the simulation is to verify t
     "status": "Completed",         // "Completed" | "CollisionDetected" | "DidNotConverge"
     "collisionTick": null,         // set only when status == CollisionDetected
     "collisionAgentIds": null,     // the agents involved, else null
-    "redirects": 0,
-    "recoveries": 0,
     "flowtimeTicks": 42
   }
 }

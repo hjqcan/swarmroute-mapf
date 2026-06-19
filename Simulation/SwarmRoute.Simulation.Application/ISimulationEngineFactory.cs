@@ -1,5 +1,4 @@
 using SwarmRoute.Coordination.Application;
-using SwarmRoute.Coordination.Application.Deadlock;
 using SwarmRoute.Map.Domain.ValueObjects;
 using SwarmRoute.PathPlanning.Domain.Shared.Enums;
 
@@ -36,13 +35,4 @@ public interface ISimulationEngine : IAsyncDisposable
     /// reads for reservation timing, so reserved intervals and execution ticks share one axis.
     /// </summary>
     ManualFleetClock Clock { get; }
-
-    /// <summary>The deadlock redirect projection the driver reads between ticks.</summary>
-    IFleetRedirectQuery Redirects { get; }
-
-    /// <summary>Per-tick recovery pump for open deadlock resolutions.</summary>
-    Func<CancellationToken, Task<IReadOnlyCollection<string>>> RecoverTick { get; }
-
-    /// <summary>Escalates a redirect that the driver classified as a livelock/no-progress case.</summary>
-    Func<string, CancellationToken, Task> EscalateLivelock { get; }
 }

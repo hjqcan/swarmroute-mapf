@@ -1,6 +1,6 @@
 # Traffic Control (交通管制)
 
-*Owns right-of-way for the fleet: who may occupy which roadmap resource over which time interval — grant, deny, release — and surfaces contention to Deadlock. It does not plan paths and does not run the fleet loop.*
+*Owns right-of-way for the fleet: who may occupy which roadmap resource over which time interval — grant, deny, release. At grant time it consults Liveness's `IWouldCloseCycleDetector` so a lease that would close a wait-for cycle is refused. It does not plan paths and does not run the fleet loop.*
 
 ---
 
@@ -10,7 +10,7 @@ Traffic Control is the bounded context that arbitrates **space-time occupancy** 
 
 - **May this whole path be reserved for this agent right now?** → `IResourceAllocator.Allocate` / `ReservationTable.TryGrant` (`ReservationTable.cs:129`).
 - **What is free, and when?** → `IReservationCalendar` / `FreeIntervals` / `IsFree` (`ReservationTable.cs:271`, `:323`), exposed read-only to PathPlanning as an `IReservationView`.
-- **Who is blocking whom?** → `ITrafficControlSnapshotProvider` builds the `ResourceAllocationGraphSnapshot` (Owns/Waits edges) the Deadlock context scans.
+- **Who is blocking whom?** → `ITrafficControlSnapshotProvider` builds the `ResourceAllocationGraphSnapshot` (Owns/Waits edges) Liveness's `RagCycleDetector` runs cycle detection over.
 
 It is the DDD successor to the original engine's mutable `GraphMap` (`_sites/_lines/_blocks` status + `_agvPathDic`), re-expressed from a binary `Locked/Unlocked` flag to a genuine time-interval lease (`ReservationTable.cs:11-16`). Two responsibilities it deliberately does **not** own: path search (PathPlanning) and the control/execution loop (Coordination + Simulation). Traffic Control only says *yes/queued/blocked* and *released*.
 
@@ -22,7 +22,8 @@ It is the DDD successor to the original engine's mutable `GraphMap` (`_sites/_li
 | **Single-writer singleton aggregate** | One fleet, one clock, one authoritative table → no distributed lock, no merge conflicts. Registered `AddSingleton` (invariant I5). | `TrafficControlNativeInjectorBootStrapper.cs:73-74` |
 | **Hot path in-memory; EF only for audit** | Reservation grant/release happens thousands of times per plan; a DB round-trip would dominate. EF persists snapshot/audit rows off the hot path (ADR-002 / R2). | `ReservationAuditRecord.cs:3-9`, `TrafficControlDbContext.cs:11-16` |
 | **Topology closure abstracted out of Domain** | The grant/release "what else must move with this resource" set (parent block + interference) is Map knowledge; abstracting it via `IResourceTopology` keeps `TrafficControl.Domain` free of any Map dependency. | `IResourceTopology.cs:5-19` |
-| **Contended requests are RAG "Waits" edges** | Recording denials as `ReservationRequest`s lets Deadlock see the wait-for graph and lets the escalation job age waiters → no starvation. | `ReservationTable.cs:39`, `ReservationRequest.cs:13-17` |
+| **Contended requests are RAG "Waits" edges** | Recording denials as `ReservationRequest`s exposes the wait-for graph (the snapshot Liveness's `RagCycleDetector` reads) and lets the escalation job age waiters → no starvation. | `ReservationTable.cs:39`, `ReservationRequest.cs:13-17` |
+| **Grant-time cycle prevention via an injected port** | A wait-for cycle that never forms needs no recovery. `TryGrant` consults an injected `IWouldCloseCycleDetector` (implemented by Liveness's `RagCycleDetector`) and refuses a grant that would close a cycle — opt-in per run via the request's `PreventDeadlockCycles` flag; off = a Null detector = byte-identical baseline. | `IWouldCloseCycleDetector.cs`, `ReservationTable.cs` |
 
 ---
 
@@ -50,8 +51,8 @@ Infra.Data (EF audit)        Infra.BackgroundJobs (Hangfire)        Infra.CrossC
 | Project | Role | Key dependencies |
 |---|---|---|
 | **Domain.Shared** | `AllocationOutcome`, `ConflictType`, `LeaseState`, `TrafficControlErrorCodes`. No project refs. | — |
-| **Domain** | `ReservationTable` aggregate; value objects (`ResourceLease`, `ReservationRequest`, `Conflict`, `RightOfWay`); domain services (`ResourceAllocator`, `ConflictDetector`, `ReservationCalendar`) + their interfaces; `IResourceTopology`; the lease `TrafficControlStateMachine` + guards. | `SpatioTemporal.Kernel`, `StateMachine.Core`, `NetDevPack` |
-| **Application.Contract** | The three frozen seams: `ITrafficCoordinatorAppService` (write), `ITrafficControlSnapshotProvider` (read → Deadlock), `ITrafficControlOperatorAppService` (operator); DTOs. | `SpatioTemporal.Kernel` |
+| **Domain** | `ReservationTable` aggregate; value objects (`ResourceLease`, `ReservationRequest`, `Conflict`, `RightOfWay`); domain services (`ResourceAllocator`, `ConflictDetector`, `ReservationCalendar`) + their interfaces; `IResourceTopology`; `IWouldCloseCycleDetector` (+ `NullWouldCloseCycleDetector`, the grant-time prevention port Liveness implements); the lease `TrafficControlStateMachine` + guards. | `SpatioTemporal.Kernel`, `StateMachine.Core`, `NetDevPack` |
+| **Application.Contract** | The three frozen seams: `ITrafficCoordinatorAppService` (write), `ITrafficControlSnapshotProvider` (read — the RAG snapshot Liveness's detector consumes), `ITrafficControlOperatorAppService` (operator); DTOs. | `SpatioTemporal.Kernel` |
 | **Application** | `TrafficCoordinatorAppService`, `TrafficControlSnapshotProvider`, `TrafficControlOperatorAppService`, `ReservationService` (implements PathPlanning's `IReservationQuery`), `SystemFleetClock`, `DictionaryResourceTopology`, `ReplanTriggerSubscriber`. | `Domain`, `Application.Contract`, **`PathPlanning.Domain`** |
 | **Infra.Data** | `TrafficControlDbContext` + `ReservationAuditRecord` — **snapshot/audit only**. EF Core + Npgsql. | `Domain`, `Infra.Data.Core` |
 | **Infra.BackgroundJobs** | `LeaseExpirySweepJob`, `StaleRequestEscalationJob` (Hangfire recurring). | `Application`, `Hangfire.Core` |
@@ -156,6 +157,8 @@ TryGrant(path, agent, priority)
   3. for each cell:
        blacklisted(member, agent)?       → record contended, mark blacklisted
        another agent overlaps (closure)? → record contended, mark contended  (Waits edge points at the blocker)
+       [prevention on] would these Waits edges close a wait-for cycle?
+                                         → _cycleDetector.WouldCloseCycle ⇒ refuse (mark contended)
   4. blacklisted → Blocked ;  contended → Queued
         (emit ReservationDenied + AllocationContended, create NO lease)
   5. all free → Insert() every closure cell  (Reserved)            ← whole-path lock
@@ -167,6 +170,8 @@ TryGrant(path, agent, priority)
 This is the faithful port of the original whole-path lock: a path is granted **only if every resource (closure-expanded) is free for this agent**; otherwise *nothing* is locked and the request is queued (`WholePath_grant_then_crossing_path_is_queued`, `ReservationTableTests.cs:58`). Outcomes (`AllocationOutcome.cs`): **Granted**, **Queued** (contended; recorded as Waits), **Blocked** (blacklisted — never grantable as-is). `Preempted` is reserved for v1 and never produced today.
 
 A successful grant also **prunes the agent's stale wait edges** (`ReservationTable.cs:182-183`) so the RAG reflects current contention, not retry history (`Successful_retry_removes_the_agents_stale_wait_edges`, `ReservationTableTests.cs:87`).
+
+**Grant-time cycle prevention.** When the injected `IWouldCloseCycleDetector` is the real one (opt-in per run via the request's `PreventDeadlockCycles` flag), step 3 also asks Liveness's `RagCycleDetector.WouldCloseCycle(currentRag, agent, candidateWaitEdges)` (`ReservationTable.cs:194`): if granting would close a wait-for cycle, the request is refused (treated as contended) so the planner re-routes and the circular wait **never forms**. Off (the `NullWouldCloseCycleDetector` default) ⇒ byte-identical baseline. This replaced the former reactive *detect-cycle → request-resolution → redirect-a-victim* path entirely.
 
 ### Release-behind (monotonic, as the agent passes)
 
@@ -209,12 +214,13 @@ All four extend NetDevPack `DomainEvent` and implement `IIntegrationEvent` (vers
 
 ### Integration
 
-- **→ Deadlock (verified).** The Deadlock context's `AllocationContendedSubscriber` binds to `"TrafficControl.Allocation.Contended"` (`Deadlock/.../Subscribers/AllocationContendedSubscriber.cs:21`) and, on receipt, pulls a fresh `ResourceAllocationGraphSnapshot` (via its `IDeadlockSnapshotProvider`, backed by Traffic Control's `ITrafficControlSnapshotProvider`) and runs cycle detection — never holding a Traffic Control lock. The snapshot maps **active leases → Owns** and **contended requests → Waits** (`TrafficControlSnapshotProvider.cs:25-36`).
+- **→ Liveness (grant-time prevention, the live coupling).** Traffic Control does **not** publish a reactive deadlock-resolution event. Instead it depends on Liveness's cycle check *synchronously, inside the grant*: `ReservationTable` is constructed with an `IWouldCloseCycleDetector` (Liveness's `RagCycleDetector`), and `TryGrant` calls `WouldCloseCycle` before recording a contended wait edge (`ReservationTable.cs:194`, §5). A grant that would close a wait-for cycle is refused so the planner re-routes. This is opt-in per run (`PreventDeadlockCycles`) and defaults to the `NullWouldCloseCycleDetector` (off). *(The former `AllocationContendedSubscriber` reactive flow — pull a snapshot, run cycle detection, request a victim redirect — has been removed; that whole detect → resolve → redirect → recover path no longer exists.)*
+- **`ITrafficControlSnapshotProvider` (read seam).** The `ResourceAllocationGraphSnapshot` it builds maps **active leases → Owns** and **contended requests → Waits** (`TrafficControlSnapshotProvider.cs:25-36`). It is the RAG that Liveness's `RagCycleDetector` runs over (grant-time prevention + post-hoc detection) and that the operator HTTP / observability surfaces expose — never held under a Traffic Control lock.
 - **→ Coordination (stub).** `ReplanTriggerSubscriber` (`Application/Subscribers/ReplanTriggerSubscriber.cs:14`) is the v0 placeholder that will, at integration, carry a `ReservationDenied` payload into Coordination's replan queue. It compiles and is testable standalone; only the CAP transport binding is `TODO(integration)`.
 
 ### Anti-starvation / escalation (no live-lock, invariant I7)
 
-Contended requests carry `HadWaitedTime`. `StaleRequestEscalationJob.Escalate` (`StaleRequestEscalationJob.cs:32`) → `ReservationTable.EscalateStaleRequests` (`ReservationTable.cs:405-433`) ages every outstanding request by `agingSeconds` (default 1), so a long-waiter's `RightOfWay` tie-break eventually beats fresher, equal-priority contenders. Each pass also prunes now-satisfiable requests and raises one `AllocationContendedEvent` (subject = longest-waiter) to make Deadlock re-scan. Pinned by `StaleRequestEscalationJob_ages_contended_requests_and_emits_event` (`CalendarAndJobsTests.cs:48`).
+Contended requests carry `HadWaitedTime`. `StaleRequestEscalationJob.Escalate` (`StaleRequestEscalationJob.cs:32`) → `ReservationTable.EscalateStaleRequests` (`ReservationTable.cs:405-433`) ages every outstanding request by `agingSeconds` (default 1), so a long-waiter's `RightOfWay` tie-break eventually beats fresher, equal-priority contenders. Each pass also prunes now-satisfiable requests and raises one `AllocationContendedEvent` (subject = longest-waiter) as an aging/diagnostic signal. Pinned by `StaleRequestEscalationJob_ages_contended_requests_and_emits_event` (`CalendarAndJobsTests.cs:48`).
 
 ### Lease lifecycle state machine
 
