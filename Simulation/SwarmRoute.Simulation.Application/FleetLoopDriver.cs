@@ -247,6 +247,7 @@ public sealed class FleetLoopDriver
         FleetExecutionMode executionMode = FleetExecutionMode.Greedy,
         bool stepAside = false,
         bool usePibt = false,
+        bool useCbs = false,
         Action<string>? log = null,
         CancellationToken cancellationToken = default)
     {
@@ -254,6 +255,14 @@ public sealed class FleetLoopDriver
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(agents);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxTicks, 1);
+        if (useCbs && executionMode != FleetExecutionMode.ScheduleFaithful)
+            throw new ArgumentException(
+                "CBS cluster paths carry SIPP CP-entry ticks and require schedule-faithful execution.",
+                nameof(useCbs));
+        if (useCbs && usePibt)
+            throw new ArgumentException(
+                "CBS and PIBT are mutually exclusive local standoff solvers for a physical cluster.",
+                nameof(useCbs));
 
         // Anti-livelock backstop: a single victim may be redirected at most this many times before the run
         // escalates it as a livelock (in addition to the strict distance-decrease guard below).
@@ -284,6 +293,14 @@ public sealed class FleetLoopDriver
         // (generously, by graph size); the DidNotConverge tick budget remains the ultimate backstop.
         const int pibtTriggerThreshold = 8;
         var pibtEpisodeMaxTicks = 2 * Math.Max(1, graph.VertexCount);
+
+        // A PIBT agent forced to HOLD this many CONSECUTIVE ticks is not being helped by the joint resolver and is
+        // handed back to prioritized-SIPP well before the (much larger) episode budget. This is the fix for a lone
+        // survivor of a dissolved cluster whose only goal-improving neighbour is a parked cell: PIBT's no-retreat
+        // candidate ordering prefers "stay" over a longer detour, so it would idle out the whole episode, while
+        // SIPP routes around the parked obstacle in one re-plan. Bailing early is self-correcting — SIPP re-triggers
+        // PIBT (after pibtTriggerThreshold blocked ticks) if the agent genuinely re-stalls in a live standoff.
+        const int pibtHeldExitThreshold = 12;
 
         // Stable fleet order (priority then ordinal id) so timeline + routes are reproducible.
         var fleet = agents
@@ -337,6 +354,33 @@ public sealed class FleetLoopDriver
         var pibtHopsCache = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal);
         IReadOnlyDictionary<string, int> HopsTo(string goal) =>
             pibtHopsCache.TryGetValue(goal, out var d) ? d : pibtHopsCache[goal] = HopDistances.To(graph, goal);
+
+        // Puts an agent en route on a freshly-reserved path: the CP route plus each CP's planned arrival tick (the
+        // axis the schedule-faithful executor advances on). Shared by block (1)'s plan+reserve and the CBS cluster
+        // solve (block 2-CBS), since both hand the executor a reserved SpaceTimePath in the same shape.
+        void SetEnRouteFromPath(RunAgent ag, SpaceTimePath path)
+        {
+            ag.EnRoute = true;
+            ag.Idx = 0;
+            ag.StuckTicks = 0;
+            var cpCells = path.Cells.Where(c => c.Resource.Kind == ResourceKind.CP).ToList();
+            ag.CpRoute = cpCells.Select(c => c.Resource.Id).ToList();
+            ag.CpEntryTicks = cpCells.Select(c => c.Interval.StartMs).ToList();
+            ag.AllResources = path.Cells.Select(c => c.Resource).Distinct().ToList();
+            if (ag.CpRoute.Count == 0 || ag.CpRoute[0] != ag.Start)
+                throw new FleetLoopException(
+                    $"Reserved path for '{ag.Id}' does not start at {ag.Start} (got [{string.Join(",", ag.CpRoute)}]).");
+            ag.FrontierIsGoal = string.Equals(ag.CpRoute[^1], ag.EffectiveGoal, StringComparison.Ordinal);
+        }
+
+        IReadOnlySet<ResourceRef>? PhysicalBlockersExcept(IReadOnlySet<string>? excludedCells = null)
+        {
+            var cells = parkedCells
+                .Concat(fleet.Where(a => !a.EnRoute && !a.Done).Select(a => a.Position))
+                .Where(c => excludedCells is null || !excludedCells.Contains(c))
+                .ToHashSet(StringComparer.Ordinal);
+            return cells.Count == 0 ? null : cells.Select(RoadmapGraph.SiteRef).ToHashSet();
+        }
 
         while (fleet.Any(a => !a.Done))
         {
@@ -506,13 +550,7 @@ public sealed class FleetLoopDriver
                 // vehicles and waiting agents do not rely on active leases, but they still occupy their CP.
                 // The planner exempts each agent's own start/goal, so adding every waiting Position does not
                 // prevent that agent from departing its current CP.
-                var physicallyBlockedCells = parkedCells
-                    .Concat(fleet.Where(a => !a.EnRoute && !a.Done).Select(a => a.Position))
-                    .ToHashSet(StringComparer.Ordinal);
-                var blocked = physicallyBlockedCells.Count == 0
-                    ? null
-                    : physicallyBlockedCells.Select(RoadmapGraph.SiteRef).ToHashSet();
-                var report = await cycle.RunCycleAsync(roadmapId, pending, blocked, cancellationToken).ConfigureAwait(false);
+                var report = await cycle.RunCycleAsync(roadmapId, pending, PhysicalBlockersExcept(), cancellationToken).ConfigureAwait(false);
                 foreach (var r in report.Results)
                 {
                     var ag = fleet.Single(a => a.Id == r.AgentId);
@@ -521,23 +559,29 @@ public sealed class FleetLoopDriver
 
                     if (r is { Reserved: true, Path: not null })
                     {
-                        ag.EnRoute = true;
-                        ag.Idx = 0;
-                        ag.StuckTicks = 0;
-                        var cpCells = r.Path!.Cells.Where(c => c.Resource.Kind == ResourceKind.CP).ToList();
-                        ag.CpRoute = cpCells.Select(c => c.Resource.Id).ToList();
-                        // Schedule-faithful execution reads each CP's planned arrival tick from the same cells.
-                        ag.CpEntryTicks = cpCells.Select(c => c.Interval.StartMs).ToList();
-                        ag.AllResources = r.Path!.Cells.Select(c => c.Resource).Distinct().ToList();
-
-                        // The reserved route must still start where the agent physically stands. The terminal-
-                        // equals-goal check is RELAXED for RHCR: a rolling-horizon window legitimately ends at a
-                        // frontier short of the goal. Whether it reached the goal drives the arrival branch below.
-                        if (ag.CpRoute.Count == 0 || ag.CpRoute[0] != ag.Start)
-                            throw new FleetLoopException(
-                                $"Reserved path for '{ag.Id}' does not start at {ag.Start} " +
-                                $"(got [{string.Join(",", ag.CpRoute)}]).");
-                        ag.FrontierIsGoal = string.Equals(ag.CpRoute[^1], ag.EffectiveGoal, StringComparison.Ordinal);
+                        // The reserved route must still start where the agent physically stands; the terminal-equals-
+                        // goal check is RELAXED for RHCR (a window may legitimately end at a frontier short of goal).
+                        // BUT distinguish a *degenerate* window: when every forward move is blocked within the
+                        // horizon, RHCR-SIPP can only reserve the current cell ("wait here, re-plan next window").
+                        // That is a successful plan but makes NO progress, so committing it would reset StuckTicks
+                        // every tick and the walled-out parked-gatekeeper step-aside would NEVER fire — a lone
+                        // survivor whose path is sealed by parked vehicles then idles out the whole tick budget.
+                        // Treat a no-progress wait-window as walled-out instead: release the wait lease, stay
+                        // pending, and accrue StuckTicks so the gatekeeper clears the parked blockers (then the
+                        // next plan progresses and StuckTicks resets). A brief legitimate wait (< the gatekeeper
+                        // threshold) is harmless; only a sustained seal trips recovery.
+                        var routeCps = r.Path!.Cells.Where(c => c.Resource.Kind == ResourceKind.CP).Select(c => c.Resource.Id).ToList();
+                        var madeProgress = routeCps.Count > 1
+                            || (routeCps.Count == 1 && string.Equals(routeCps[0], ag.EffectiveGoal, StringComparison.Ordinal));
+                        if (madeProgress)
+                        {
+                            SetEnRouteFromPath(ag, r.Path);
+                        }
+                        else
+                        {
+                            await cycle.ReleaseAsync(ag.Id, r.Path!.Cells.Select(c => c.Resource).Distinct().ToList(), cancellationToken).ConfigureAwait(false);
+                            ag.StuckTicks++;
+                        }
                     }
                     else
                     {
@@ -598,6 +642,65 @@ public sealed class FleetLoopDriver
                         ag.BlockedTicks = 0;
                         log?.Invoke($"pibt-enter@tick{tick}: {ag.Id} joins a congestion cluster at {ag.Position} (goal {ag.Goal}).");
                     }
+            }
+
+            // (2-CBS) Zone-local CBS (opt-in): solve a physical standoff cluster JOINTLY with a complete local CBS
+            // rather than greedy PIBT. Members release their stalled reservations; the cycle runs CBS + reserves the
+            // conflict-free paths atomically; members go back en route on those paths and flow through the unchanged
+            // schedule-faithful executor (CBS emits whole paths, so it needs no physical-drive code). CBS cracks the
+            // dense standoffs greedy priority-inheritance cannot — at higher cost, so it is the heavier hammer.
+            if (useCbs)
+            {
+                var occById = occupantNow.ToDictionary(kv => kv.Key, kv => kv.Value.Id, StringComparer.Ordinal);
+                var snapshots = fleet
+                    .Select(a => new StuckAgentSnapshot(
+                        a.Id,
+                        a is { EnRoute: true, Done: false } && a.Idx + 1 < a.CpRoute.Count ? a.CpRoute[a.Idx + 1] : null,
+                        a.BlockedTicks, a.EnRoute, a.Done))
+                    .ToList();
+
+                foreach (var cluster in StuckClusterDetector.Assemble(snapshots, occById, pibtTriggerThreshold))
+                {
+                    var members = cluster
+                        .OrderBy(id => id, StringComparer.Ordinal)
+                        .Select(id => fleet.Single(a => a.Id == id))
+                        .Where(a => !a.PibtActive && a.RedirectTarget is null)
+                        .ToList();
+                    if (members.Count < 2)
+                        continue;
+
+                    // Release each member's stalled reservation so the view CBS plans against is just the flowing
+                    // fleet, then have the cycle solve + reserve the cluster jointly.
+                    foreach (var ag in members)
+                    {
+                        await YieldAndReplanFromCurrentAsync(ag).ConfigureAwait(false);
+                        ag.BlockedTicks = 0; // handled this tick — don't re-detect before it can advance
+                    }
+
+                    var clusterGoals = members
+                        .Select(a => new AgentGoal(a.Id, a.Position, a.EffectiveGoal, a.Priority))
+                        .ToList();
+                    var clusterCells = members.Select(a => a.Position).ToHashSet(StringComparer.Ordinal);
+                    var report = await cycle.PlanClusterAsync(
+                        roadmapId,
+                        clusterGoals,
+                        PhysicalBlockersExcept(clusterCells),
+                        cancellationToken).ConfigureAwait(false);
+
+                    var solved = 0;
+                    foreach (var res in report.Results)
+                    {
+                        var ag = fleet.Single(a => a.Id == res.AgentId);
+                        ag.Replans++;
+                        if (res is { Reserved: true, Path: not null })
+                        {
+                            SetEnRouteFromPath(ag, res.Path);
+                            solved++;
+                        }
+                        // else: the member stays pending (released) and re-plans via SIPP next cycle (fallback).
+                    }
+                    log?.Invoke($"cbs@tick{tick}: solved a {members.Count}-agent standoff cluster ({solved} reserved).");
+                }
             }
 
             var claimedNext = new HashSet<string>(StringComparer.Ordinal);
@@ -663,11 +766,17 @@ public sealed class FleetLoopDriver
                         parkedCells.Add(ag.Position);
                         flowtimeTicks += tick;
                     }
-                    else if (ag.PibtEpisodeTicksLeft <= 0)
+                    else if (ag.PibtHeldTicks >= pibtHeldExitThreshold || ag.PibtEpisodeTicksLeft <= 0)
                     {
-                        // Episode budget elapsed: disband back to prioritized-SIPP, which re-plans from this pose.
+                        // Disband back to prioritized-SIPP, which re-plans from this pose (and may re-trigger PIBT
+                        // if the agent genuinely re-stalls). Two triggers: (a) held for pibtHeldExitThreshold
+                        // consecutive ticks — PIBT is not advancing it (e.g. a lone survivor whose goal-improving
+                        // neighbour is parked; SIPP routes around it), or (b) the episode budget elapsed.
                         ag.PibtActive = false;
-                        log?.Invoke($"pibt-exit@tick{tick}: {ag.Id} leaves PIBT at {ag.Position} (episode budget elapsed), re-planning.");
+                        var why = ag.PibtHeldTicks >= pibtHeldExitThreshold
+                            ? $"held {ag.PibtHeldTicks} ticks, not progressing"
+                            : "episode budget elapsed";
+                        log?.Invoke($"pibt-exit@tick{tick}: {ag.Id} leaves PIBT at {ag.Position} ({why}), re-planning.");
                     }
                 }
             }
@@ -747,10 +856,10 @@ public sealed class FleetLoopDriver
                                     && string.Equals(partner.CpRoute[partner.Idx + 1], fromCp, StringComparison.Ordinal);
                                 var iYield = headOn && ag.Priority >= partner!.Priority;
                                 var threshold = iYield ? headOnYieldThreshold : stallRerouteThreshold;
-                                // When PIBT is on it is the primary standoff handler: it engages at
-                                // pibtTriggerThreshold and pulls the agents out of the en-route advance entirely.
-                                // Keep these band-aids only as a far backstop for anything its detector never clusters.
-                                if (usePibt)
+                                // When PIBT or CBS is on it is the primary standoff handler: it engages at
+                                // pibtTriggerThreshold and takes the cluster over (PIBT drives it; CBS re-plans it).
+                                // Keep these band-aids only as a far backstop for anything the detector never clusters.
+                                if (usePibt || useCbs)
                                     threshold = Math.Max(stallRerouteThreshold, pibtTriggerThreshold) + 8;
 
                                 if (ag.BlockedTicks >= threshold)

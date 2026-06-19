@@ -18,6 +18,7 @@
   "controls.seed": "Seed",
   "controls.seedPlaceholder": "optional",
   "controls.shuffle": "Random",
+  "controls.pibt": "PIBT (resolve dense deadlocks)",
   "controls.autoLoop": "Auto-loop (new seed each run)",
   "controls.run": "Run",
   "controls.running": "Running…",

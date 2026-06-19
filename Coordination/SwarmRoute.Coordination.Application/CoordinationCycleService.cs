@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SwarmRoute.Map.Application.Contract.Services;
 using SwarmRoute.Map.Domain.ValueObjects;
+using SwarmRoute.PathPlanning.Domain.Cbs;
 using SwarmRoute.PathPlanning.Domain.Planners;
 using SwarmRoute.PathPlanning.Domain.Reservations;
 using SwarmRoute.PathPlanning.Domain.ValueObjects;
@@ -50,6 +51,11 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
     /// <summary>The rolling-horizon (RHCR) window in fleet-clock ms; <see cref="long.MaxValue"/> = unbounded.</summary>
     private readonly long _horizonWindowMs;
 
+    /// <summary>Local CBS solver for the joint-cluster path (v3): stateless, bounded by RHCR, its own SIPP low
+    /// level. Used only by <see cref="PlanClusterAsync"/>, which the executor calls for a detected standoff —
+    /// the per-agent <see cref="RunCycleAsync"/> path is untouched.</summary>
+    private readonly CbsLocalSolver _cbs;
+
     public CoordinationCycleService(
         IRoadmapQueryService roadmaps,
         IReservationQuery reservations,
@@ -66,6 +72,7 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _horizonWindowMs = (loopOptions ?? throw new ArgumentNullException(nameof(loopOptions))).Value.HorizonWindowMs;
+        _cbs = new CbsLocalSolver(new CbsOptions(TimeHorizonTicks: _horizonWindowMs));
     }
 
     /// <summary>The rolling-horizon arrival ceiling for a cycle releasing at <paramref name="releaseTimeMs"/>:
@@ -218,4 +225,64 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
         IReadOnlyList<ResourceRef> passedResources,
         CancellationToken cancellationToken = default)
         => _traffic.ReleaseAsync(agentId, passedResources, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<CycleReport> PlanClusterAsync(
+        Guid roadmapId,
+        IReadOnlyCollection<AgentGoal> cluster,
+        IReadOnlySet<ResourceRef>? blockedResources = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(cluster);
+        if (cluster.Count == 0)
+            return CycleReport.Empty;
+
+        // The cluster members have already released their stale reservations (the executor does that before
+        // calling), so the view holds only the flowing fleet. Physical blockers without leases (parked/waiting
+        // non-members) are carried separately as the same static blacklist RunCycleAsync uses.
+        var graph = await _roadmaps.GetGraphAsync(roadmapId, cancellationToken).ConfigureAwait(false);
+        var view = _reservations.GetView(roadmapId);
+        var releaseTick = _clock.NowMs;
+
+        var agents = cluster
+            .Select(g => new CbsAgent(g.AgentId, g.FromSiteId, g.ToSiteId, g.Priority))
+            .ToList();
+
+        var solution = _cbs.Solve(graph, agents, view, releaseTick, blockedResources);
+        if (!solution.Solved || solution.Paths is null)
+        {
+            _logger.LogDebug("Cluster CBS did not solve ({Status}): {Reason}", solution.Status, solution.FailureReason);
+            return Unreserved(cluster, solution.Status.ToString());
+        }
+
+        // Commit the conflict-free paths atomically: reserve in ordinal order; on any non-grant, roll back every
+        // grant so far and fall back (the cluster retries next tick). In practice all grant — the paths respect the
+        // live view and are mutually conflict-free — but the reservation table stays the authority.
+        var granted = new List<(string AgentId, SpaceTimePath Path)>(agents.Count);
+        var results = new List<AgentCycleResult>(agents.Count);
+        foreach (var (agentId, path) in solution.Paths
+                     .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                     .Select(kv => (kv.Key, kv.Value)))
+        {
+            var outcome = await _traffic.TryReserveAsync(path, agentId, cancellationToken).ConfigureAwait(false);
+            if (outcome != AllocationOutcome.Granted)
+            {
+                foreach (var g in granted)
+                    await _traffic.ReleaseAsync(g.AgentId, g.Path.Cells.Select(c => c.Resource).Distinct().ToList(), cancellationToken)
+                        .ConfigureAwait(false);
+                _logger.LogDebug("Cluster CBS reserve aborted at agent={AgentId} ({Outcome}); rolled back, falling back.", agentId, outcome);
+                return Unreserved(cluster, $"reserve-{outcome}");
+            }
+            granted.Add((agentId, path));
+            results.Add(new AgentCycleResult(agentId, Planned: true, Reserved: true, Outcome: outcome, Attempts: 1, Path: path, FailureReason: null));
+        }
+
+        return new CycleReport(results);
+    }
+
+    /// <summary>A report in which no cluster member obtained a reservation — the executor falls back per agent.</summary>
+    private static CycleReport Unreserved(IReadOnlyCollection<AgentGoal> cluster, string reason)
+        => new(cluster
+            .Select(g => new AgentCycleResult(g.AgentId, Planned: false, Reserved: false, Outcome: null, Attempts: 0, Path: null, FailureReason: reason))
+            .ToList());
 }

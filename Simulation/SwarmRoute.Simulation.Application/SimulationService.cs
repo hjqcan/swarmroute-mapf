@@ -87,6 +87,7 @@ public sealed class SimulationService : ISimulationService
                 executionMode: executionMode,
                 stepAside: request.StepAside,
                 usePibt: request.UsePibt,
+                useCbs: request.UseCbs,
                 log: msg => _logger.LogWarning("[standoff] {Detail}", msg),
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
@@ -104,7 +105,8 @@ public sealed class SimulationService : ISimulationService
                         $"\"horizonWindowMs\":{request.HorizonWindowMs}," +
                         $"\"stepAside\":{(request.StepAside ? "true" : "false")}," +
                         $"\"preventDeadlockCycles\":{(request.PreventDeadlockCycles ? "true" : "false")}," +
-                        $"\"usePibt\":{(request.UsePibt ? "true" : "false")},\"starts\":{starts}}}";
+                        $"\"usePibt\":{(request.UsePibt ? "true" : "false")}," +
+                        $"\"useCbs\":{(request.UseCbs ? "true" : "false")},\"starts\":{starts}}}";
             _logger.LogWarning("[did-not-converge] arrived {Arrived}/{Total} in {Ticks} ticks. Repro: {Repro}",
                 loop.Stats.Arrived, request.AgvCount, loop.Stats.Ticks, repro);
         }
@@ -128,6 +130,17 @@ public sealed class SimulationService : ISimulationService
             throw new ArgumentException(
                 $"Grid is too small for the fleet: Width*Height ({request.Width}x{request.Height} = {capacity}) " +
                 $"must be >= 2*AgvCount ({required}) so every AGV gets a distinct start and a distinct goal.",
+                nameof(request));
+
+        if (request.UseCbs && request.Planner != PlannerKind.Sipp)
+            throw new ArgumentException(
+                "UseCbs requires Planner=Sipp because CBS returns time-axis SIPP paths that must be executed " +
+                "by the schedule-faithful executor.",
+                nameof(request));
+
+        if (request.UseCbs && request.UsePibt)
+            throw new ArgumentException(
+                "UseCbs and UsePibt are mutually exclusive local standoff solvers; enable exactly one cluster owner.",
                 nameof(request));
     }
 

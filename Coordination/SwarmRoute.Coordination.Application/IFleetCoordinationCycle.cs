@@ -35,4 +35,20 @@ public interface IFleetCoordinationCycle
         string agentId,
         IReadOnlyList<SwarmRoute.SpatioTemporal.Kernel.ResourceRef> passedResources,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Plans a congestion <paramref name="cluster"/> JOINTLY with local CBS (Conflict-Based Search) and reserves
+    /// the resulting conflict-free paths atomically (all-or-nothing). The executor calls this when it detects a
+    /// physical standoff the per-agent <see cref="RunCycleAsync"/> cannot untangle — agents holding individually
+    /// conflict-free reservations that nonetheless block each other. Returns a <see cref="CycleReport"/> shaped
+    /// exactly like <see cref="RunCycleAsync"/>'s (each member's reserved path, or all-unreserved when no joint
+    /// solution was found / committed, so the caller falls back). The default is a no-op
+    /// (<see cref="CycleReport.Empty"/>), keeping the feature inert unless the real cycle implements it.
+    /// </summary>
+    Task<CycleReport> PlanClusterAsync(
+        Guid roadmapId,
+        IReadOnlyCollection<AgentGoal> cluster,
+        IReadOnlySet<SwarmRoute.SpatioTemporal.Kernel.ResourceRef>? blockedResources = null,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(CycleReport.Empty);
 }

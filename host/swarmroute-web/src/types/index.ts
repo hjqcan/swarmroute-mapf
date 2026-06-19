@@ -41,6 +41,11 @@ export interface SimulationRequest {
    * Opt-in executor recovery for SIPP goal-blocking cases. Edge-collision safety is independent and always on.
    */
   stepAside?: boolean
+  /**
+   * Opt-in zone-local PIBT (v3): when a cluster of AGVs is physically stuck, resolve that zone with Priority
+   * Inheritance with Backtracking so high-density standoffs converge. SIPP-only; edge-collision safety unchanged.
+   */
+  usePibt?: boolean
 }
 
 /** A single control point on the grid at planar (x=col, y=row). */

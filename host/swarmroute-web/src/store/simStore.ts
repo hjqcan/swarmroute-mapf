@@ -17,6 +17,8 @@ export const DEFAULT_PARAMS: SimulationRequest = {
   // value only when RHCR mode is selected.
   // Enable executor recovery for parked goal blockers; edge-collision safety is independent and always on.
   stepAside: true,
+  // Enable v3 zone-local PIBT so high-density physical standoffs converge (toggle off in the rail to A/B).
+  usePibt: true,
 }
 
 export interface SimState {

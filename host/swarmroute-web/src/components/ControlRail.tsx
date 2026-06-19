@@ -1,5 +1,5 @@
 import { Button, InputNumber, Segmented, Slider, Switch } from 'antd'
-import { Dices, Play, Loader2, Repeat } from 'lucide-react'
+import { Dices, Play, Loader2, Repeat, Waypoints } from 'lucide-react'
 import { useIntl } from 'react-intl'
 import { useSimStore } from '@/store/simStore'
 import type { PlannerKind } from '@/types'
@@ -131,6 +131,20 @@ export default function ControlRail() {
             />
           </div>
         )}
+      </div>
+
+      {/* v3 zone-local PIBT: when a cluster of AGVs is physically stuck, resolve that zone with Priority
+          Inheritance + Backtracking so dense standoffs converge. SIPP-only (ignored under Dijkstra). */}
+      <div className="flex items-center justify-between">
+        <label className="flex items-center gap-2 text-sm text-text-muted">
+          <Waypoints size={14} />
+          {intl.formatMessage({ id: 'controls.pibt' })}
+        </label>
+        <Switch
+          checked={(params.usePibt ?? false) && (params.planner ?? 'Sipp') !== 'Dijkstra'}
+          disabled={(params.planner ?? 'Sipp') === 'Dijkstra'}
+          onChange={(v) => setParam('usePibt', v)}
+        />
       </div>
 
       {/* Seed (optional) + shuffle */}

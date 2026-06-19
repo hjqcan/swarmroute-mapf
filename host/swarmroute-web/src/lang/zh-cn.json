@@ -18,6 +18,7 @@
   "controls.seed": "随机种子",
   "controls.seedPlaceholder": "可选",
   "controls.shuffle": "随机",
+  "controls.pibt": "PIBT（高密度解死锁）",
   "controls.autoLoop": "自动循环（每轮换种子）",
   "controls.run": "运行",
   "controls.running": "运行中…",

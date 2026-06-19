@@ -54,7 +54,19 @@ namespace SwarmRoute.Simulation.Application;
 /// reservation table cannot see) — is driven jointly one hop at a time until the jam dissolves, after which each
 /// agent re-plans back to prioritized-SIPP. Off = byte-identical v2 (no cluster is ever entered). Independent of
 /// <see cref="StepAside"/> and <see cref="HorizonWindowMs"/>; PIBT engages a few ticks before the StepAside /
-/// stall-reroute band-aids and supersedes them inside its cluster.
+/// stall-reroute band-aids and supersedes them inside its cluster. Mutually exclusive with <see cref="UseCbs"/>:
+/// one physical standoff cluster must have exactly one local owner.
+/// </param>
+/// <param name="UseCbs">
+/// Opt-in zone-local CBS (Conflict-Based Search) executor recovery for physical standoffs in schedule-faithful
+/// (SIPP) runs (v3; default off). When on, a detected congestion cluster is solved JOINTLY by a complete/optimal
+/// local CBS over its agents (reusing SIPP as the constrained low level), the conflict-free paths are reserved
+/// atomically, and the cluster resumes normal schedule-faithful execution. Where <see cref="UsePibt"/> is a fast
+/// greedy resolver, CBS cracks the dense standoffs greedy priority-inheritance cannot (at higher cost). Off =
+/// byte-identical v2 (no cluster is ever solved). Requires <see cref="PlannerKind.Sipp"/> and is mutually
+/// exclusive with <see cref="UsePibt"/>; it is still independent of <see cref="StepAside"/>. It honors
+/// <see cref="HorizonWindowMs"/> through CBS's SIPP low level; like PIBT it is sim/executor-scoped (production has
+/// no executor).
 /// </param>
 public sealed record SimulationRequest(
     int Width,
@@ -66,4 +78,5 @@ public sealed record SimulationRequest(
     long HorizonWindowMs = long.MaxValue,
     bool StepAside = false,
     bool PreventDeadlockCycles = false,
-    bool UsePibt = false);
+    bool UsePibt = false,
+    bool UseCbs = false);
