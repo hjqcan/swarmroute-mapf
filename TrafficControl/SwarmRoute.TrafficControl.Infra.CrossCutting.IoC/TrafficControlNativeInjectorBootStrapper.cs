@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using SwarmRoute.PathPlanning.Domain.Reservations;
 using SwarmRoute.SpatioTemporal.Kernel;
 using SwarmRoute.TrafficControl.Application.Contract.Services;
@@ -70,8 +71,14 @@ public static class TrafficControlNativeInjectorBootStrapper
         // The fleet clock (single monotonic clock all intervals are measured against).
         services.AddSingleton<IFleetClock, SystemFleetClock>();
 
+        // Grant-time deadlock prevention (v2). Default OFF (Null), so the reservation table behaves exactly as
+        // v0/v1; the composition root registers a RAG-backed detector before this to turn prevention on.
+        services.TryAddSingleton<IWouldCloseCycleDetector>(NullWouldCloseCycleDetector.Instance);
+
         // *** The in-memory authoritative reservation state: a process-wide SINGLETON. ***
-        services.AddSingleton(sp => new ReservationTable(sp.GetRequiredService<IResourceTopology>()));
+        services.AddSingleton(sp => new ReservationTable(
+            sp.GetRequiredService<IResourceTopology>(),
+            sp.GetRequiredService<IWouldCloseCycleDetector>()));
 
         // Domain services (stateless → singletons).
         services.AddSingleton<IResourceAllocator, ResourceAllocator>();

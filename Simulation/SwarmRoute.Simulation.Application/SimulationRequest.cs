@@ -20,9 +20,40 @@ namespace SwarmRoute.Simulation.Application;
 /// execution). Defaults to <see cref="PlannerKind.Dijkstra"/> so the same seed can be A/B-compared by flipping
 /// only this field. (Frontend toggle is deferred — this is the backend contract.)
 /// </param>
+/// <param name="Starts">
+/// Optional explicit per-AGV start cells (one per AGV, in agent order), used to <b>continue</b> a lifelong run:
+/// each AGV keeps its current pose and is given a NEW goal, instead of teleporting to a fresh random layout.
+/// When omitted (or invalid — wrong count, an unknown cell, or duplicates) a fresh random start/goal layout is
+/// used. Goals are always drawn from cells not occupied by a start, so each goal is distinct and ≠ its own start.
+/// </param>
+/// <param name="HorizonWindowMs">
+/// The rolling-horizon (RHCR, v2) window in fleet-clock ticks: SIPP commits only the next <c>HorizonWindowMs</c>
+/// ticks of each route and the agent re-plans the following window at the frontier (bounds reservation lifetime,
+/// so no agent locks a long corridor — the high-density convergence lever). Defaults to <see cref="long.MaxValue"/>
+/// = unbounded (whole-path planning, byte-identical to v1). A/B by holding <see cref="Planner"/>=<see cref="PlannerKind.Sipp"/>
+/// and flipping only this field. Ignored under <see cref="PlannerKind.Dijkstra"/> (space-only planner).
+/// </param>
+/// <param name="StepAside">
+/// Opt-in executor recovery for physical goal-blocking in schedule-faithful (SIPP) runs (default off): a vehicle
+/// parked on the only approach to a walled-out agent's goal is routed aside for a window, then re-parks.
+/// Head-on edge-swap safety is independent and always on: the executor refuses the swap and the blocked
+/// lower-priority agent releases its old plan before re-planning from its current CP, rather than being moved
+/// outside TrafficControl.
+/// </param>
+/// <param name="PreventDeadlockCycles">
+/// Opt-in grant-time deadlock prevention (v2 WouldCloseCycle; default off). When on, a reservation that would
+/// close a wait-for cycle is refused at <c>TryReserve</c> (the planner re-routes), so the circular wait never
+/// forms — constructive liveness that front-runs the reactive detect/redirect path. Off = the Null detector =
+/// byte-identical v1, so the same seed A/B-compares prevention by flipping only this field. Independent of
+/// <see cref="StepAside"/> (executor recovery) and <see cref="HorizonWindowMs"/> (rolling horizon).
+/// </param>
 public sealed record SimulationRequest(
     int Width,
     int Height,
     int AgvCount,
     int? Seed = null,
-    PlannerKind Planner = PlannerKind.Dijkstra);
+    PlannerKind Planner = PlannerKind.Dijkstra,
+    IReadOnlyList<string>? Starts = null,
+    long HorizonWindowMs = long.MaxValue,
+    bool StepAside = false,
+    bool PreventDeadlockCycles = false);

@@ -12,11 +12,14 @@ namespace SwarmRoute.Simulation.Application;
 public interface ISimulationEngineFactory
 {
     /// <summary>
-    /// Creates a fresh engine over <paramref name="graph"/>, planning with <paramref name="planner"/>. The
-    /// per-request engine has its own isolated container, so the planner choice is contained to this run (no
-    /// shared global state). The caller owns disposal.
+    /// Creates a fresh engine over <paramref name="graph"/>, planning with <paramref name="planner"/> and (for
+    /// SIPP) the rolling-horizon window <paramref name="horizonWindowMs"/>. The per-request engine has its own
+    /// isolated container, so both choices are contained to this run (no shared global state). The caller owns
+    /// disposal.
     /// </summary>
-    ISimulationEngine Create(RoadmapGraph graph, PlannerKind planner = PlannerKind.Dijkstra);
+    /// <param name="horizonWindowMs">RHCR window in fleet-clock ticks; <see cref="long.MaxValue"/> = unbounded (whole-path).</param>
+    /// <param name="preventCycles">When true, turns on grant-time deadlock prevention (WouldCloseCycle) for this run; default off.</param>
+    ISimulationEngine Create(RoadmapGraph graph, PlannerKind planner = PlannerKind.Dijkstra, long horizonWindowMs = long.MaxValue, bool preventCycles = false);
 }
 
 /// <summary>A disposable simulation engine instance with its own coordination/traffic state.</summary>

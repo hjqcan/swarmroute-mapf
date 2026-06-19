@@ -22,5 +22,13 @@ public enum AllocationOutcome
     Blocked,
 
     /// <summary>A lower-priority holder was (or would be) preempted to grant this request (v1+).</summary>
-    Preempted
+    Preempted,
+
+    /// <summary>
+    /// (v2) Granting/queuing this path would close a wait-for cycle, so it was refused for constructive liveness:
+    /// no lease is created and no cycle-closing contended edge is recorded. Distinct from <see cref="Queued"/> —
+    /// the agent must NOT wait on this path (waiting would deadlock); it must re-route. The coordination loop's
+    /// prune-and-replan reacts exactly as for a denial, routing the agent around the cycle-closing resource.
+    /// </summary>
+    CycleAverted
 }

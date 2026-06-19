@@ -46,4 +46,14 @@ public static class SwarmRouteMetrics
     public static readonly Counter<long> DeadlocksResolved =
         Meter.CreateCounter<long>("swarmroute_deadlock_resolved_total",
             description: "Deadlock cases resolved (victim recovered to its goal).");
+
+    /// <summary>
+    /// Wait-for cycles averted at grant time (v2 constructive prevention: <c>TryReserve → CycleAverted</c>).
+    /// When prevention is working this trends up while <see cref="DeadlocksDetected"/>/<see cref="DeadlocksResolved"/>
+    /// trend to ~0 — the canary that says the reactive detect/redirect path is becoming dead weight.
+    /// Counter <c>swarmroute_cycle_averted_total</c>.
+    /// </summary>
+    public static readonly Counter<long> CyclesAverted =
+        Meter.CreateCounter<long>("swarmroute_cycle_averted_total",
+            description: "Reservations refused because granting would close a wait-for cycle (deadlock prevented).");
 }

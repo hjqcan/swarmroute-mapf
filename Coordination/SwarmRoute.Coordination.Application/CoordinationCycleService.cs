@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using SwarmRoute.Map.Application.Contract.Services;
 using SwarmRoute.Map.Domain.ValueObjects;
 using SwarmRoute.PathPlanning.Domain.Planners;
@@ -46,13 +47,17 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
     private readonly IFleetClock _clock;
     private readonly ILogger<CoordinationCycleService> _logger;
 
+    /// <summary>The rolling-horizon (RHCR) window in fleet-clock ms; <see cref="long.MaxValue"/> = unbounded.</summary>
+    private readonly long _horizonWindowMs;
+
     public CoordinationCycleService(
         IRoadmapQueryService roadmaps,
         IReservationQuery reservations,
         IPathPlanner planner,
         ITrafficCoordinatorAppService traffic,
         IFleetClock clock,
-        ILogger<CoordinationCycleService> logger)
+        ILogger<CoordinationCycleService> logger,
+        IOptions<CoordinationLoopOptions> loopOptions)
     {
         _roadmaps = roadmaps ?? throw new ArgumentNullException(nameof(roadmaps));
         _reservations = reservations ?? throw new ArgumentNullException(nameof(reservations));
@@ -60,7 +65,16 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
         _traffic = traffic ?? throw new ArgumentNullException(nameof(traffic));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _horizonWindowMs = (loopOptions ?? throw new ArgumentNullException(nameof(loopOptions))).Value.HorizonWindowMs;
     }
+
+    /// <summary>The rolling-horizon arrival ceiling for a cycle releasing at <paramref name="releaseTimeMs"/>:
+    /// <c>release + window</c>, saturating to <see cref="long.MaxValue"/> (= unbounded) on overflow or when the
+    /// window is unbounded.</summary>
+    private long HorizonEndFor(long releaseTimeMs)
+        => _horizonWindowMs == long.MaxValue || releaseTimeMs > long.MaxValue - _horizonWindowMs
+            ? long.MaxValue
+            : releaseTimeMs + _horizonWindowMs;
 
     /// <inheritdoc />
     public async Task<CycleReport> RunCycleAsync(
@@ -124,7 +138,8 @@ public sealed class CoordinationCycleService : IFleetCoordinationCycle
                 goal.FromSiteId,
                 goal.ToSiteId,
                 releaseTimeMs: releaseTimeMs,
-                blacklistedResources: pruned.Count == 0 ? null : pruned);
+                blacklistedResources: pruned.Count == 0 ? null : pruned,
+                horizonEndMs: HorizonEndFor(releaseTimeMs));
 
             var plan = _planner.Plan(graph, request, view);
             if (!plan.Success || plan.Path is null)

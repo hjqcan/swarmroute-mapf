@@ -124,9 +124,10 @@ builder.Services.AddScoped<ISimulationEngineFactory, InMemorySimulationEngineFac
 builder.Services.AddSimulation();
 
 // 7b'. Autonomous dispatcher demo fleet (Track B), opt-in via Dispatcher:Enabled. When on, it overrides the
-//      DB-backed IRoadmapQueryService + inert goal source with an in-memory grid + dispatcher so the lifelong
-//      FleetCoordinationLoop drives a real order→assign→plan→reserve→complete loop with no database. Must run
-//      after the Map bootstrapper and the goal-source registration above (it replaces both).
+//      DB-backed IRoadmapQueryService + inert goal source with an in-memory grid + dispatch-flow demo: orders
+//      become goals for FleetCoordinationLoop, while demo pose advancement remains kinematic and does not treat
+//      reservation grants as movement authority. Must run after the Map bootstrapper and the goal-source
+//      registration above (it replaces both).
 builder.AddSwarmRouteDispatcher();
 
 // 7c. Runtime background jobs — enabled only when TrafficControlDatabase exists.

@@ -17,7 +17,7 @@ export type RunStatus = 'Completed' | 'CollisionDetected' | 'DidNotConverge'
  * - `Dijkstra` — v0 space-only shortest path; can deadlock in dense fields (two AGVs commit to crossing
  *   routes and stall forever, reported as DidNotConverge).
  * - `Sipp` — v1 Safe-Interval Path Planning; reservation-aware (plans in time), so it routes around
- *   conflicts and converges where Dijkstra deadlocks.
+ *   reservation conflicts and reports remaining physical standoffs as DidNotConverge.
  */
 export type PlannerKind = 'Dijkstra' | 'Sipp'
 
@@ -28,6 +28,19 @@ export interface SimulationRequest {
   agvCount: number
   seed?: number
   planner?: PlannerKind
+  /**
+   * Optional rolling-horizon window for SIPP/RHCR. Omit for the backend default: unbounded whole-path planning.
+   */
+  horizonWindowMs?: number
+  /**
+   * Optional explicit per-AGV start cells (agent order), to CONTINUE a lifelong run: each AGV keeps its current
+   * pose and gets a new goal instead of teleporting to a fresh random layout. Omitted on a fresh run.
+   */
+  starts?: string[]
+  /**
+   * Opt-in executor recovery for SIPP goal-blocking cases. Edge-collision safety is independent and always on.
+   */
+  stepAside?: boolean
 }
 
 /** A single control point on the grid at planar (x=col, y=row). */

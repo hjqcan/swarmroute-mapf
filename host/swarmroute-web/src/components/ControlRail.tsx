@@ -1,5 +1,5 @@
-import { Button, InputNumber, Segmented, Slider } from 'antd'
-import { Dices, Play, Loader2 } from 'lucide-react'
+import { Button, InputNumber, Segmented, Slider, Switch } from 'antd'
+import { Dices, Play, Loader2, Repeat } from 'lucide-react'
 import { useIntl } from 'react-intl'
 import { useSimStore } from '@/store/simStore'
 import type { PlannerKind } from '@/types'
@@ -8,6 +8,9 @@ const FIELD_MIN = 4
 const FIELD_MAX = 24
 const AGV_MIN = 1
 const AGV_MAX = 24
+const HORIZON_MIN = 1
+const HORIZON_MAX = 64
+const DEFAULT_RHCR_WINDOW_MS = 8
 
 /**
  * Left control rail: field width/height, AGV count, optional seed (+ a shuffle
@@ -21,11 +24,15 @@ export default function ControlRail() {
   const randomizeSeed = useSimStore((s) => s.randomizeSeed)
   const run = useSimStore((s) => s.run)
   const loading = useSimStore((s) => s.loading)
+  const autoLoop = useSimStore((s) => s.autoLoop)
+  const setAutoLoop = useSimStore((s) => s.setAutoLoop)
 
   // Guard against the engine's constraint: width*height >= 2*agvCount.
   const capacity = params.width * params.height
   const agvMax = Math.min(AGV_MAX, Math.floor(capacity / 2))
   const agvTooMany = params.agvCount > agvMax
+  const horizonEnabled = params.horizonWindowMs !== undefined
+  const horizonWindow = params.horizonWindowMs ?? DEFAULT_RHCR_WINDOW_MS
 
   return (
     <div className="flex h-full flex-col gap-5">
@@ -65,8 +72,8 @@ export default function ControlRail() {
       </Field>
 
       {/* Planner: v0 Dijkstra (space-only — can deadlock when dense) vs v1 SIPP (reservation-aware,
-          plans in time — converges where Dijkstra stalls). Defaults to SIPP; flip to Dijkstra to
-          reproduce a standoff and watch the stuck AGVs' forward routes on the field. */}
+          plans in time and reports any remaining standoff honestly). Defaults to SIPP; flip to Dijkstra
+          to reproduce a standoff and watch the stuck AGVs' forward routes on the field. */}
       <div>
         <div className="mb-1.5 flex items-baseline justify-between">
           <label className="text-sm text-text-muted">
@@ -89,6 +96,41 @@ export default function ControlRail() {
             { label: 'Dijkstra', value: 'Dijkstra' },
           ]}
         />
+      </div>
+
+      <div>
+        <div className="mb-1.5 flex items-baseline justify-between">
+          <label className="text-sm text-text-muted">
+            {intl.formatMessage({ id: 'controls.horizon' })}
+          </label>
+          <span className="font-mono text-xs text-text-muted">
+            {intl.formatMessage(
+              { id: horizonEnabled ? 'controls.horizon.rhcrTag' : 'controls.horizon.unboundedTag' },
+              { value: horizonWindow }
+            )}
+          </span>
+        </div>
+        <Segmented
+          block
+          value={horizonEnabled ? 'rhcr' : 'full'}
+          onChange={(v) =>
+            setParam('horizonWindowMs', String(v) === 'rhcr' ? horizonWindow : undefined)
+          }
+          options={[
+            { label: intl.formatMessage({ id: 'controls.horizon.full' }), value: 'full' },
+            { label: intl.formatMessage({ id: 'controls.horizon.rhcr' }), value: 'rhcr' },
+          ]}
+        />
+        {horizonEnabled && (
+          <div className="mt-3">
+            <SliderNumber
+              min={HORIZON_MIN}
+              max={HORIZON_MAX}
+              value={horizonWindow}
+              onChange={(v) => setParam('horizonWindowMs', v)}
+            />
+          </div>
+        )}
       </div>
 
       {/* Seed (optional) + shuffle */}
@@ -114,6 +156,15 @@ export default function ControlRail() {
             {intl.formatMessage({ id: 'controls.shuffle' })}
           </Button>
         </div>
+      </div>
+
+      {/* Auto-loop: when a run finishes playing, pick a new seed (the field updates) and run again, forever. */}
+      <div className="flex items-center justify-between">
+        <label className="flex items-center gap-2 text-sm text-text-muted">
+          <Repeat size={14} />
+          {intl.formatMessage({ id: 'controls.autoLoop' })}
+        </label>
+        <Switch checked={autoLoop} onChange={setAutoLoop} />
       </div>
 
       <Button

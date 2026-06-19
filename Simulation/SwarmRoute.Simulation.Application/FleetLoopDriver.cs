@@ -136,6 +136,13 @@ public sealed class FleetLoopDriver
 
         public bool EnRoute { get; set; }
         public bool Done { get; set; }
+
+        /// <summary>True when the current committed route ends at the agent's <see cref="EffectiveGoal"/> (a full
+        /// plan). False when it is a rolling-horizon (RHCR) window truncated short of the goal — then the arrival
+        /// branch re-plans the next window from the frontier instead of parking. Re-derived whenever the agent
+        /// becomes en route, and only read while en route, so the default is irrelevant after the first plan.</summary>
+        public bool FrontierIsGoal { get; set; } = true;
+
         public IReadOnlyList<string> CpRoute { get; set; } = Array.Empty<string>();
 
         /// <summary>Parallel to <see cref="CpRoute"/>: the planned fleet-clock tick at which the agent is
@@ -147,6 +154,15 @@ public sealed class FleetLoopDriver
         public IReadOnlyList<ResourceRef> AllResources { get; set; } = Array.Empty<ResourceRef>();
         public int Idx { get; set; }
         public int Replans { get; set; }
+
+        /// <summary>Consecutive ticks this WAITING agent has failed to obtain a reserved route (reset the moment
+        /// it becomes en route). A long streak means it is walled out of its goal — typically by parked vehicles
+        /// sitting on the only approach — and triggers the parked-gatekeeper step-aside.</summary>
+        public int StuckTicks { get; set; }
+
+        /// <summary>Ticks remaining for which this (un-parked) gatekeeper holds aside to let a walled-out agent
+        /// pass; on reaching zero it recovers (re-plans back to its own goal). Zero when not yielding.</summary>
+        public int YieldTicksRemaining { get; set; }
 
         /// <summary>Consecutive ticks this en-route agent has failed to advance at the right-of-way gate
         /// (reset to 0 the moment it moves). A high streak is a physical standoff — a head-on swap or a
@@ -204,7 +220,7 @@ public sealed class FleetLoopDriver
     /// <see cref="FleetExecutionMode.ScheduleFaithful"/> (follow the SIPP-planned per-CP arrival ticks).</param>
     /// <exception cref="ArgumentNullException">If <paramref name="cycle"/>, <paramref name="graph"/> or <paramref name="agents"/> is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException">If <paramref name="maxTicks"/> &lt; 1.</exception>
-    /// <exception cref="FleetLoopException">Only on an internal invariant breach (reserved path not start→goal).</exception>
+    /// <exception cref="FleetLoopException">Only on an internal invariant breach (reserved path does not start at the agent's current CP).</exception>
     public async Task<FleetLoopResult> RunToCompletionAsync(
         IFleetCoordinationCycle cycle,
         Guid roadmapId,
@@ -216,6 +232,7 @@ public sealed class FleetLoopDriver
         Func<CancellationToken, Task<IReadOnlyCollection<string>>>? recoverTick = null,
         Func<string, CancellationToken, Task>? escalateLivelock = null,
         FleetExecutionMode executionMode = FleetExecutionMode.Greedy,
+        bool stepAside = false,
         Action<string>? log = null,
         CancellationToken cancellationToken = default)
     {
@@ -237,6 +254,15 @@ public sealed class FleetLoopDriver
         // its reservation and re-plans from its current pose (breaking physical standoffs the schedule couldn't
         // foresee). Comfortably above any brief transient wait for a higher-priority mover to clear.
         const int stallRerouteThreshold = 12;
+
+        // Schedule-faithful only: a lower-priority agent in a head-on swap yields (re-plans away) after this few
+        // ticks — fast, since holding both just relives the swap each tick; the higher-priority one then passes.
+        const int headOnYieldThreshold = 3;
+
+        // A WAITING agent unplannable for this many ticks is treated as walled out of its goal; the parked
+        // vehicles on its approach step aside for `gatekeeperYieldWindow` ticks (then re-park) so it can pass.
+        const int gatekeeperUnblockThreshold = 10;
+        const int gatekeeperYieldWindow = 20;
 
         // Stable fleet order (priority then ordinal id) so timeline + routes are reproducible.
         var fleet = agents
@@ -283,6 +309,7 @@ public sealed class FleetLoopDriver
             ag.CpEntryTicks = Array.Empty<long>();
             ag.Idx = 0;
             ag.AllResources = Array.Empty<ResourceRef>();
+            ag.FrontierIsGoal = true; // re-plan toward EffectiveGoal fresh next cycle (block 1 re-derives this).
         }
 
         while (fleet.Any(a => !a.Done))
@@ -379,6 +406,66 @@ public sealed class FleetLoopDriver
                 }
             }
 
+            // (0.6) Parked-gatekeeper step-aside (opt-in via `stepAside`; off = the raw whole-path baseline rides
+            //     the budget out). A WAITING agent unplannable for a while is usually walled out of
+            //     its goal by parked vehicles sitting on the only approach (e.g. another AGV parked on the single
+            //     entrance to its goal cell). First recover any gatekeeper whose yield window has elapsed (it
+            //     re-plans back to its own goal); then, for each persistently-stuck agent, send the parked vehicles
+            //     on its shortest path aside to a free neighbour and free their cells, so it can plan through. The
+            //     gatekeepers re-park when their window ends. This breaks goal-blocking deadlocks the RAG detector
+            //     can't see (parked vehicles hold no lease, so there is no wait-cycle to detect).
+            foreach (var p in fleet.Where(a => a.YieldTicksRemaining > 0))
+                if (--p.YieldTicksRemaining == 0 && p.RedirectTarget is not null)
+                    p.RedirectTarget = null; // recover: now pending, re-plans back to its real goal next cycle
+
+            if (stepAside)
+                foreach (var stuck in fleet.Where(a => !a.Done && !a.EnRoute && !a.HoldingAtAvoidSite
+                         && a.RedirectTarget is null && a.StuckTicks >= gatekeeperUnblockThreshold))
+            {
+                var path = graph.ShortestPath(stuck.Position, stuck.Goal);
+                if (path is null)
+                    continue;
+
+                var occupiedCells = fleet.Select(a => a.Position).ToHashSet(StringComparer.Ordinal);
+                var freedAny = false;
+                foreach (var cell in path)
+                {
+                    if (string.Equals(cell, stuck.Position, StringComparison.Ordinal)
+                        || string.Equals(cell, stuck.Goal, StringComparison.Ordinal))
+                        continue;
+                    var p = fleet.FirstOrDefault(a => a.Done && a.YieldTicksRemaining == 0
+                        && string.Equals(a.Position, cell, StringComparison.Ordinal));
+                    if (p is null)
+                        continue;
+
+                    var aside = graph.Neighbours(cell)
+                        .Where(n => !occupiedCells.Contains(n) && !parkedCells.Contains(n)
+                            && !string.Equals(n, stuck.Goal, StringComparison.Ordinal))
+                        .OrderBy(n => n, StringComparer.Ordinal)
+                        .FirstOrDefault();
+                    if (aside is null)
+                        continue; // nowhere to step — leave it; the stuck agent stays reported as non-converged
+
+                    log?.Invoke($"gatekeeper-aside@tick{tick}: {p.Id} (parked {cell}) steps to {aside} so {stuck.Id} can reach goal {stuck.Goal}.");
+                    p.Done = false;
+                    p.EnRoute = false;
+                    p.Start = cell;            // it physically sits on its goal cell; re-plan from there to `aside`
+                    p.CpRoute = new[] { cell };
+                    p.CpEntryTicks = Array.Empty<long>();
+                    p.Idx = 0;
+                    p.AllResources = Array.Empty<ResourceRef>();
+                    p.RedirectTarget = aside;  // EffectiveGoal becomes `aside`; it holds there until recovery
+                    p.YieldTicksRemaining = gatekeeperYieldWindow;
+                    p.StuckTicks = 0;
+                    parkedCells.Remove(cell);
+                    occupiedCells.Add(aside);
+                    freedAny = true;
+                }
+
+                if (freedAny)
+                    stuck.StuckTicks = 0;
+            }
+
             // (1) Plan + reserve every agent that still needs right-of-way. A victim holding at its avoidance
             //     site (waiting for recovery) is intentionally NOT re-planned.
             var pending = fleet
@@ -410,16 +497,26 @@ public sealed class FleetLoopDriver
                     {
                         ag.EnRoute = true;
                         ag.Idx = 0;
+                        ag.StuckTicks = 0;
                         var cpCells = r.Path!.Cells.Where(c => c.Resource.Kind == ResourceKind.CP).ToList();
                         ag.CpRoute = cpCells.Select(c => c.Resource.Id).ToList();
                         // Schedule-faithful execution reads each CP's planned arrival tick from the same cells.
                         ag.CpEntryTicks = cpCells.Select(c => c.Interval.StartMs).ToList();
                         ag.AllResources = r.Path!.Cells.Select(c => c.Resource).Distinct().ToList();
 
-                        if (ag.CpRoute.Count == 0 || ag.CpRoute[0] != ag.Start || ag.CpRoute[^1] != ag.EffectiveGoal)
+                        // The reserved route must still start where the agent physically stands. The terminal-
+                        // equals-goal check is RELAXED for RHCR: a rolling-horizon window legitimately ends at a
+                        // frontier short of the goal. Whether it reached the goal drives the arrival branch below.
+                        if (ag.CpRoute.Count == 0 || ag.CpRoute[0] != ag.Start)
                             throw new FleetLoopException(
-                                $"Reserved path for '{ag.Id}' does not run {ag.Start}->{ag.EffectiveGoal} " +
+                                $"Reserved path for '{ag.Id}' does not start at {ag.Start} " +
                                 $"(got [{string.Join(",", ag.CpRoute)}]).");
+                        ag.FrontierIsGoal = string.Equals(ag.CpRoute[^1], ag.EffectiveGoal, StringComparison.Ordinal);
+                    }
+                    else
+                    {
+                        // Still couldn't get a route this cycle — count toward the walled-out (gatekeeper) trigger.
+                        ag.StuckTicks++;
                     }
                 }
             }
@@ -441,6 +538,10 @@ public sealed class FleetLoopDriver
             //     clear — so instead the agent drops its reservation and rejoins planning from its current CP
             //     (a re-route). Next cycle the planner routes it around the parked cell (which is now in
             //     `parkedCells`). A transient blocker (a moving/waiting vehicle) just makes it wait one tick.
+            // Snapshot every agent's pose at the START of this tick (before any advance), so block (3) can detect
+            // an edge swap by comparing against their pose after the moves below.
+            var posBefore = fleet.ToDictionary(a => a.Id, a => a.Position, StringComparer.Ordinal);
+
             var occupantNow = fleet.ToDictionary(a => a.Position, a => a, StringComparer.Ordinal);
             var claimedNext = new HashSet<string>(StringComparer.Ordinal);
             foreach (var a in fleet.Where(a => !(a.EnRoute && !a.Done)))
@@ -452,7 +553,7 @@ public sealed class FleetLoopDriver
             // no reservation, so the schedule can't have accounted for it). Null in greedy mode, where the
             // per-agent right-of-way gate below decides instead.
             var scheduledAdvance = executionMode == FleetExecutionMode.ScheduleFaithful
-                ? ResolveScheduleFaithfulAdvances(fleet, tick, parkedCells)
+                ? ResolveScheduleFaithfulAdvances(fleet, tick, parkedCells, log)
                 : null;
 
             foreach (var ag in fleet.Where(a => a is { EnRoute: true, Done: false }))
@@ -515,18 +616,37 @@ public sealed class FleetLoopDriver
                             // deadlock detector can't see (the agents hold, not wait for, their reservations).
                             var scheduledToMove = ag.CpEntryTicks.Count == ag.CpRoute.Count
                                 && tick >= ag.CpEntryTicks[ag.Idx + 1];
-                            if (scheduledToMove && ++ag.BlockedTicks >= stallRerouteThreshold)
+                            if (scheduledToMove)
                             {
-                                ag.Replans++;
-                                var held = ag.AllResources;
-                                ag.EnRoute = false;
-                                ag.Start = fromCp;
-                                ag.CpRoute = new[] { fromCp };
-                                ag.CpEntryTicks = Array.Empty<long>();
-                                ag.Idx = 0;
-                                ag.AllResources = Array.Empty<ResourceRef>();
-                                ag.BlockedTicks = 0;
-                                await cycle.ReleaseAsync(ag.Id, held, cancellationToken).ConfigureAwait(false);
+                                ag.BlockedTicks++;
+
+                                // Head-on? The agent on our target intends to step onto OUR cell — a direct swap
+                                // the resolver refuses (it would be an edge collision). Holding both just relives
+                                // the swap every tick, so the LOWER-priority one YIELDS fast: it drops its
+                                // reservation and re-plans away (around the other, whose held lease SIPP respects),
+                                // and the higher-priority one passes. A non-head-on block uses the general window.
+                                var partner = occupantNow.GetValueOrDefault(toCp);
+                                var headOn = partner is { EnRoute: true, Done: false }
+                                    && partner.Idx + 1 < partner.CpRoute.Count
+                                    && string.Equals(partner.CpRoute[partner.Idx + 1], fromCp, StringComparison.Ordinal);
+                                var iYield = headOn && ag.Priority >= partner!.Priority;
+                                var threshold = iYield ? headOnYieldThreshold : stallRerouteThreshold;
+
+                                if (ag.BlockedTicks >= threshold)
+                                {
+                                    if (headOn)
+                                        log?.Invoke($"head-on@tick{tick}: {ag.Id} ({fromCp}) yields/re-plans so {partner!.Id} can pass {fromCp}<->{toCp}.");
+                                    ag.Replans++;
+                                    var held = ag.AllResources;
+                                    ag.EnRoute = false;
+                                    ag.Start = fromCp;
+                                    ag.CpRoute = new[] { fromCp };
+                                    ag.CpEntryTicks = Array.Empty<long>();
+                                    ag.Idx = 0;
+                                    ag.AllResources = Array.Empty<ResourceRef>();
+                                    ag.BlockedTicks = 0;
+                                    await cycle.ReleaseAsync(ag.Id, held, cancellationToken).ConfigureAwait(false);
+                                }
                             }
                             continue;
                         }
@@ -562,7 +682,27 @@ public sealed class FleetLoopDriver
                 if (ag.Idx >= ag.CpRoute.Count - 1)
                 {
                     var here = ag.CpRoute[ag.Idx];
-                    if (ag.RedirectTarget is not null)
+                    if (!ag.FrontierIsGoal)
+                    {
+                        // RHCR: reached the rolling-horizon window frontier, not the (effective) goal yet. Drop
+                        // the spent window and rejoin planning from here so the next cycle commits the next window
+                        // toward EffectiveGoal. Same release-then-replan idiom as reroute-around-parked; the
+                        // frontier CP stays claimed this tick so no mover steps onto it. This costs one re-plan
+                        // tick per window boundary. An h<w lookahead to hide that cost was REJECTED for v2: the
+                        // measured small-window damage is re-plan CHURN, not this pause, so re-planning more often
+                        // would worsen it, and the high-density convergence it would broaden is already handled by
+                        // the StepAside executor recovery above. See the v2 decision record in the design docs.
+                        var held = ag.AllResources;
+                        ag.EnRoute = false;
+                        ag.Start = here;
+                        ag.CpRoute = new[] { here };
+                        ag.CpEntryTicks = Array.Empty<long>();
+                        ag.Idx = 0;
+                        ag.AllResources = Array.Empty<ResourceRef>();
+                        claimedNext.Add(here);
+                        await cycle.ReleaseAsync(ag.Id, held, cancellationToken).ConfigureAwait(false);
+                    }
+                    else if (ag.RedirectTarget is not null)
                     {
                         // Reached the avoidance site: hold here (keeping the avoid-site lease) and wait for the
                         // deadlock case to recover — this is NOT the real goal, so the agent is not "done". The
@@ -601,6 +741,30 @@ public sealed class FleetLoopDriver
                 else
                 {
                     occupied[ag.Position] = ag.Id;
+                }
+            }
+
+            // (3b) Safety: no two agents SWAPPED cells this tick (a head-on edge collision — they cross on one
+            //      lane in opposite directions). Their end CPs are distinct, so (3) above can't see it. The
+            //      schedule-faithful resolver forbids this up front; detect any residual so a run reports
+            //      CollisionDetected honestly instead of a false "no collision", and log the offenders.
+            foreach (var ag in fleet.Where(a => a.EnRoute || a.Done))
+            {
+                if (!posBefore.TryGetValue(ag.Id, out var prev) || string.Equals(prev, ag.Position, StringComparison.Ordinal))
+                    continue; // didn't move this tick
+                if (occupied.TryGetValue(prev, out var other)
+                    && StringComparer.Ordinal.Compare(ag.Id, other) < 0 // count each pair once
+                    && posBefore.TryGetValue(other, out var otherPrev)
+                    && string.Equals(otherPrev, ag.Position, StringComparison.Ordinal))
+                {
+                    collisions++;
+                    log?.Invoke($"EDGE-SWAP@tick{tick}: {ag.Id} and {other} crossed lane {prev}<->{ag.Position} (head-on). " +
+                        "This is an execution/schedule desync — the resolver should have held one of them.");
+                    if (collision is null)
+                    {
+                        status = FleetLoopStatus.CollisionDetected;
+                        collision = new FleetCollisionInfo(tick, ag.Position, [other, ag.Id]);
+                    }
                 }
             }
 
@@ -667,11 +831,13 @@ public sealed class FleetLoopDriver
     /// plan (a delayed or re-routed vehicle), with block (3) reporting any residual breach.
     /// </summary>
     private static HashSet<string> ResolveScheduleFaithfulAdvances(
-        IReadOnlyList<RunAgent> fleet, long tick, IReadOnlySet<string> parkedCells)
+        IReadOnlyList<RunAgent> fleet, long tick, IReadOnlySet<string> parkedCells, Action<string>? log = null)
     {
         var target = new Dictionary<string, string>(StringComparer.Ordinal);
+        var posById = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var ag in fleet)
         {
+            posById[ag.Id] = ag.Position;
             if (ag is not { EnRoute: true, Done: false })
                 continue;
             if (ag.Idx >= ag.CpRoute.Count - 1)
@@ -700,7 +866,33 @@ public sealed class FleetLoopDriver
         {
             changed = false;
 
-            // Cells held after this tick by anyone NOT advancing (non-movers + revoked movers keep their CP).
+            // (a) Forbid 2-cycle swaps: two granted movers exchanging cells traverse one lane in OPPOSITE
+            //     directions = a head-on edge collision the CP-distinctness pass below can't catch (their end
+            //     cells ARE distinct). Hold BOTH (neither may take the other's cell); the stall-reroute then
+            //     re-plans one of them around. (Longer rotations a→b→c→a are valid — no opposite traversal —
+            //     and are NOT revoked.) Such a swap only arises when execution has desynced from the
+            //     interval-exclusive plan (a delayed/re-routed vehicle); this is the hard executor backstop.
+            var moverByPos = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var a in ordered)
+                if (granted.Contains(a.Id))
+                    moverByPos[posById[a.Id]] = a.Id;
+            foreach (var a in ordered)
+            {
+                if (!granted.Contains(a.Id))
+                    continue;
+                if (moverByPos.TryGetValue(target[a.Id], out var other) && !string.Equals(other, a.Id, StringComparison.Ordinal)
+                    && target.TryGetValue(other, out var otherTarget)
+                    && string.Equals(otherTarget, posById[a.Id], StringComparison.Ordinal))
+                {
+                    granted.Remove(a.Id); // both halves revoke themselves (moverByPos snapshot stays valid this pass)
+                    changed = true;
+                    log?.Invoke($"swap-prevented@tick{tick}: {a.Id} ({posById[a.Id]}<->{target[a.Id]}) {other} — held to avoid a head-on edge collision.");
+                }
+            }
+            if (changed)
+                continue; // recompute after dropping swap pairs
+
+            // (b) Forbid landing on a stayer's cell, or a cell another (higher-priority) mover already claimed.
             var blocked = new HashSet<string>(StringComparer.Ordinal);
             foreach (var a in fleet)
                 if (!granted.Contains(a.Id))
@@ -712,7 +904,6 @@ public sealed class FleetLoopDriver
                 if (!granted.Contains(a.Id))
                     continue;
                 var to = target[a.Id];
-                // Revoke if the target is held by a stayer, or already claimed by a higher-priority mover.
                 if (blocked.Contains(to) || !claimed.Add(to))
                 {
                     granted.Remove(a.Id);
@@ -725,5 +916,5 @@ public sealed class FleetLoopDriver
     }
 }
 
-/// <summary>Raised only on an internal invariant breach (a reserved path that does not run start→goal).</summary>
+/// <summary>Raised only on an internal invariant breach (a reserved path that does not start at the agent's current CP).</summary>
 public sealed class FleetLoopException(string message) : Exception(message);

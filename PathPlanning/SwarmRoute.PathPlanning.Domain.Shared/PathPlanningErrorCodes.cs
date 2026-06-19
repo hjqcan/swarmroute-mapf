@@ -20,4 +20,7 @@ public static class PathPlanningErrorCodes
 
     /// <summary>An <c>AgentPlan</c> behaviour was invoked with a result inconsistent with its current state.</summary>
     public const string InvalidPlanTransition = "PP-005";
+
+    /// <summary>The planning horizon end was earlier than the release time (an empty/negative time window).</summary>
+    public const string InvalidHorizon = "PP-006";
 }

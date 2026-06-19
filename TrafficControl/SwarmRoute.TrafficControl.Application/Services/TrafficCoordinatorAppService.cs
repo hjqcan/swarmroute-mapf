@@ -46,6 +46,8 @@ public sealed class TrafficCoordinatorAppService : ITrafficCoordinatorAppService
         var outcome = _allocator.Allocate(_table, path, agentId);
         if (outcome == AllocationOutcome.Granted)
             SwarmRouteMetrics.ReservationGrants.Add(1);
+        else if (outcome == AllocationOutcome.CycleAverted)
+            SwarmRouteMetrics.CyclesAverted.Add(1); // grant-time deadlock prevention (v2); counted apart from ordinary denials
         else
             SwarmRouteMetrics.ReservationDenials.Add(1);
         _logger.LogDebug("TryReserve agent={AgentId} cells={Cells} -> {Outcome}", agentId, path.Cells.Count, outcome);

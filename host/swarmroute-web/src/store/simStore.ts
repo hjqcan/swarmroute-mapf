@@ -6,13 +6,17 @@ import type { SimulationRequest, SimulationResult } from '@/types'
 
 export type PlaybackSpeed = 0.5 | 1 | 2 | 4
 
-/** Default form parameters for a run. Defaults to the SIPP planner: it is reservation-aware and
- *  converges where the v0 Dijkstra planner can deadlock in dense fields (switchable in the control rail). */
+/** Default form parameters for a run. Defaults to the SIPP planner: it is reservation-aware and reports dense
+ *  physical standoffs honestly when they do not converge (switchable in the control rail). */
 export const DEFAULT_PARAMS: SimulationRequest = {
   width: 10,
   height: 8,
   agvCount: 6,
   planner: 'Sipp',
+  // Omit horizonWindowMs for the backend's unbounded whole-path SIPP default. The control rail sets a finite
+  // value only when RHCR mode is selected.
+  // Enable executor recovery for parked goal blockers; edge-collision safety is independent and always on.
+  stepAside: true,
 }
 
 export interface SimState {
@@ -25,7 +29,13 @@ export interface SimState {
   result: SimulationResult | null
   loading: boolean
   error: string | null
-  run: () => Promise<void>
+  /** Runs a simulation. An optional override is merged onto the form params (used by the auto-loop to pass the
+   *  current AGV positions as `starts` so a continued run re-plans from where they are). */
+  run: (override?: Partial<SimulationRequest>) => Promise<void>
+
+  /* ---- auto-loop: when a run finishes playing, pick a new seed and run again, forever ---- */
+  autoLoop: boolean
+  setAutoLoop: (autoLoop: boolean) => void
 
   /* ---- per-agent route visibility on the field (ids whose route is hidden) ---- */
   hiddenPaths: Set<string>
@@ -48,8 +58,32 @@ export interface SimState {
 /** Frames advance at this many ticks per real second at 1× speed. */
 const TICKS_PER_SECOND = 2
 
+/** How long to rest on a finished run before auto-looping to a fresh seed (ms). */
+const LOOP_PAUSE_MS = 900
+
+/** Pending auto-loop continuation timer. A manual run cancels it so a click is never raced by the loop. */
+let pendingLoopTimer: ReturnType<typeof setTimeout> | null = null
+
 function frameCount(result: SimulationResult | null): number {
   return result?.timeline.frames.length ?? 0
+}
+
+/**
+ * The final-frame position of each AGV in agent-index order (agv-1 … agv-N), used to CONTINUE a lifelong run:
+ * the next run keeps these as starts and re-plans new goals, so AGVs carry on from where they are instead of
+ * teleporting. Returns null when the timeline is empty or any agent's position is missing (→ fresh layout).
+ */
+function finalPositions(result: SimulationResult | null, agvCount: number): string[] | null {
+  const frames = result?.timeline.frames
+  if (!frames || frames.length === 0) return null
+  const byId = new Map(frames[frames.length - 1].positions.map((p) => [p.agentId, p.siteId]))
+  const out: string[] = []
+  for (let i = 1; i <= agvCount; i++) {
+    const pos = byId.get(`agv-${i}`)
+    if (pos == null) return null
+    out.push(pos)
+  }
+  return out
 }
 
 export const useSimStore = create<SimState>()(
@@ -63,8 +97,17 @@ export const useSimStore = create<SimState>()(
       result: null,
       loading: false,
       error: null,
-      run: async () => {
-        const { params } = get()
+      run: async (override) => {
+        // Cancel any pending auto-loop continuation so a (manual) run is never overwritten by a stale loop tick.
+        if (pendingLoopTimer != null) {
+          clearTimeout(pendingLoopTimer)
+          pendingLoopTimer = null
+        }
+        const params = { ...get().params, ...override }
+        // Log the EXACT request (incl. continuation `starts`) — the only thing that reproduces a run. With the
+        // auto-loop a run is seed + starts, so the seed field alone can't replay it; copy this JSON to reproduce.
+        // eslint-disable-next-line no-console
+        console.info('[swarmroute] run request (copy to reproduce):', JSON.stringify(params))
         set({ loading: true, error: null })
         try {
           const result = await runSimulation(params)
@@ -99,6 +142,9 @@ export const useSimStore = create<SimState>()(
           return { hiddenPaths: next }
         }),
 
+      autoLoop: false,
+      setAutoLoop: (autoLoop) => set({ autoLoop }),
+
       playing: false,
       speed: 1,
       cursor: 0,
@@ -118,6 +164,20 @@ export const useSimStore = create<SimState>()(
         if (next >= max) {
           // Reached the end: settle on the final frame and pause.
           set({ cursor: max, playing: false })
+          // Auto-loop: rest briefly on the finished run, then CONTINUE — keep each AGV at its current pose and
+          // give it a new goal (new seed) instead of teleporting to a fresh random layout. The seed input is
+          // bound to params.seed, so randomizeSeed() updates the UI. The toggle is re-checked at fire time so
+          // turning it off (or a run already in flight) cleanly ends the loop.
+          if (get().autoLoop) {
+            pendingLoopTimer = setTimeout(() => {
+              pendingLoopTimer = null
+              const s = get()
+              if (!s.autoLoop || s.loading) return
+              const starts = finalPositions(s.result, s.params.agvCount)
+              s.randomizeSeed()
+              void s.run(starts ? { starts } : undefined)
+            }, LOOP_PAUSE_MS)
+          }
         } else {
           set({ cursor: next })
         }

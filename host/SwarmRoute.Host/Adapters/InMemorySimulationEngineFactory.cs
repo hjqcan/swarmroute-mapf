@@ -15,6 +15,7 @@ using SwarmRoute.PathPlanning.Infra.CrossCutting.IoC;
 using SwarmRoute.Simulation.Application;
 using SwarmRoute.SpatioTemporal.Kernel;
 using SwarmRoute.TrafficControl.Application.Contract.Services;
+using SwarmRoute.TrafficControl.Domain.Services;
 using SwarmRoute.TrafficControl.Infra.CrossCutting.IoC;
 
 namespace SwarmRoute.Host.Adapters;
@@ -25,7 +26,7 @@ namespace SwarmRoute.Host.Adapters;
 /// </summary>
 public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
 {
-    public ISimulationEngine Create(RoadmapGraph graph, PlannerKind planner = PlannerKind.Dijkstra)
+    public ISimulationEngine Create(RoadmapGraph graph, PlannerKind planner = PlannerKind.Dijkstra, long horizonWindowMs = long.MaxValue, bool preventCycles = false)
     {
         ArgumentNullException.ThrowIfNull(graph);
 
@@ -35,6 +36,13 @@ public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
         services.AddLogging();
         services.AddEventBus();
         services.AddSingleton<IRoadmapQueryService>(new InMemoryRoadmapQueryService(roadmapId, graph));
+
+        // Grant-time deadlock prevention (v2, WouldCloseCycle). Pre-registered before the TrafficControl
+        // bootstrapper so its TryAddSingleton<IWouldCloseCycleDetector> Null default defers to this — turning
+        // prevention ON for THIS run (default off = the Null detector = byte-identical v0/v1). Per-request and
+        // contained to this isolated container, exactly like the planner / horizon switches.
+        if (preventCycles)
+            services.AddSingleton<IWouldCloseCycleDetector, RagWouldCloseCycleDetector>();
 
         // Select the planner for THIS run. Pre-registered before the PathPlanning bootstrapper, whose
         // TryAddSingleton<PlannerOptions> then defers to this instance — so the isolated container's
@@ -53,6 +61,11 @@ public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
                 sp.GetRequiredService<ITrafficControlSnapshotProvider>()));
 
         services.AddCoordination();
+
+        // RHCR (v2): bound this run's planning horizon. The CoordinationCycleService reads HorizonWindowMs from
+        // CoordinationLoopOptions and stamps each PlanRequest; long.MaxValue (default) = unbounded whole-path,
+        // byte-identical to v1. Per-request and contained to this isolated container, like PlannerOptions above.
+        services.Configure<CoordinationLoopOptions>(o => o.HorizonWindowMs = horizonWindowMs);
 
         // Drive reservation timing off the discrete simulation tick (not wall-clock): the driver advances this
         // clock each tick so reserved intervals live on the same axis the executor moves on. Replaces the

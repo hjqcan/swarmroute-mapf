@@ -19,6 +19,14 @@ public sealed class CoordinationLoopOptions
     /// explicitly. Defaults to true.
     /// </summary>
     public bool EnableWatchdog { get; set; } = true;
+
+    /// <summary>
+    /// The rolling-horizon (RHCR) window in fleet-clock milliseconds. Each cycle stamps every plan request with
+    /// <c>HorizonEndMs = now + HorizonWindowMs</c>, so the planner only commits the next <c>HorizonWindowMs</c>
+    /// ticks of each route and the agent re-plans the following window on arrival at the frontier. Defaults to
+    /// <see cref="long.MaxValue"/> = unbounded (RHCR off = whole-path planning, byte-identical to v0/v1).
+    /// </summary>
+    public long HorizonWindowMs { get; set; } = long.MaxValue;
 }
 
 /// <summary>

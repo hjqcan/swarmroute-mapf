@@ -18,7 +18,7 @@ public sealed class SippDenseStandoffTests
     private static SimulationResultDto Run(int w, int h, int agv, int seed, PlannerKind p)
         => new SimulationService(new GridFieldFactory(), new FleetLoopDriver(),
                 new InMemorySimulationEngineFactory(), NullLogger<SimulationService>.Instance)
-            .RunAsync(new SimulationRequest(w, h, agv, seed, p)).GetAwaiter().GetResult();
+            .RunAsync(new SimulationRequest(w, h, agv, seed, p, StepAside: true)).GetAwaiter().GetResult();
 
     [Theory]
     [InlineData(79948)]

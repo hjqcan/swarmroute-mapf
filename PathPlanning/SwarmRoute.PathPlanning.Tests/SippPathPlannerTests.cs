@@ -195,6 +195,24 @@ public sealed class SippPathPlannerTests
         Assert.Equal(new[] { "A", "C", "E", "D" }, SitesOf(result.Path!));
     }
 
+    [Fact]
+    public void Reaches_goal_inside_a_finite_safe_interval()
+    {
+        // A->B arrives at t=1. B is free only until t=2, then reserved by someone else. That still fits the
+        // planner's terminal [1,2) dwell, so this is a valid full route, not a partial/unreachable plan.
+        var graph = new RoadmapGraphBuilder().Edge("A", "B").Build();
+        var view = new FakeReservationView().Reserve(RoadmapGraph.SiteRef("B"), 2, 10);
+
+        var result = Plan(graph, "A", "B", release: 0, view);
+
+        Assert.True(result.Success, result.FailureReason);
+        Assert.True(result.ReachesGoal);
+        Assert.Equal(new[] { "A", "B" }, SitesOf(result.Path!));
+        var goalCell = CpCells(result.Path!)[^1];
+        Assert.Equal(1, goalCell.Interval.StartMs);
+        Assert.Equal(2, goalCell.Interval.EndMs);
+    }
+
     // ── Determinism + guards ────────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -221,5 +239,132 @@ public sealed class SippPathPlannerTests
         Assert.Throws<ArgumentNullException>(() => _planner.Plan(null!, request, AlwaysFreeReservationView.Instance));
         Assert.Throws<ArgumentNullException>(() => _planner.Plan(graph, null!, AlwaysFreeReservationView.Instance));
         Assert.Throws<ArgumentNullException>(() => _planner.Plan(graph, request, null!));
+    }
+
+    // ── Rolling horizon (RHCR, v2) ──────────────────────────────────────────────────────────────────────
+
+    private PlanResult PlanH(RoadmapGraph graph, string from, string to, long horizonEndMs, long release = 0, IReservationView? view = null)
+        => _planner.Plan(graph, new PlanRequest(Roadmap, "AGV-1", from, to, release, horizonEndMs: horizonEndMs), view ?? AlwaysFreeReservationView.Instance);
+
+    [Fact]
+    public void Horizon_truncates_the_route_to_the_window_frontier()
+    {
+        // A->B->C->D, arrivals 0,1,2,3. A horizon ending at t=2 prunes D (arrival 3); the frontier is C, the
+        // window-reachable vertex closest to the goal. The route is the partial A,B,C and does NOT reach the goal.
+        var graph = new RoadmapGraphBuilder().Edge("A", "B").Edge("B", "C").Edge("C", "D").Build();
+
+        var result = PlanH(graph, "A", "D", horizonEndMs: 2);
+
+        Assert.True(result.Success);
+        Assert.False(result.ReachesGoal);
+        Assert.Equal(new[] { "A", "B", "C" }, SitesOf(result.Path!));
+        Assert.Equal(2, result.Cost!.HopCount);
+        // The frontier CP has a finite dwell that is still inside its safe interval; the next window re-plans
+        // from this frontier instead of reserving it forever.
+        Assert.Equal(3, CpCells(result.Path!)[^1].Interval.EndMs);
+        Assert.Equal(2, CpCells(result.Path!)[^1].Interval.StartMs);
+    }
+
+    [Fact]
+    public void Unbounded_horizon_is_byte_identical_to_no_horizon()
+    {
+        // The regression lock: an explicit long.MaxValue horizon must produce exactly the horizon-free plan
+        // (full route, ReachesGoal, finite goal dwell) — this is what keeps v1 SIPP unchanged by default.
+        var graph = new RoadmapGraphBuilder().Edge("A", "B").Edge("B", "C").Edge("C", "D").Build();
+
+        var bounded = PlanH(graph, "A", "D", horizonEndMs: long.MaxValue);
+        var unbounded = Plan(graph, "A", "D");
+
+        Assert.Equal(unbounded, bounded); // PlanResult value-object equality
+        Assert.True(bounded.ReachesGoal);
+        Assert.Equal(new[] { "A", "B", "C", "D" }, SitesOf(bounded.Path!));
+    }
+
+    [Fact]
+    public void Horizon_reaching_the_goal_returns_the_full_route()
+    {
+        // A window wide enough to reach the goal (D arrives at t=3) returns the full route with the finite goal
+        // dwell, identical to whole-path SIPP — RHCR with a window >= remaining distance is a no-op.
+        var graph = new RoadmapGraphBuilder().Edge("A", "B").Edge("B", "C").Edge("C", "D").Build();
+
+        var result = PlanH(graph, "A", "D", horizonEndMs: 3);
+
+        Assert.True(result.Success);
+        Assert.True(result.ReachesGoal);
+        Assert.Equal(new[] { "A", "B", "C", "D" }, SitesOf(result.Path!));
+        var goalCell = CpCells(result.Path!)[^1];
+        Assert.Equal(3, goalCell.Interval.StartMs);
+        Assert.Equal(4, goalCell.Interval.EndMs); // finite unit dwell, not open-ended
+    }
+
+    [Fact]
+    public void Horizon_frontier_tie_breaks_deterministically_by_ordinal_id()
+    {
+        // Diamond: B and C are both one hop from the goal D. A window ending at t=1 reaches both but not D.
+        // The frontier tie (equal hops, equal arrival) is broken by ordinal vertex id → B (< C), every run.
+        var graph = new RoadmapGraphBuilder()
+            .Edge("A", "B").Edge("A", "C").Edge("B", "D").Edge("C", "D").Build();
+
+        var first = PlanH(graph, "A", "D", horizonEndMs: 1);
+        var second = PlanH(graph, "A", "D", horizonEndMs: 1);
+
+        Assert.True(first.Success);
+        Assert.False(first.ReachesGoal);
+        Assert.Equal(new[] { "A", "B" }, SitesOf(first.Path!));
+        Assert.Equal(first, second); // deterministic
+    }
+
+    [Fact]
+    public void No_progress_within_horizon_dwells_in_place_at_the_start()
+    {
+        // The only next CP (B) is reserved far beyond the window, so no neighbour is reachable within the horizon.
+        // The plan is a single finite dwell at the start: the agent holds position for this window boundary and
+        // re-plans next window — never a failure, never a spin.
+        var graph = new RoadmapGraphBuilder().Edge("A", "B").Edge("B", "C").Build();
+        var view = new FakeReservationView().Reserve(RoadmapGraph.SiteRef("B"), 0, 100);
+
+        var result = PlanH(graph, "A", "C", horizonEndMs: 3, release: 0, view);
+
+        Assert.True(result.Success);
+        Assert.False(result.ReachesGoal);
+        Assert.Equal(new[] { "A" }, SitesOf(result.Path!));
+        Assert.Equal(0, result.Cost!.HopCount);
+        var only = Assert.Single(result.Path!.Cells);
+        Assert.Equal(0, only.Interval.StartMs);
+        Assert.Equal(1, only.Interval.EndMs);
+    }
+
+    [Fact]
+    public void Horizon_frontier_terminal_dwell_stays_inside_finite_safe_interval()
+    {
+        // A horizon ending at B makes B the partial frontier. B is free only during [0,2), so the returned
+        // terminal dwell must be [1,2), not [1,∞).
+        var graph = new RoadmapGraphBuilder().Edge("A", "B").Edge("B", "C").Build();
+        var view = new FakeReservationView().Reserve(RoadmapGraph.SiteRef("B"), 2, 10);
+
+        var result = PlanH(graph, "A", "C", horizonEndMs: 1, release: 0, view);
+
+        Assert.True(result.Success);
+        Assert.False(result.ReachesGoal);
+        Assert.Equal(new[] { "A", "B" }, SitesOf(result.Path!));
+        var frontier = CpCells(result.Path!)[^1];
+        Assert.Equal(1, frontier.Interval.StartMs);
+        Assert.Equal(2, frontier.Interval.EndMs);
+    }
+
+    [Fact]
+    public void Horizon_still_inserts_waits_within_the_window()
+    {
+        // B frees at t=3 (within a window ending at t=5). SIPP waits at A and reaches the goal C at t=4 — the
+        // horizon does not suppress legitimate in-window waits, it only bounds how far ahead the route commits.
+        var graph = new RoadmapGraphBuilder().Edge("A", "B").Edge("B", "C").Build();
+        var view = new FakeReservationView().Reserve(RoadmapGraph.SiteRef("B"), 0, 3);
+
+        var result = PlanH(graph, "A", "C", horizonEndMs: 5, release: 0, view);
+
+        Assert.True(result.Success);
+        Assert.True(result.ReachesGoal);
+        Assert.Equal(new[] { "A", "B", "C" }, SitesOf(result.Path!));
+        Assert.Equal(3, CpCells(result.Path!)[1].Interval.StartMs); // entered B exactly as it freed
     }
 }

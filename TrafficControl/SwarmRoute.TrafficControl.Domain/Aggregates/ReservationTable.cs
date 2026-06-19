@@ -41,13 +41,30 @@ public sealed class ReservationTable : Entity, IAggregateRoot
 
     private readonly IResourceTopology _topology;
 
-    // EF / construction-from-host: a table with no Map topology wired (closure = identity).
+    /// <summary>Grant-time deadlock-prevention oracle. Default = <see cref="NullWouldCloseCycleDetector"/> (off).</summary>
+    private readonly IWouldCloseCycleDetector _cycleDetector;
+
+    /// <summary>Fast gate: false when prevention is the no-op default, so the off path never builds the RAG snapshot.</summary>
+    private readonly bool _preventionEnabled;
+
+    // EF / construction-from-host: a table with no Map topology wired (closure = identity), prevention off.
     private ReservationTable() : this(IResourceTopology.Empty) { }
 
-    /// <summary>Creates an empty reservation table whose grant/release closure is computed from <paramref name="topology"/>.</summary>
+    /// <summary>Creates an empty reservation table whose grant/release closure is computed from <paramref name="topology"/>,
+    /// with grant-time cycle prevention OFF (v0/v1 behaviour).</summary>
     public ReservationTable(IResourceTopology topology)
+        : this(topology, NullWouldCloseCycleDetector.Instance) { }
+
+    /// <summary>
+    /// Creates an empty reservation table whose grant/release closure is computed from <paramref name="topology"/>
+    /// and whose grants are screened by <paramref name="cycleDetector"/> for would-be wait-for cycles (v2
+    /// constructive prevention; pass <see cref="NullWouldCloseCycleDetector.Instance"/> to disable).
+    /// </summary>
+    public ReservationTable(IResourceTopology topology, IWouldCloseCycleDetector cycleDetector)
     {
         _topology = topology ?? throw new ArgumentNullException(nameof(topology));
+        _cycleDetector = cycleDetector ?? throw new ArgumentNullException(nameof(cycleDetector));
+        _preventionEnabled = cycleDetector is not NullWouldCloseCycleDetector;
         StateVersion = 0;
         StateChangedAtUtc = null;
     }
@@ -142,13 +159,17 @@ public sealed class ReservationTable : Entity, IAggregateRoot
 
             var blacklisted = false;
             var contended = false;
+            // Contended recording is DEFERRED so grant-time prevention can refuse without leaving a cycle-closing
+            // "Waits" edge behind. `candidateWaitEdges` are the (owner, resource) this agent would block on.
+            var toRecord = new List<(ResourceRef Resource, TimeInterval Interval)>();
+            var candidateWaitEdges = new List<(string OwnerAgentId, ResourceRef Resource)>();
 
             foreach (var (resource, interval) in requestedCells)
             {
                 if (_topology.IsBlacklisted(resource, agentId))
                 {
                     blacklisted = true;
-                    RecordContended(resource, agentId, interval, priority);
+                    toRecord.Add((resource, interval));
                     continue;
                 }
 
@@ -156,12 +177,30 @@ public sealed class ReservationTable : Entity, IAggregateRoot
                 if (blockingLease is not null)
                 {
                     contended = true;
-                    RecordContended(blockingLease.Resource, agentId, interval, priority);
+                    candidateWaitEdges.Add((blockingLease.AgentId, blockingLease.Resource));
+                    toRecord.Add((blockingLease.Resource, interval));
                 }
             }
 
             if (blacklisted || contended)
             {
+                // (v2) Constructive deadlock prevention. When granting/queuing this contended path would close a
+                // wait-for cycle AND this agent lacks right-of-way over every agent it would block on, REFUSE it:
+                // record nothing (no cycle-closing edge) and return CycleAverted so the coordinator re-routes it.
+                // Blacklist is a hard stop, never subject to this. The right-of-way gate (cheap) is checked before
+                // the graph build; the whole block is skipped when prevention is off, so the off path is unchanged.
+                if (contended && !blacklisted && _preventionEnabled
+                    && LacksRightOfWayOverAll(agentId, candidateWaitEdges)
+                    && _cycleDetector.WouldCloseCycle(BuildCurrentRagEdges(), agentId, candidateWaitEdges))
+                {
+                    Touch();
+                    AddDomainEvent(new ReservationDeniedEvent(Id, agentId, requestedCells.Count, AllocationOutcome.CycleAverted.ToString()));
+                    return AllocationOutcome.CycleAverted;
+                }
+
+                foreach (var (resource, interval) in toRecord)
+                    RecordContended(resource, agentId, interval, priority);
+
                 var outcome = blacklisted ? AllocationOutcome.Blocked : AllocationOutcome.Queued;
                 Touch();
                 AddDomainEvent(new ReservationDeniedEvent(Id, agentId, requestedCells.Count, outcome.ToString()));
@@ -597,6 +636,38 @@ public sealed class ReservationTable : Entity, IAggregateRoot
             .FirstOrDefault(lease =>
                 !string.Equals(lease.AgentId, agentId, StringComparison.Ordinal)
                 && lease.Interval.Overlaps(interval));
+
+    /// <summary>
+    /// Builds the live RAG edges for the prevention oracle: <c>Owns</c> = active leases, <c>Waits</c> = current
+    /// contended requests — the same mapping <c>TrafficControlSnapshotProvider</c> exposes to the reactive
+    /// detector, so prevention and detection reason over identical edges. Called under the lock, only when
+    /// prevention is on and a path is contended.
+    /// </summary>
+    private ResourceAllocationGraphSnapshot BuildCurrentRagEdges()
+    {
+        var owns = new List<(string AgentId, ResourceRef Resource)>();
+        foreach (var (_, leases) in _byResource)
+            foreach (var lease in leases)
+                owns.Add((lease.AgentId, lease.Resource));
+
+        var waits = new List<(string AgentId, ResourceRef Resource)>(_contended.Count);
+        foreach (var request in _contended)
+            waits.Add((request.AgentId, request.Resource));
+
+        return new ResourceAllocationGraphSnapshot(owns, waits);
+    }
+
+    /// <summary>
+    /// True when <paramref name="candidateAgentId"/> lacks right-of-way over every agent it would block on — i.e.
+    /// it is ordinally after all of them — so it is the one that must yield (re-route) to break the would-be
+    /// cycle. The ordinally-smallest agent in any cycle therefore never yields, so the fleet always makes progress
+    /// (no mutual back-off) and the choice is deterministic. (Priority/aging-aware right-of-way via
+    /// <see cref="RightOfWay"/> is a refinement; leases do not carry the holder's priority today.)
+    /// </summary>
+    private static bool LacksRightOfWayOverAll(
+        string candidateAgentId,
+        IReadOnlyCollection<(string OwnerAgentId, ResourceRef Resource)> candidateWaitEdges)
+        => candidateWaitEdges.All(e => string.CompareOrdinal(candidateAgentId, e.OwnerAgentId) > 0);
 
     private IEnumerable<ResourceLease> LeasesConflictingWith(ResourceRef resource)
     {

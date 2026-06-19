@@ -43,6 +43,12 @@ public sealed class SippPathPlanner : IPathPlanner
     /// <summary>A SIPP search state: a vertex paired with the index of one of that vertex's safe intervals.</summary>
     private readonly record struct State(string Vertex, int IntervalIndex);
 
+    /// <summary>
+    /// The outcome of one SIPP search: the state to reconstruct from, plus whether it is the goal (a full route)
+    /// or a horizon-truncated frontier (a partial route toward the goal — the RHCR windowed case).
+    /// </summary>
+    private readonly record struct SearchResult(State State, bool ReachesGoal);
+
     /// <inheritdoc />
     public PlanResult Plan(RoadmapGraph graph, PlanRequest request, IReservationView reservations)
     {
@@ -73,11 +79,11 @@ public sealed class SippPathPlanner : IPathPlanner
             return PlanResult.Failed($"[{PathPlanningErrorCodes.NoRoute}] No route from '{start}' to '{goal}' in roadmap '{request.RoadmapId}'.");
 
         var search = new Search(graph, request, reservations, hopsToGoal);
-        var goalState = search.Run();
-        if (goalState is null)
+        var result = search.Run();
+        if (result is null)
             return PlanResult.Failed($"[{PathPlanningErrorCodes.NoRoute}] No conflict-free route from '{start}' to '{goal}' in roadmap '{request.RoadmapId}'.");
 
-        return search.Reconstruct(goalState.Value);
+        return search.Reconstruct(result.Value.State, result.Value.ReachesGoal);
     }
 
     /// <summary>
@@ -125,6 +131,16 @@ public sealed class SippPathPlanner : IPathPlanner
         private readonly IReservationView _view;
         private readonly Dictionary<string, int> _hopsToGoal;
 
+        // The rolling-horizon (RHCR) arrival ceiling: states arriving after this are pruned, so the committed
+        // route is bounded to the window [release, _horizonEndMs]. long.MaxValue = unbounded (plain SIPP).
+        private readonly long _horizonEndMs;
+
+        // Best windowed frontier seen so far (the reachable state closest to the true goal), used only when the
+        // goal is not reachable within the horizon. Ordered by (hops-to-goal, arrival, ordinal vertex id).
+        private State? _bestFrontier;
+        private int _bestFrontierHops;
+        private long _bestFrontierArrival;
+
         // Per-resource safe intervals, materialised once and reused across expansions.
         private readonly Dictionary<string, List<TimeInterval>> _cpIntervals = new(StringComparer.Ordinal);
         private readonly Dictionary<string, List<TimeInterval>> _laneIntervals = new(StringComparer.Ordinal);
@@ -139,10 +155,15 @@ public sealed class SippPathPlanner : IPathPlanner
             _request = request;
             _view = view;
             _hopsToGoal = hopsToGoal;
+            _horizonEndMs = request.HorizonEndMs;
         }
 
-        /// <summary>Runs the search; returns the reached goal state, or null when no conflict-free route exists.</summary>
-        public State? Run()
+        /// <summary>
+        /// Runs the search. Returns the reached goal (full route), or — under a finite horizon — the best partial
+        /// route toward the goal (windowed frontier). Returns null only when no conflict-free route exists at all
+        /// (unbounded search) or the start is itself reserved.
+        /// </summary>
+        public SearchResult? Run()
         {
             var start = _request.FromSiteId;
             var release = _request.ReleaseTimeMs;
@@ -169,16 +190,56 @@ public sealed class SippPathPlanner : IPathPlanner
 
                 var g = _arrival[state];
 
-                // Goal test: parked at the goal in an open-ended (∞) safe interval — a lifelong park that never
-                // collides with a future reservation.
+                // Goal test: the terminal finite dwell must fit inside the goal's safe interval. The executor
+                // releases on arrival, so a future reservation after that dwell does not invalidate this full route.
                 if (string.Equals(state.Vertex, _request.ToSiteId, StringComparison.Ordinal)
-                    && CpIntervals(state.Vertex)[state.IntervalIndex].EndMs == long.MaxValue)
-                    return state;
+                    && CanDwellAt(state, g))
+                    return new SearchResult(state, ReachesGoal: true);
+
+                // RHCR frontier: every enqueued state arrives within the horizon (Expand prunes the rest), so the
+                // popped states are exactly the window-reachable ones. Remember the one closest to the true goal.
+                ConsiderFrontier(state, g);
 
                 Expand(state, g, open, closed);
             }
 
-            return null;
+            // Open exhausted without a goal state whose safe interval can hold the terminal dwell. Unbounded search
+            // ⇒ the goal is genuinely unreachable through the reservations. Finite horizon ⇒ commit the best
+            // partial route toward the goal (the frontier is at worst the start = dwell-in-place).
+            if (_horizonEndMs == long.MaxValue || _bestFrontier is null)
+                return null;
+            return new SearchResult(_bestFrontier.Value, ReachesGoal: false);
+        }
+
+        /// <summary>
+        /// Records <paramref name="state"/> as the incumbent windowed frontier when it is strictly closer to the
+        /// true goal than the best seen, with deterministic tie-breaks: smaller hop-distance to the goal, then
+        /// earlier arrival, then ordinal vertex id. Dead-end vertices (no graph path to the goal) are ignored.
+        /// </summary>
+        private void ConsiderFrontier(State state, long arrival)
+        {
+            if (!_hopsToGoal.TryGetValue(state.Vertex, out var hops))
+                return;
+            if (!CanDwellAt(state, arrival))
+                return;
+
+            var better = _bestFrontier is null
+                || hops < _bestFrontierHops
+                || (hops == _bestFrontierHops && arrival < _bestFrontierArrival)
+                || (hops == _bestFrontierHops && arrival == _bestFrontierArrival
+                    && string.CompareOrdinal(state.Vertex, _bestFrontier.Value.Vertex) < 0);
+            if (!better)
+                return;
+            _bestFrontier = state;
+            _bestFrontierHops = hops;
+            _bestFrontierArrival = arrival;
+        }
+
+        private bool CanDwellAt(State state, long arrival)
+        {
+            var interval = CpIntervals(state.Vertex)[state.IntervalIndex];
+            return interval.Contains(arrival)
+                && (interval.EndMs == long.MaxValue || arrival <= interval.EndMs - GoalDwellMs);
         }
 
         private void Expand(State state, long g, PriorityQueue<State, long> open, HashSet<State> closed)
@@ -205,6 +266,8 @@ public sealed class SippPathPlanner : IPathPlanner
                     var arrival = EarliestArrival(g, iv, wIntervals[jw], laneRef, laneId);
                     if (arrival is null)
                         continue;
+                    if (arrival.Value > _horizonEndMs)
+                        continue; // beyond the rolling horizon: cannot be part of a committed window
 
                     var depart = arrival.Value - HopMs;
                     if (arrival.Value < _arrival.GetValueOrDefault(succ, long.MaxValue))
@@ -312,14 +375,18 @@ public sealed class SippPathPlanner : IPathPlanner
             return request.IsBlacklisted(RoadmapGraph.LaneRef(fromSiteId, toSiteId));
         }
 
-        /// <summary>Walks the came-from chain into a <see cref="SpaceTimePath"/> + <see cref="PlanCost"/>.</summary>
-        public PlanResult Reconstruct(State goalState)
+        /// <summary>
+        /// Walks the came-from chain into a <see cref="SpaceTimePath"/> + <see cref="PlanCost"/>.
+        /// <paramref name="reachesGoal"/> selects the terminal cell: a finite unit dwell at the goal (as v0/v1),
+        /// or the same finite unit dwell at a horizon-truncated frontier before the agent re-plans.
+        /// </summary>
+        public PlanResult Reconstruct(State terminalState, bool reachesGoal)
         {
             // Walk back to the start, collecting (vertex, arrival) nodes and the departure used on each edge.
             var nodes = new List<(string Vertex, long Arrival)>();
             var departs = new List<long>(); // departs[i] = departure time on edge nodes[i] → nodes[i+1]
 
-            var cursor = goalState;
+            var cursor = terminalState;
             while (true)
             {
                 nodes.Add((cursor.Vertex, _arrival[cursor]));
@@ -350,13 +417,16 @@ public sealed class SippPathPlanner : IPathPlanner
                 totalDistance += _graph.EdgeWeight(from, to) ?? HopMs;
             }
 
-            // Terminal (goal) cell: a unit dwell so the half-open interval is non-degenerate.
-            var goalArrival = nodes[^1].Arrival;
-            cells.Add(new SpaceTimeCell(RoadmapGraph.SiteRef(nodes[^1].Vertex), new TimeInterval(goalArrival, goalArrival + GoalDwellMs)));
+            // Terminal cell. Goal and frontier both use a finite unit dwell that the selected safe interval can
+            // actually cover. RHCR does not pretend the frontier is safe forever; the driver releases the spent
+            // window and re-plans from the frontier on the next cycle.
+            var terminalArrival = nodes[^1].Arrival;
+            var terminalInterval = new TimeInterval(terminalArrival, terminalArrival + GoalDwellMs);
+            cells.Add(new SpaceTimeCell(RoadmapGraph.SiteRef(nodes[^1].Vertex), terminalInterval));
 
             var hopCount = nodes.Count - 1;
-            var durationMs = goalArrival + GoalDwellMs - _request.ReleaseTimeMs;
-            return PlanResult.Succeeded(new SpaceTimePath(cells), new PlanCost(totalDistance, hopCount, durationMs));
+            var durationMs = terminalArrival + GoalDwellMs - _request.ReleaseTimeMs;
+            return PlanResult.Succeeded(new SpaceTimePath(cells), new PlanCost(totalDistance, hopCount, durationMs), reachesGoal);
         }
     }
 }

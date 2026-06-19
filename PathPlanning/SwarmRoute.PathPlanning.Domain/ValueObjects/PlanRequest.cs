@@ -34,7 +34,8 @@ public sealed class PlanRequest : ValueObject
         string toSiteId,
         long releaseTimeMs = 0,
         IEnumerable<string>? blacklistedSiteIds = null,
-        IEnumerable<ResourceRef>? blacklistedResources = null)
+        IEnumerable<ResourceRef>? blacklistedResources = null,
+        long horizonEndMs = long.MaxValue)
     {
         if (string.IsNullOrWhiteSpace(agentId))
             throw new ArgumentException($"[{PathPlanningErrorCodes.MissingIdentifier}] Agent id must not be empty.", nameof(agentId));
@@ -44,12 +45,15 @@ public sealed class PlanRequest : ValueObject
             throw new ArgumentException($"[{PathPlanningErrorCodes.MissingIdentifier}] To-site id must not be empty.", nameof(toSiteId));
         if (releaseTimeMs < 0)
             throw new ArgumentException($"[{PathPlanningErrorCodes.NegativeReleaseTime}] Release time must be >= 0 (was {releaseTimeMs}).", nameof(releaseTimeMs));
+        if (horizonEndMs < releaseTimeMs)
+            throw new ArgumentException($"[{PathPlanningErrorCodes.InvalidHorizon}] Horizon end must be >= release time ({releaseTimeMs}) (was {horizonEndMs}).", nameof(horizonEndMs));
 
         RoadmapId = roadmapId;
         AgentId = agentId.Trim();
         FromSiteId = fromSiteId.Trim();
         ToSiteId = toSiteId.Trim();
         ReleaseTimeMs = releaseTimeMs;
+        HorizonEndMs = horizonEndMs;
 
         _blacklistedSiteIds = blacklistedSiteIds is null
             ? new HashSet<string>(StringComparer.Ordinal)
@@ -91,6 +95,15 @@ public sealed class PlanRequest : ValueObject
     /// <summary>Earliest departure instant on the fleet clock, in milliseconds. The plan's timeline starts here.</summary>
     public long ReleaseTimeMs { get; }
 
+    /// <summary>
+    /// The rolling-horizon (RHCR) upper bound on the fleet clock, in milliseconds: the planner only commits the
+    /// portion of the route that arrives at or before this instant. When the goal is reachable within the
+    /// window the full route is returned (as without a horizon); otherwise the best partial route toward the
+    /// goal is returned and the agent re-plans the next window on arrival at the frontier. Defaults to
+    /// <see cref="long.MaxValue"/> = unbounded, which makes the plan byte-identical to a horizon-free request.
+    /// </summary>
+    public long HorizonEndMs { get; }
+
     /// <summary>Optional set of site ids the plan should avoid.</summary>
     public IReadOnlyCollection<string> BlacklistedSiteIds => _blacklistedSiteIds;
 
@@ -110,6 +123,7 @@ public sealed class PlanRequest : ValueObject
         yield return FromSiteId;
         yield return ToSiteId;
         yield return ReleaseTimeMs;
+        yield return HorizonEndMs;
         foreach (var resource in _blacklistedResources
                      .OrderBy(r => r.Kind)
                      .ThenBy(r => r.Id, StringComparer.Ordinal))

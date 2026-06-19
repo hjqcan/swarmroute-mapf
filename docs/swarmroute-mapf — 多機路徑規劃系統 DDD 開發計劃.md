@@ -220,10 +220,17 @@ MAPF 天生把「規劃 + 預約 + 死鎖」耦在一起；切錯會得到貧血
 |---|---|---|---|
 | **v0** Dijkstra + 預約表 + Deadlock | ✅ 已關閉 | 剪枝 Dijkstra、整路區間預約、RAG 偵測/恢復、greedy 執行器 | 乾淨架構 + 多機無碰撞基線 |
 | **v1** 時空預約 + SIPP | ✅ 已關閉 | PathPlanning `SippPathPlanner` 搜尋安全區間；Simulation `PlannerKind.Sipp` + schedule-faithful 執行；Web 可切換 | 車輛錯時共用走廊；密集場景收斂率與重規劃數優於 v0 |
-| **v2** 優先級 + 滾動時窗 + 避免式預防 | 下一階段 | PathPlanning 優先級 SIPP（AA-SIPP(m)）+ 密集處 PIBT；Coordination 滾動時窗（RHCR）；Deadlock 把 `WouldCloseCycle` 接進 `TryReserve`（grant 前拒環） | 中密度高吞吐、規劃延遲有界、**構造性 liveness**（環在 grant 時就被拒） |
-| **v3** CBS/PIBT + 連續時間 SIPPwRT | 下一階段 | PathPlanning 對壅塞 Zone 局部 CBS/CCBS 升級；SIPPwRT/TP-SIPPwRT 連續時間 + 運動學（Bezier 上的 v_max/a_max） | 最高密度吞吐、平滑且時間精確的運動 |
+| **v2** 滾動時窗 + 避免式預防 | 🟡 **部分交付** | Coordination 滾動時窗（RHCR）：`HorizonWindowMs`（預設 ∞=關，opt-in）；Deadlock `WouldCloseCycle` 接進 `TryReserve`（grant 前拒環，預設關閉）。**AA-SIPP(m) 顯式版與 h<w 已否決；PIBT 移至 v3**（見下方決策記錄） | 規劃延遲有界；構造性 liveness（**僅在預約層 wait-for 環會形成的路徑**）。高密度收斂主要由執行層 StepAside 恢復達成，非 RHCR |
+| **v3** CBS/PIBT + 連續時間 SIPPwRT | 下一階段 | PathPlanning **密集處 PIBT**（聯合每-tick 決策，與現 `Plan()`+`TryReserve` 單-agent 接縫不合，需新 `IJointStepPlanner` + 預約表原子聯合提交）+ 壅塞 Zone 局部 CBS/CCBS；SIPPwRT/TP-SIPPwRT 連續時間 + 運動學（Bezier 上的 v_max/a_max） | 最高密度吞吐、平滑且時間精確的運動 |
 
 > 關鍵：v1 已證明 plan/reserve 契約可在不改 Coordination 內迴圈的前提下加深智能；後續 v2/v3 仍沿用此契約邊界。
+
+> **v2 決策記錄（2026-06）**：
+> - **AA-SIPP(m)（PathPlanning 內顯式優先級規劃）— 否決**：Coordination 層已是優先級序列化規劃（按 `AgentGoal.Priority` 逐車 plan→reserve、後車避開前車預約），等價於優先級 SIPP；PathPlanning **內部沒有、也不再加**顯式 AA-SIPP(m)，再加是無實測收益的 dead-weight。
+> - **h<w lookahead — 否決**：實測小窗的收斂傷害源於 re-plan **churn** 而非每窗暫停，更頻繁重規劃只會更糟；且它想廣化的高密度收斂已由執行層 StepAside 達成。
+> - **PIBT — 移至 v3**：與 `Plan()`+`TryReserve` 單-agent 接縫不合（需聯合每-tick 決策 + 原子聯合提交），屬 v3 等級工程。
+> - **TrafficControl 端 right-of-way**：grant-時拒環的讓路判定目前用 **ordinal-id**，**非**真 priority/aging（lease 不帶持有者 priority、`TryReserve` 不傳 priority）。優先級 right-of-way 屬 refinement，未交付——本階段只聲稱 **Coordination 層** prioritized SIPP，不聲稱 TrafficControl priority/right-of-way 完成。
+> - **WouldCloseCycle 範圍**：正確性已由 seeded 預約環測試證明；在 `FleetLoopDriver` 執行層 sim 中 **inert**（該 sim 的死鎖是物理僵局、非預約環）。sim 的 A/B 開關證明的是 **wiring / non-regression**，不是「sim 中防死鎖觸發有效」。
 
 ---
 

@@ -41,23 +41,34 @@ public sealed class SimulationService : ISimulationService
         // 1. Build the grid field (graph + render metadata).
         var field = _gridFactory.BuildGrid(request.Width, request.Height);
 
-        // 2. Assign distinct starts and distinct goals. Shuffling all cells and taking two disjoint blocks
-        //    ([0..k) starts, [k..2k) goals) guarantees every start != its goal AND all starts/goals are
-        //    distinct, given the validated invariant Width*Height >= 2*AgvCount.
+        // 2. Assign per-agent starts + distinct goals.
+        //    - Continuation run (request.Starts supplied & valid): keep each AGV where it is and give it a NEW
+        //      goal, so a lifelong loop re-plans from the current pose instead of teleporting. Goals are drawn
+        //      from cells NOT occupied by a start, so every goal is distinct and != its own start.
+        //    - Fresh run: shuffle all cells into two disjoint blocks ([0..k) starts, [k..2k) goals).
+        //    Both rely on the validated invariant Width*Height >= 2*AgvCount.
         var rng = new Random(request.Seed ?? DefaultSeed);
-        var shuffled = Shuffle(field.Sites.Select(s => s.Id).ToList(), rng);
-
+        var allCells = field.Sites.Select(s => s.Id).ToList();
         var agentSpecs = new List<FleetAgentSpec>(request.AgvCount);
-        for (var i = 0; i < request.AgvCount; i++)
+
+        var continuationStarts = ValidContinuationStarts(request, field);
+        if (continuationStarts is not null)
         {
-            var start = shuffled[i];
-            var goal = shuffled[request.AgvCount + i];
-            agentSpecs.Add(new FleetAgentSpec($"agv-{i + 1}", start, goal, Priority: i));
+            var startSet = continuationStarts.ToHashSet(StringComparer.Ordinal);
+            var goalPool = Shuffle(allCells.Where(c => !startSet.Contains(c)).ToList(), rng);
+            for (var i = 0; i < request.AgvCount; i++)
+                agentSpecs.Add(new FleetAgentSpec($"agv-{i + 1}", continuationStarts[i], goalPool[i], Priority: i));
+        }
+        else
+        {
+            var shuffled = Shuffle(allCells, rng);
+            for (var i = 0; i < request.AgvCount; i++)
+                agentSpecs.Add(new FleetAgentSpec($"agv-{i + 1}", shuffled[i], shuffled[request.AgvCount + i], Priority: i));
         }
 
         // 3. Get a fresh REAL engine for THIS request (isolation between concurrent runs), planning with the
-        //    requested planner.
-        await using var engine = _engineFactory.Create(field.Graph, request.Planner);
+        //    requested planner and rolling-horizon window (RHCR, v2; unbounded by default = whole-path).
+        await using var engine = _engineFactory.Create(field.Graph, request.Planner, request.HorizonWindowMs, request.PreventDeadlockCycles);
 
         // 4. Run the closed loop to completion, recording the timeline. The driver advances the engine's tick
         //    clock each tick so reservation intervals share the executor's axis (no wall-clock drift). SIPP plans
@@ -74,9 +85,27 @@ public sealed class SimulationService : ISimulationService
                 recoverTick: engine.RecoverTick,
                 escalateLivelock: engine.EscalateLivelock,
                 executionMode: executionMode,
+                stepAside: request.StepAside,
                 log: msg => _logger.LogWarning("[standoff] {Detail}", msg),
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
+
+        // 4b. On non-convergence, log the EXACT reproducing request (including the per-agent starts) — the
+        //     auto-loop's continuation makes a seed alone insufficient to reproduce a stuck state, so capture the
+        //     full input. Paste the JSON into POST /api/simulation/run (or a test) to replay it deterministically.
+        if (loop.Stats.Status == FleetLoopStatus.DidNotConverge)
+        {
+            var starts = "[\"" + string.Join("\",\"", agentSpecs.Select(a => a.StartSiteId)) + "\"]";
+            // Capture EVERY field that changes execution, or the repro won't reproduce: planner, the RHCR window,
+            // the StepAside executor recovery, and the deadlock-prevention toggle — not just seed + starts.
+            var repro = $"{{\"width\":{request.Width},\"height\":{request.Height},\"agvCount\":{request.AgvCount}," +
+                        $"\"seed\":{request.Seed?.ToString() ?? "null"},\"planner\":\"{request.Planner}\"," +
+                        $"\"horizonWindowMs\":{request.HorizonWindowMs}," +
+                        $"\"stepAside\":{(request.StepAside ? "true" : "false")}," +
+                        $"\"preventDeadlockCycles\":{(request.PreventDeadlockCycles ? "true" : "false")},\"starts\":{starts}}}";
+            _logger.LogWarning("[did-not-converge] arrived {Arrived}/{Total} in {Ticks} ticks. Repro: {Repro}",
+                loop.Stats.Arrived, request.AgvCount, loop.Stats.Ticks, repro);
+        }
 
         // 5. Map to the transport DTO.
         return Map(field, agentSpecs, loop);
@@ -98,6 +127,25 @@ public sealed class SimulationService : ISimulationService
                 $"Grid is too small for the fleet: Width*Height ({request.Width}x{request.Height} = {capacity}) " +
                 $"must be >= 2*AgvCount ({required}) so every AGV gets a distinct start and a distinct goal.",
                 nameof(request));
+    }
+
+    /// <summary>
+    /// Returns the request's continuation starts when usable for this field (exactly one in-graph, distinct cell
+    /// per AGV), else <see langword="null"/> to fall back to a fresh random layout. Lets a lifelong loop keep AGVs
+    /// at their current poses across runs without the caller having to pre-validate against the grid.
+    /// </summary>
+    private static IReadOnlyList<string>? ValidContinuationStarts(SimulationRequest request, GridField field)
+    {
+        var starts = request.Starts;
+        if (starts is null || starts.Count != request.AgvCount)
+            return null;
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var cell in starts)
+            if (string.IsNullOrWhiteSpace(cell) || !field.Graph.HasSite(cell) || !seen.Add(cell))
+                return null;
+
+        return starts;
     }
 
     /// <summary>
