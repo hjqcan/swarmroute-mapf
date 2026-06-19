@@ -16,7 +16,9 @@ public enum CbsConflictKind
 /// The chosen conflict between two agents' paths in a CBS node. <see cref="AgentA"/> and <see cref="AgentB"/> are
 /// in canonical ordinal order. For a vertex conflict <see cref="ResourceA"/> == <see cref="ResourceB"/> (the
 /// shared CP); for an edge conflict they are the two opposite directed lanes (A's and B's own direction).
-/// <see cref="Tick"/> is the first instant of the overlap — the single tick the two child constraints forbid.
+/// <see cref="IntervalA"/>/<see cref="IntervalB"/> are the agents' occupation windows on those resources (the
+/// overlap is the conflict): CCBS forbids each agent the OTHER's whole interval (motion-aware), while discrete
+/// CBS forbids the single <see cref="Tick"/> at the overlap start.
 /// </summary>
 public sealed record CbsConflict(
     CbsConflictKind Kind,
@@ -24,4 +26,9 @@ public sealed record CbsConflict(
     string AgentB,
     ResourceRef ResourceA,
     ResourceRef ResourceB,
-    long Tick);
+    TimeInterval IntervalA,
+    TimeInterval IntervalB)
+{
+    /// <summary>The first instant of the overlap — the single tick discrete (non-continuous) child constraints forbid.</summary>
+    public long Tick => Math.Max(IntervalA.StartMs, IntervalB.StartMs);
+}

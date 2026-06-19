@@ -43,6 +43,12 @@ export default function PlaybackControls() {
   const currentTick = result ? tickAtCursor(result, cursor) : 0
   const lastTick = result ? tickRange(result).last : 0
 
+  // A continuous (SIPPwRT) run carries real fleet-clock milliseconds in frame.tick, so show it as seconds under a
+  // "Time" label; a discrete run shows the integer tick under "Tick". Keeps the counter honest to each clock.
+  const continuous = !!result?.continuous
+  const clockLabelId = continuous ? 'playback.time' : 'playback.tick'
+  const fmtClock = (v: number) => (continuous ? `${(v / 1000).toFixed(1)}s` : `${v}`)
+
   return (
     <div className="flex items-center gap-4">
       <button
@@ -63,9 +69,9 @@ export default function PlaybackControls() {
 
       <div className="flex min-w-[3.5rem] items-baseline gap-1.5">
         <span className="text-2xs uppercase tracking-wider text-text-muted">
-          {intl.formatMessage({ id: 'playback.tick' })}
+          {intl.formatMessage({ id: clockLabelId })}
         </span>
-        <span className="font-mono text-base tabular-nums text-text-primary">{currentTick}</span>
+        <span className="font-mono text-base tabular-nums text-text-primary">{fmtClock(currentTick)}</span>
       </div>
 
       <Slider
@@ -85,7 +91,7 @@ export default function PlaybackControls() {
       <span className="hidden font-mono text-2xs tabular-nums text-text-muted sm:inline">
         {intl.formatMessage(
           { id: 'playback.frameOf' },
-          { current: currentTick, total: lastTick }
+          { current: fmtClock(currentTick), total: fmtClock(lastTick) }
         )}
       </span>
 

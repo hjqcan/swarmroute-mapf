@@ -55,7 +55,15 @@ public enum FleetExecutionMode
     /// interval-exclusive by construction — so honouring it is collision-free (back-to-back following on
     /// touching half-open intervals), and the defensive same-CP safety check stays as a regression net.
     /// </summary>
-    ScheduleFaithful
+    ScheduleFaithful,
+
+    /// <summary>
+    /// v3 SIPPwRT: continuous-time, event-driven execution. Instead of one CP per integer tick, the clock jumps to
+    /// the next real-millisecond CP-arrival (the union of all agents' planned <c>CpEntryTicks</c>) and advances
+    /// whichever agents arrive then. Pairs with the SIPPwRT planner (real kinematic edge durations); honouring its
+    /// interval-exclusive schedule is collision-free by construction, exactly as ScheduleFaithful relies on.
+    /// </summary>
+    Continuous
 }
 
 /// <summary>One agent's recorded position on one tick.</summary>
@@ -88,12 +96,24 @@ public sealed record FleetLoopStats(
 /// <param name="Stats">Aggregate stats.</param>
 /// <param name="MaxConcurrentEnRoute">Peak number of simultaneously en-route agents (a liveness/parallelism signal).</param>
 /// <param name="Collision">The first collision's details, or <see langword="null"/> when none occurred.</param>
+/// <param name="TimedTrajectories">(v3 SIPPwRT) Per-agent real-millisecond CP arrival schedule — populated ONLY
+/// under <see cref="FleetExecutionMode.Continuous"/>, else <see langword="null"/> (the discrete modes leave it
+/// untouched). Derived from the recorded event frames, so it always matches the discrete <see cref="Frames"/>.</param>
 public sealed record FleetLoopResult(
     IReadOnlyList<FleetTickFrame> Frames,
     IReadOnlyDictionary<string, IReadOnlyList<string>> PerAgentRoute,
     FleetLoopStats Stats,
     int MaxConcurrentEnRoute,
-    FleetCollisionInfo? Collision);
+    FleetCollisionInfo? Collision,
+    IReadOnlyList<FleetTimedTrajectory>? TimedTrajectories = null);
+
+/// <summary>(v3 SIPPwRT) One agent's continuous-time trajectory: the CPs it reached and the fleet-clock
+/// millisecond it reached each (the first waypoint is its start at t=0).</summary>
+public sealed record FleetTimedTrajectory(string AgentId, IReadOnlyList<FleetTimedWaypoint> Waypoints);
+
+/// <summary>(v3 SIPPwRT) A timed waypoint: control point <paramref name="SiteId"/> reached at
+/// <paramref name="ArriveMs"/> fleet-clock milliseconds.</summary>
+public sealed record FleetTimedWaypoint(string SiteId, long ArriveMs);
 
 /// <summary>
 /// Production form of the validated closed-loop driver (the body previously inlined in
@@ -355,6 +375,44 @@ public sealed class FleetLoopDriver
         IReadOnlyDictionary<string, int> HopsTo(string goal) =>
             pibtHopsCache.TryGetValue(goal, out var d) ? d : pibtHopsCache[goal] = HopDistances.To(graph, goal);
 
+        // Greedy one-hop toward `goal` via the memoized oracle: the out-neighbour of `from` STRICTLY closer to the
+        // goal (least hops, ties by ordinal id), or null if none exists (at the goal, or boxed with no improving
+        // move). This is a pending agent's "intended next cell" for standoff detection — where it wants to go even
+        // though its reservation could only secure a wait-in-place window.
+        string? NextHopToward(string from, string goal)
+        {
+            var hops = HopsTo(goal);
+            if (!hops.TryGetValue(from, out var fromHops) || fromHops == 0)
+                return null;
+            string? best = null;
+            var bestHops = int.MaxValue;
+            foreach (var n in graph.Neighbours(from))
+                if (hops.TryGetValue(n, out var h) && h < fromHops
+                    && (h < bestHops || (h == bestHops && (best is null || string.CompareOrdinal(n, best) < 0))))
+                {
+                    bestHops = h;
+                    best = n;
+                }
+            return best;
+        }
+
+        // Per-agent standoff snapshots for StuckClusterDetector: each active agent's INTENDED next cell (its
+        // en-route route's next CP, or a pending agent's hop toward its goal) plus a unified stuckness counter
+        // (gate-blocked ticks while en route, walled-out ticks while pending). Keyed off intent + pose, NOT the
+        // reservation flag, so a swap/chain is detected even when a member has dropped to walled-out pending —
+        // which is exactly when the joint resolver must take it over. Shared by the PIBT and CBS cluster blocks.
+        List<StuckAgentSnapshot> BuildStuckSnapshots() =>
+            fleet.Select(a =>
+            {
+                var candidate = !a.Done && !a.PibtActive && a.RedirectTarget is null && !a.HoldingAtAvoidSite;
+                string? intended = !candidate ? null
+                    : a is { EnRoute: true, Done: false }
+                        ? (a.Idx + 1 < a.CpRoute.Count ? a.CpRoute[a.Idx + 1] : null)
+                        : NextHopToward(a.Position, a.EffectiveGoal);
+                var stuck = candidate ? (a.EnRoute ? a.BlockedTicks : a.StuckTicks) : 0;
+                return new StuckAgentSnapshot(a.Id, intended, stuck, candidate);
+            }).ToList();
+
         // Puts an agent en route on a freshly-reserved path: the CP route plus each CP's planned arrival tick (the
         // axis the schedule-faithful executor advances on). Shared by block (1)'s plan+reserve and the CBS cluster
         // solve (block 2-CBS), since both hand the executor a reserved SpaceTimePath in the same shape.
@@ -382,7 +440,170 @@ public sealed class FleetLoopDriver
             return cells.Count == 0 ? null : cells.Select(RoadmapGraph.SiteRef).ToHashSet();
         }
 
-        while (fleet.Any(a => !a.Done))
+        // (v3 SIPPwRT) Continuous-time event-driven executor. Instead of one CP per integer tick, it jumps the
+        // clock to the next CP-arrival event (the earliest future real-ms CpEntryTick across the fleet) and advances
+        // whichever agents arrive then. Honouring the interval-exclusive SIPPwRT schedule is collision-free by
+        // construction (the property ScheduleFaithful relies on); blocks (3)/(3b) stay the net. Standoff band-aids
+        // are off in this mode (it pairs only with the conflict-free SIPPwRT planner). It populates the SAME
+        // frames/status/collisions/... the discrete loop does, then falls through to the common result construction
+        // below — so the discrete Greedy/ScheduleFaithful path is untouched and byte-identical.
+        async Task RunContinuousLoop()
+        {
+            var nowMs = 0L;
+            var events = 0;
+            while (fleet.Any(a => !a.Done))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (++events > maxTicks)
+                {
+                    status = FleetLoopStatus.DidNotConverge;
+                    break;
+                }
+
+                // (1) Plan + reserve every pending agent at the current instant (block-1 semantics).
+                var pending = fleet
+                    .Where(a => !a.Done && !a.EnRoute && !a.HoldingAtAvoidSite)
+                    .Select(a => new AgentGoal(a.Id, a.Start, a.EffectiveGoal, a.Priority))
+                    .ToList();
+                if (pending.Count > 0)
+                {
+                    advanceClock?.Invoke(nowMs);
+                    var report = await cycle.RunCycleAsync(roadmapId, pending, PhysicalBlockersExcept(), cancellationToken).ConfigureAwait(false);
+                    foreach (var r in report.Results)
+                    {
+                        var ag = fleet.Single(a => a.Id == r.AgentId);
+                        ag.Replans += Math.Max(0, r.Attempts - 1);
+                        if (r is { Reserved: true, Path: not null })
+                            SetEnRouteFromPath(ag, r.Path);
+                        else
+                            ag.StuckTicks++;
+                    }
+                }
+
+                // (2) The next event: the earliest future CP-arrival among en-route movers.
+                long? nextEvent = null;
+                foreach (var ag in fleet)
+                {
+                    if (ag is not { EnRoute: true, Done: false })
+                        continue;
+                    if (ag.CpEntryTicks.Count != ag.CpRoute.Count || ag.Idx + 1 >= ag.CpRoute.Count)
+                        continue;
+                    var entry = Math.Max(nowMs, ag.CpEntryTicks[ag.Idx + 1]);
+                    if (nextEvent is null || entry < nextEvent.Value)
+                        nextEvent = entry;
+                }
+
+                if (nextEvent is null)
+                {
+                    // Nothing can advance (pending could not plan, or everyone is parked): a genuine standoff.
+                    if (fleet.Any(a => !a.Done))
+                        status = FleetLoopStatus.DidNotConverge;
+                    break;
+                }
+
+                nowMs = nextEvent.Value;
+                tick = (int)Math.Min(nowMs, int.MaxValue); // frame timestamp (ms); clamp guards a pathologically long run
+                advanceClock?.Invoke(nowMs);
+
+                // (3) Advance the agents whose next CP arrives now (schedule-faithful joint resolution, reused).
+                var posBefore = fleet.ToDictionary(a => a.Id, a => a.Position, StringComparer.Ordinal);
+                var scheduled = ResolveScheduleFaithfulAdvances(fleet, nowMs, parkedCells, log);
+                foreach (var ag in fleet.Where(a => a is { EnRoute: true, Done: false } && scheduled.Contains(a.Id)).ToList())
+                {
+                    var fromCp = ag.CpRoute[ag.Idx];
+                    ag.Idx++;
+                    var toCp = ag.CpRoute[ag.Idx];
+                    await cycle.ReleaseAsync(ag.Id,
+                        [RoadmapGraph.SiteRef(fromCp), new ResourceRef(ResourceKind.Lane, $"{fromCp}-{toCp}")],
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                // (3c) Reroute around parked vehicles. Like SIPP, SIPPwRT reserves a goal only for a finite dwell
+                // (the executor releases on arrival), so an agent may legitimately PLAN through a cell that another
+                // agent later parks on. Such a cell is then a permanent physical obstacle — the committed route can
+                // never advance past it. Drop the stalled reservation and re-plan from the current pose next event;
+                // PhysicalBlockersExcept() feeds parkedCells to the planner, so it routes around. This is the
+                // continuous analogue of the discrete schedule-faithful stall-reroute, but immediate (parked ⇒
+                // permanent, so there is no tick threshold to wait out). An agent that genuinely cannot route around
+                // stays pending and the run ends in DidNotConverge (honest) — never a spin or a crash.
+                foreach (var ag in fleet.Where(a => a is { EnRoute: true, Done: false }
+                             && a.Idx + 1 < a.CpRoute.Count
+                             && parkedCells.Contains(a.CpRoute[a.Idx + 1])).ToList())
+                {
+                    ag.Replans++;
+                    await YieldAndReplanFromCurrentAsync(ag).ConfigureAwait(false);
+                }
+
+                // (3b) Arrival: agents now at the end of their committed route park (goal) or re-plan (RHCR frontier).
+                foreach (var ag in fleet.Where(a => a is { EnRoute: true, Done: false } && a.Idx >= a.CpRoute.Count - 1).ToList())
+                {
+                    if (!ag.FrontierIsGoal)
+                    {
+                        await YieldAndReplanFromCurrentAsync(ag).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        ag.Done = true;
+                        ag.EnRoute = false;
+                        parkedCells.Add(ag.Position);
+                        flowtimeTicks += tick;
+                        await cycle.ReleaseAsync(ag.Id, ag.AllResources, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+
+                // (4) Safety nets (identical to the discrete blocks 3/3b), evaluated at the event.
+                var occupied = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (var ag in fleet.Where(a => a.EnRoute || a.Done).OrderBy(a => a.Id, StringComparer.Ordinal))
+                {
+                    if (occupied.TryGetValue(ag.Position, out var other))
+                    {
+                        collisions++;
+                        if (collision is null)
+                        {
+                            status = FleetLoopStatus.CollisionDetected;
+                            collision = new FleetCollisionInfo(tick, ag.Position, [other, ag.Id]);
+                        }
+                    }
+                    else
+                    {
+                        occupied[ag.Position] = ag.Id;
+                    }
+                }
+                foreach (var ag in fleet.Where(a => a.EnRoute || a.Done))
+                {
+                    if (!posBefore.TryGetValue(ag.Id, out var prev) || string.Equals(prev, ag.Position, StringComparison.Ordinal))
+                        continue;
+                    if (occupied.TryGetValue(prev, out var other)
+                        && StringComparer.Ordinal.Compare(ag.Id, other) < 0
+                        && posBefore.TryGetValue(other, out var otherPrev)
+                        && string.Equals(otherPrev, ag.Position, StringComparison.Ordinal))
+                    {
+                        collisions++;
+                        if (collision is null)
+                        {
+                            status = FleetLoopStatus.CollisionDetected;
+                            collision = new FleetCollisionInfo(tick, ag.Position, [other, ag.Id]);
+                        }
+                    }
+                }
+
+                maxConcurrent = Math.Max(maxConcurrent, fleet.Count(a => a.EnRoute));
+
+                frames.Add(new FleetTickFrame(
+                    tick,
+                    fleet.OrderBy(a => a.Id, StringComparer.Ordinal)
+                        .Select(a => new FleetTickPosition(a.Id, a.Position, a.State))
+                        .ToList()));
+
+                if (status == FleetLoopStatus.CollisionDetected)
+                    break;
+            }
+        }
+
+        if (executionMode == FleetExecutionMode.Continuous)
+            await RunContinuousLoop().ConfigureAwait(false);
+
+        while (executionMode != FleetExecutionMode.Continuous && fleet.Any(a => !a.Done))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -623,12 +844,7 @@ public sealed class FleetLoopDriver
             if (usePibt)
             {
                 var occById = occupantNow.ToDictionary(kv => kv.Key, kv => kv.Value.Id, StringComparer.Ordinal);
-                var snapshots = fleet
-                    .Select(a => new StuckAgentSnapshot(
-                        a.Id,
-                        a is { EnRoute: true, Done: false } && a.Idx + 1 < a.CpRoute.Count ? a.CpRoute[a.Idx + 1] : null,
-                        a.BlockedTicks, a.EnRoute, a.Done))
-                    .ToList();
+                var snapshots = BuildStuckSnapshots();
                 foreach (var cluster in StuckClusterDetector.Assemble(snapshots, occById, pibtTriggerThreshold))
                     foreach (var id in cluster)
                     {
@@ -652,12 +868,7 @@ public sealed class FleetLoopDriver
             if (useCbs)
             {
                 var occById = occupantNow.ToDictionary(kv => kv.Key, kv => kv.Value.Id, StringComparer.Ordinal);
-                var snapshots = fleet
-                    .Select(a => new StuckAgentSnapshot(
-                        a.Id,
-                        a is { EnRoute: true, Done: false } && a.Idx + 1 < a.CpRoute.Count ? a.CpRoute[a.Idx + 1] : null,
-                        a.BlockedTicks, a.EnRoute, a.Done))
-                    .ToList();
+                var snapshots = BuildStuckSnapshots();
 
                 foreach (var cluster in StuckClusterDetector.Assemble(snapshots, occById, pibtTriggerThreshold))
                 {
@@ -1038,6 +1249,31 @@ public sealed class FleetLoopDriver
             },
             StringComparer.Ordinal);
 
+        // (v3 SIPPwRT) Continuous-time trajectory: each agent's CP arrival schedule in real fleet-clock ms,
+        // derived from the SAME event frames the discrete trail uses (each frame's Tick is the event's ms in this
+        // mode), seeded with the start at t=0. Null under the discrete modes — the result stays byte-identical.
+        IReadOnlyList<FleetTimedTrajectory>? timedTrajectories = null;
+        if (executionMode == FleetExecutionMode.Continuous)
+        {
+            timedTrajectories = fleet
+                .OrderBy(a => a.Id, StringComparer.Ordinal)
+                .Select(a =>
+                {
+                    // Purely frame-derived: frame[0] is the tick-0 snapshot at every agent's ORIGINAL start, so the
+                    // first waypoint is (start, 0). NB do NOT seed from a.Start — a reroute mutates it to the agent's
+                    // current pose, which would corrupt both the start cell and the t=0 timestamp.
+                    var waypoints = new List<FleetTimedWaypoint>();
+                    foreach (var frame in frames)
+                    {
+                        var sid = frame.Positions.First(p => p.AgentId == a.Id).SiteId;
+                        if (waypoints.Count == 0 || !string.Equals(waypoints[^1].SiteId, sid, StringComparison.Ordinal))
+                            waypoints.Add(new FleetTimedWaypoint(sid, frame.Tick));
+                    }
+                    return new FleetTimedTrajectory(a.Id, waypoints);
+                })
+                .ToList();
+        }
+
         var stats = new FleetLoopStats(
             Status: status,
             Ticks: tick,
@@ -1048,7 +1284,7 @@ public sealed class FleetLoopDriver
             Recoveries: recoveries,
             FlowtimeTicks: flowtimeTicks);
 
-        return new FleetLoopResult(frames, routes, stats, maxConcurrent, collision);
+        return new FleetLoopResult(frames, routes, stats, maxConcurrent, collision, timedTrajectories);
     }
 
     /// <summary>

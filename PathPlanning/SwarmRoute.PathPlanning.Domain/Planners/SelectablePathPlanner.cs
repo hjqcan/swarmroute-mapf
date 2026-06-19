@@ -15,12 +15,14 @@ public sealed class SelectablePathPlanner : IPathPlanner
 {
     private readonly DijkstraPathPlanner _dijkstra;
     private readonly SippPathPlanner _sipp;
+    private readonly SippwrtPathPlanner _sippwrt;
     private readonly PlannerOptions _options;
 
-    public SelectablePathPlanner(DijkstraPathPlanner dijkstra, SippPathPlanner sipp, PlannerOptions options)
+    public SelectablePathPlanner(DijkstraPathPlanner dijkstra, SippPathPlanner sipp, SippwrtPathPlanner sippwrt, PlannerOptions options)
     {
         _dijkstra = dijkstra ?? throw new ArgumentNullException(nameof(dijkstra));
         _sipp = sipp ?? throw new ArgumentNullException(nameof(sipp));
+        _sippwrt = sippwrt ?? throw new ArgumentNullException(nameof(sippwrt));
         _options = options ?? throw new ArgumentNullException(nameof(options));
     }
 
@@ -33,6 +35,7 @@ public sealed class SelectablePathPlanner : IPathPlanner
 
     private IPathPlanner Select() => _options.Default switch
     {
+        PlannerKind.Sippwrt => _sippwrt,
         PlannerKind.Sipp => _sipp,
         _ => _dijkstra,
     };

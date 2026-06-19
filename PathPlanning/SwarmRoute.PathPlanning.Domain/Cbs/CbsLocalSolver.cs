@@ -33,11 +33,15 @@ public sealed class CbsLocalSolver
     private readonly IPathPlanner _lowLevel;
 
     /// <param name="options">Tractability bounds (defaults are sensible for congestion-pocket clusters).</param>
-    /// <param name="lowLevel">The constrained single-agent search; defaults to a fresh <see cref="SippPathPlanner"/>.</param>
+    /// <param name="lowLevel">
+    /// The constrained single-agent search. Defaults to <see cref="SippPathPlanner"/> in discrete mode and
+    /// <see cref="SippwrtPathPlanner"/> in continuous mode.
+    /// </param>
     public CbsLocalSolver(CbsOptions? options = null, IPathPlanner? lowLevel = null)
     {
         _options = options ?? new CbsOptions();
-        _lowLevel = lowLevel ?? new SippPathPlanner();
+        _lowLevel = lowLevel ?? (_options.Continuous ? new SippwrtPathPlanner() : new SippPathPlanner());
+        ValidateLowLevel(_options, _lowLevel);
     }
 
     /// <summary>
@@ -99,12 +103,15 @@ public sealed class CbsLocalSolver
             if (conflict is null)
                 return CbsResult.Success(node.Paths, node.SumOfCosts, nodesExpanded);
 
-            foreach (var (agentId, kind, resource) in TwoBranches(conflict))
+            foreach (var (agentId, kind, resource, otherInterval) in TwoBranches(conflict))
             {
                 if (node.Constraints.Count >= _options.MaxConstraintsPerNode)
                     continue; // depth backstop — skip, do not crash
 
-                var newConstraint = new CbsConstraint(agentId, kind, resource, new TimeInterval(conflict.Tick, conflict.Tick + 1));
+                // Discrete CBS forbids the single overlap tick; CCBS forbids the other agent's WHOLE occupation
+                // interval (SIPPwRT's "traversal ⊆ free" then keeps the constrained agent's full duration clear).
+                var window = _options.Continuous ? otherInterval : new TimeInterval(conflict.Tick, conflict.Tick + 1);
+                var newConstraint = new CbsConstraint(agentId, kind, resource, window);
                 var childConstraints = Append(node.Constraints, newConstraint);
 
                 var replanned = LowLevelPlan(graph, byId[agentId], externalView, childConstraints, releaseTick, horizon, blockedResources);
@@ -122,6 +129,19 @@ public sealed class CbsLocalSolver
     }
 
     // ── Low level ────────────────────────────────────────────────────────────────────────────────────────────
+
+    private static void ValidateLowLevel(CbsOptions options, IPathPlanner lowLevel)
+    {
+        var continuousLowLevel = lowLevel is SippwrtPathPlanner;
+        if (options.Continuous && !continuousLowLevel)
+            throw new ArgumentException(
+                "CbsOptions.Continuous=true requires SippwrtPathPlanner as the low-level planner.",
+                nameof(lowLevel));
+        if (!options.Continuous && continuousLowLevel)
+            throw new ArgumentException(
+                "CbsOptions.Continuous=false requires a discrete time-axis low-level planner such as SippPathPlanner.",
+                nameof(lowLevel));
+    }
 
     private (SpaceTimePath Path, long Cost, bool ReachesGoal)? LowLevelPlan(
         RoadmapGraph graph, CbsAgent agent, IReservationView externalView,
@@ -169,13 +189,13 @@ public sealed class CbsLocalSolver
                     foreach (var cb in cpCells[b])
                         if (ca.Resource.Equals(cb.Resource) && ca.Interval.Overlaps(cb.Interval))
                             conflicts.Add(new CbsConflict(CbsConflictKind.Vertex, a, b, ca.Resource, cb.Resource,
-                                Math.Max(ca.Interval.StartMs, cb.Interval.StartMs)));
+                                ca.Interval, cb.Interval));
 
                 foreach (var la in laneCells[a])
                     foreach (var lb in laneCells[b])
                         if (IsReversedLane(la.Resource, lb.Resource) && la.Interval.Overlaps(lb.Interval))
                             conflicts.Add(new CbsConflict(CbsConflictKind.Edge, a, b, la.Resource, lb.Resource,
-                                Math.Max(la.Interval.StartMs, lb.Interval.StartMs)));
+                                la.Interval, lb.Interval));
             }
 
         // Deterministic "first" conflict: earliest tick, then ordinal agent pair, then Vertex before Edge.
@@ -199,11 +219,12 @@ public sealed class CbsLocalSolver
         return cps;
     }
 
-    private static IEnumerable<(string AgentId, CbsConstraintKind Kind, ResourceRef Resource)> TwoBranches(CbsConflict conflict)
+    private static IEnumerable<(string AgentId, CbsConstraintKind Kind, ResourceRef Resource, TimeInterval OtherInterval)> TwoBranches(CbsConflict conflict)
     {
         var kind = conflict.Kind == CbsConflictKind.Vertex ? CbsConstraintKind.Vertex : CbsConstraintKind.Edge;
-        yield return (conflict.AgentA, kind, conflict.ResourceA);
-        yield return (conflict.AgentB, kind, conflict.ResourceB);
+        // Each branch constrains one agent to avoid the OTHER agent's occupation of the conflicting resource.
+        yield return (conflict.AgentA, kind, conflict.ResourceA, conflict.IntervalB);
+        yield return (conflict.AgentB, kind, conflict.ResourceB, conflict.IntervalA);
     }
 
     /// <summary>The reservation table's reversed-lane rule (split on the first '-'); a head-on edge collision.</summary>

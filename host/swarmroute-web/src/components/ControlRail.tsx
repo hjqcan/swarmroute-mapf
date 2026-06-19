@@ -1,5 +1,5 @@
 import { Button, InputNumber, Segmented, Slider, Switch } from 'antd'
-import { Dices, Play, Loader2, Repeat, Waypoints } from 'lucide-react'
+import { Dices, Play, Loader2, Repeat } from 'lucide-react'
 import { useIntl } from 'react-intl'
 import { useSimStore } from '@/store/simStore'
 import type { PlannerKind } from '@/types'
@@ -11,6 +11,9 @@ const AGV_MAX = 24
 const HORIZON_MIN = 1
 const HORIZON_MAX = 64
 const DEFAULT_RHCR_WINDOW_MS = 8
+
+/** The mutually-exclusive local standoff resolver (cluster owner): none, fast greedy PIBT, or complete CBS. */
+type ResolverMode = 'off' | 'pibt' | 'cbs'
 
 /**
  * Left control rail: field width/height, AGV count, optional seed (+ a shuffle
@@ -33,6 +36,29 @@ export default function ControlRail() {
   const agvTooMany = params.agvCount > agvMax
   const horizonEnabled = params.horizonWindowMs !== undefined
   const horizonWindow = params.horizonWindowMs ?? DEFAULT_RHCR_WINDOW_MS
+
+  // The local standoff resolver (PIBT/CBS) is SIPP-only: v0 Dijkstra and the continuous SIPPwRT executor don't run
+  // it, and the backend rejects useCbs with a non-SIPP planner. So it is a single mutually-exclusive choice mapped
+  // onto the two backend flags (never both true), available only under SIPP.
+  const planner: PlannerKind = params.planner ?? 'Sipp'
+  const resolverEnabled = planner === 'Sipp'
+  const resolverMode: ResolverMode = params.useCbs ? 'cbs' : params.usePibt ? 'pibt' : 'off'
+  const setResolver = (mode: ResolverMode) => {
+    setParam('usePibt', mode === 'pibt')
+    setParam('useCbs', mode === 'cbs')
+  }
+  // Switching to a non-SIPP planner clears the SIPP-only resolver so a stale useCbs/usePibt can't ride along (the
+  // backend 400s on useCbs + non-SIPP, and the continuous executor ignores both).
+  const setPlanner = (next: PlannerKind) => {
+    setParam('planner', next)
+    if (next !== 'Sipp') setResolver('off')
+  }
+  const plannerTag =
+    planner === 'Dijkstra'
+      ? 'controls.planner.dijkstraTag'
+      : planner === 'Sippwrt'
+        ? 'controls.planner.sippwrtTag'
+        : 'controls.planner.sippTag'
 
   return (
     <div className="flex h-full flex-col gap-5">
@@ -80,19 +106,16 @@ export default function ControlRail() {
             {intl.formatMessage({ id: 'controls.planner' })}
           </label>
           <span className="font-mono text-xs text-text-muted">
-            {intl.formatMessage({
-              id: (params.planner ?? 'Sipp') === 'Dijkstra'
-                ? 'controls.planner.dijkstraTag'
-                : 'controls.planner.sippTag',
-            })}
+            {intl.formatMessage({ id: plannerTag })}
           </span>
         </div>
         <Segmented
           block
-          value={params.planner ?? 'Sipp'}
-          onChange={(v) => setParam('planner', v as PlannerKind)}
+          value={planner}
+          onChange={(v) => setPlanner(v as PlannerKind)}
           options={[
             { label: 'SIPP', value: 'Sipp' },
+            { label: 'SIPPwRT', value: 'Sippwrt' },
             { label: 'Dijkstra', value: 'Dijkstra' },
           ]}
         />
@@ -133,17 +156,28 @@ export default function ControlRail() {
         )}
       </div>
 
-      {/* v3 zone-local PIBT: when a cluster of AGVs is physically stuck, resolve that zone with Priority
-          Inheritance + Backtracking so dense standoffs converge. SIPP-only (ignored under Dijkstra). */}
-      <div className="flex items-center justify-between">
-        <label className="flex items-center gap-2 text-sm text-text-muted">
-          <Waypoints size={14} />
-          {intl.formatMessage({ id: 'controls.pibt' })}
-        </label>
-        <Switch
-          checked={(params.usePibt ?? false) && (params.planner ?? 'Sipp') !== 'Dijkstra'}
-          disabled={(params.planner ?? 'Sipp') === 'Dijkstra'}
-          onChange={(v) => setParam('usePibt', v)}
+      {/* Local standoff resolver (SIPP-only): the mutually-exclusive cluster owner for physical standoffs.
+          Off = raw baseline; PIBT = fast greedy priority-inheritance (v3); CBS = complete local conflict-based
+          search (v4), which cracks the corridor swaps / blocking chains PIBT's greedy ordering can't. */}
+      <div>
+        <div className="mb-1.5 flex items-baseline justify-between">
+          <label className="text-sm text-text-muted">
+            {intl.formatMessage({ id: 'controls.resolver' })}
+          </label>
+          <span className="font-mono text-xs text-text-muted">
+            {intl.formatMessage({ id: `controls.resolver.${resolverMode}Tag` })}
+          </span>
+        </div>
+        <Segmented
+          block
+          value={resolverMode}
+          disabled={!resolverEnabled}
+          onChange={(v) => setResolver(v as ResolverMode)}
+          options={[
+            { label: intl.formatMessage({ id: 'controls.resolver.off' }), value: 'off' },
+            { label: 'PIBT', value: 'pibt' },
+            { label: 'CBS', value: 'cbs' },
+          ]}
         />
       </div>
 

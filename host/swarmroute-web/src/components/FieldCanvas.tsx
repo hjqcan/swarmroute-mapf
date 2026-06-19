@@ -5,7 +5,13 @@ import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion'
 import { useElementSize } from '@/hooks/useElementSize'
 import { COLORS, hueFor, trailFor, withAlpha } from '@/utils/palette'
 import { makeProjector, setupHiDpiCanvas } from '@/utils/canvas'
-import { buildSiteLookup, collisionFrameIndex, interpolatePositions } from '@/utils/simModel'
+import {
+  buildSiteLookup,
+  collisionFrameIndex,
+  interpolateContinuous,
+  interpolatePositions,
+  msAtCursor,
+} from '@/utils/simModel'
 
 const MARGIN = 44
 
@@ -173,8 +179,12 @@ export default function FieldCanvas() {
       }
     }
 
-    /* ---- animated AGV markers ---- */
-    const positions = interpolatePositions(result, liveCursor, reduced)
+    /* ---- animated AGV markers ----
+       Continuous (SIPPwRT) runs ship a real-millisecond per-agent trajectory: sample it at the playhead ms the
+       cursor maps to, so each AGV eases (accelerates/decelerates) along its hop. Discrete runs blend tick frames. */
+    const positions = result.continuous
+      ? interpolateContinuous(result, msAtCursor(result, liveCursor), reduced)
+      : interpolatePositions(result, liveCursor, reduced)
     const markerR = Math.max(5, proj.cell * 0.22)
     for (const agent of agents) {
       const pos = positions.get(agent.id)

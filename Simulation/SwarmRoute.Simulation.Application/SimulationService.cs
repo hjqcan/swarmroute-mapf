@@ -73,9 +73,14 @@ public sealed class SimulationService : ISimulationService
         // 4. Run the closed loop to completion, recording the timeline. The driver advances the engine's tick
         //    clock each tick so reservation intervals share the executor's axis (no wall-clock drift). SIPP plans
         //    a faithful schedule → execute it faithfully; Dijkstra's spatial locks → the v0 greedy gate.
-        var executionMode = request.Planner == PlannerKind.Sipp
-            ? FleetExecutionMode.ScheduleFaithful
-            : FleetExecutionMode.Greedy;
+        var executionMode = request.Planner switch
+        {
+            // v3 SIPPwRT: continuous-time edge durations → the event-driven continuous executor.
+            PlannerKind.Sippwrt => FleetExecutionMode.Continuous,
+            // v1 SIPP: a faithful time-axis schedule → execute it faithfully. v0 Dijkstra: the greedy gate.
+            PlannerKind.Sipp => FleetExecutionMode.ScheduleFaithful,
+            _ => FleetExecutionMode.Greedy,
+        };
         var maxTicks = MaxTicks(request);
         var loop = await _loopDriver
             .RunToCompletionAsync(
@@ -238,7 +243,27 @@ public sealed class SimulationService : ISimulationService
             loop.Stats.Recoveries,
             loop.Stats.FlowtimeTicks);
 
-        return new SimulationResultDto(fieldDto, agents, timeline, stats);
+        // (v3 SIPPwRT) When the run used the continuous executor, attach the real-ms trajectory replay (CP
+        // arrivals + render coords). Null for every discrete planner → omitted from the JSON (byte-identical).
+        ContinuousTimelineDto? continuous = null;
+        if (loop.TimedTrajectories is { Count: > 0 } timed)
+        {
+            var trajectories = timed
+                .Select(t => new AgentTrajectoryDto(
+                    t.AgentId,
+                    t.Waypoints
+                        .Select(w =>
+                        {
+                            var pos = positionById.TryGetValue(w.SiteId, out var xy) ? xy : (X: 0d, Y: 0d);
+                            return new TrajectoryWaypointDto(w.SiteId, pos.X, pos.Y, w.ArriveMs);
+                        })
+                        .ToList()))
+                .ToList();
+            var durationMs = trajectories.Max(t => t.Waypoints.Count == 0 ? 0L : t.Waypoints[^1].ArriveMs);
+            continuous = new ContinuousTimelineDto(durationMs, trajectories);
+        }
+
+        return new SimulationResultDto(fieldDto, agents, timeline, stats, continuous);
     }
 
     private static string RoadmapGraphLaneId(string from, string to) => $"{from}-{to}";

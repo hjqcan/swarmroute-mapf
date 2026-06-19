@@ -18,8 +18,12 @@ export type RunStatus = 'Completed' | 'CollisionDetected' | 'DidNotConverge'
  *   routes and stall forever, reported as DidNotConverge).
  * - `Sipp` — v1 Safe-Interval Path Planning; reservation-aware (plans in time), so it routes around
  *   reservation conflicts and reports remaining physical standoffs as DidNotConverge.
+ * - `Sippwrt` — v3 continuous-time SIPP: each edge costs its real kinematic traversal duration (not a fixed
+ *   tick), executed by the event-driven continuous executor. The result then carries a {@link ContinuousTimeline}
+ *   for smooth real-millisecond playback. (On the uniform sim grid every edge is the same length, so the
+ *   time-optimal advantage is inert here — the visible difference is smooth, eased motion.)
  */
-export type PlannerKind = 'Dijkstra' | 'Sipp'
+export type PlannerKind = 'Dijkstra' | 'Sipp' | 'Sippwrt'
 
 /** Inputs to one simulation run. */
 export interface SimulationRequest {
@@ -44,8 +48,15 @@ export interface SimulationRequest {
   /**
    * Opt-in zone-local PIBT (v3): when a cluster of AGVs is physically stuck, resolve that zone with Priority
    * Inheritance with Backtracking so high-density standoffs converge. SIPP-only; edge-collision safety unchanged.
+   * Mutually exclusive with {@link useCbs} — pick exactly one local cluster owner (or neither).
    */
   usePibt?: boolean
+  /**
+   * Opt-in zone-local CBS (v4): solve a physical standoff cluster JOINTLY with a complete local Conflict-Based
+   * Search, cracking the swaps/chains greedy PIBT can't. SIPP-only; heavier than PIBT. Mutually exclusive with
+   * {@link usePibt}.
+   */
+  useCbs?: boolean
 }
 
 /** A single control point on the grid at planar (x=col, y=row). */
@@ -103,6 +114,30 @@ export interface Timeline {
   frames: Frame[]
 }
 
+/** (v3 SIPPwRT) A timed waypoint: the agent reaches control point `siteId` (planar x,y) at `arriveMs` fleet-clock ms. */
+export interface TrajectoryWaypoint {
+  siteId: string
+  x: number
+  y: number
+  arriveMs: number
+}
+
+/** (v3 SIPPwRT) One agent's continuous trajectory: the control points it reached, each stamped with the real
+ *  millisecond it was reached (the first waypoint is its start at t=0). Interpolate between consecutive waypoints
+ *  for smooth motion. */
+export interface AgentTrajectory {
+  agentId: string
+  waypoints: TrajectoryWaypoint[]
+}
+
+/** (v3 SIPPwRT) Continuous-time replay: per-agent real-millisecond CP arrival schedules. Present ONLY when the run
+ *  used the continuous executor (planner = `Sippwrt`); absent (undefined) for every discrete planner, so the
+ *  discrete response stays byte-identical. */
+export interface ContinuousTimeline {
+  durationMs: number
+  agents: AgentTrajectory[]
+}
+
 /** Aggregate run statistics. */
 export interface Stats {
   ticks: number
@@ -120,4 +155,7 @@ export interface SimulationResult {
   agents: AgentDto[]
   timeline: Timeline
   stats: Stats
+  /** (v3 SIPPwRT) Present only for the continuous executor (planner = `Sippwrt`); drives smooth time-based
+   *  playback on the field. Undefined for discrete planners — the field then animates off the tick timeline. */
+  continuous?: ContinuousTimeline
 }

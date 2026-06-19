@@ -13,5 +13,10 @@ public enum PlannerKind
     Dijkstra = 1,
 
     /// <summary>Safe-Interval Path Planning — reservation-aware, time-conflict-free (v1).</summary>
-    Sipp = 2
+    Sipp = 2,
+
+    /// <summary>SIPP with Real Traversal time — continuous-time SIPP whose edges cost their kinematic traversal
+    /// duration (v3, third pillar). Reservation-aware like <see cref="Sipp"/>, but time-optimal on non-uniform
+    /// edge lengths. Selected together with the continuous-time executor.</summary>
+    Sippwrt = 3
 }

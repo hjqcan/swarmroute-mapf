@@ -12,7 +12,7 @@ public sealed class StuckClusterDetectorTests
     private const int Threshold = 8;
 
     private static StuckAgentSnapshot Agent(string id, string? next, int blocked)
-        => new(id, next, blocked, EnRoute: true, Done: false);
+        => new(id, next, StuckTicks: blocked, IsCandidate: true);
 
     [Fact]
     public void Isolates_two_standoff_components_excluding_free_and_draining_agents()

@@ -42,6 +42,10 @@ public static class PathPlanningNativeInjectorBootStrapper
         // pre-register its own default and win.
         services.AddSingleton<DijkstraPathPlanner>();
         services.AddSingleton<SippPathPlanner>();
+        // v3 SIPPwRT (continuous-time SIPP): the kinematic profile is TryAdd so a host can pre-register its own
+        // (tuned v_max/a_max) and win; otherwise the planner's own default (1 m/s, 1 m/s²) applies.
+        services.TryAddSingleton(KinematicProfile.Default);
+        services.AddSingleton<SippwrtPathPlanner>();
         services.TryAddSingleton<PlannerOptions>();
         services.AddSingleton<IPathPlanner, SelectablePathPlanner>();
 
