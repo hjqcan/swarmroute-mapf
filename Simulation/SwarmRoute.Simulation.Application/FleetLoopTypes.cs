@@ -1,4 +1,5 @@
 using SwarmRoute.Coordination.Application;
+using SwarmRoute.Dispatch.Domain.Shared;
 using SwarmRoute.Map.Domain.ValueObjects;
 using SwarmRoute.Liveness.Application.Contract.Policy;
 using SwarmRoute.SpatioTemporal.Kernel;
@@ -66,7 +67,12 @@ public enum FleetExecutionMode
 }
 
 /// <summary>One agent's recorded position on one tick.</summary>
-public sealed record FleetTickPosition(string AgentId, string SiteId, AgentMotionState State);
+/// <param name="Mission">(FMS) The agent's dispatch mission state on this tick — populated ONLY on an FMS run (an
+/// <see cref="FmsScenario"/> is active), else <see langword="null"/> so a non-FMS run is byte-identical (a non-FMS
+/// agent's <c>MissionState</c> defaults to <see cref="AgvMissionState.Idle"/> for ALL agents, so it must NOT be
+/// blindly serialized — it is gated on the FMS run).</param>
+public sealed record FleetTickPosition(
+    string AgentId, string SiteId, AgentMotionState State, AgvMissionState? Mission = null);
 
 /// <summary>One recorded tick of the closed loop: where every agent is.</summary>
 public sealed record FleetTickFrame(int Tick, IReadOnlyList<FleetTickPosition> Positions);

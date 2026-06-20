@@ -196,7 +196,7 @@ internal sealed partial class FleetLoopRun
             0,
             _fleet
                 .OrderBy(a => a.Id, StringComparer.Ordinal)
-                .Select(a => new FleetTickPosition(a.Id, a.Position, a.State))
+                .Select(a => new FleetTickPosition(a.Id, a.Position, a.State, MissionFor(a)))
                 .ToList()));
 
         if (_executionMode == FleetExecutionMode.Continuous)
@@ -272,6 +272,14 @@ internal sealed partial class FleetLoopRun
     }
 
     // ── Shared helpers (were local functions of RunToCompletionAsync) ─────────────────────────────────────────
+
+    /// <summary>
+    /// (FMS) The mission state to record on a frame position for <paramref name="ag"/>: the agent's live
+    /// <c>MissionState</c> on an FMS run (an <see cref="FmsScenario"/> is active), else <see langword="null"/>.
+    /// Gated on <see cref="_fms"/> so a non-FMS run records null for EVERY agent — its <c>MissionState</c> defaults
+    /// to <see cref="AgvMissionState.Idle"/> uniformly, so serializing it unconditionally would NOT be byte-identical.
+    /// </summary>
+    private AgvMissionState? MissionFor(RunAgent ag) => _fms is null ? null : ag.MissionState;
 
     /// <summary>
     /// Drops an agent's in-flight reservation and resets it to "pending at its current CP" so the next cycle

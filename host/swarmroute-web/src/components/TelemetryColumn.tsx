@@ -4,7 +4,7 @@ import { CheckCircle2, AlertTriangle, CircleSlash, Eye, EyeOff } from 'lucide-re
 import { useSimStore } from '@/store/simStore'
 import { hueFor } from '@/utils/palette'
 import { sortedAgents } from '@/utils/simModel'
-import type { RunState, Stats } from '@/types'
+import type { RunState, Stats, LifelongMetrics } from '@/types'
 
 /**
  * Right telemetry column: the run status banner (Completed / CollisionDetected /
@@ -36,10 +36,12 @@ export default function TelemetryColumn() {
 
       {result && (
         <>
-          <StatusBanner stats={result.stats} />
+          <StatusBanner stats={result.stats} lifelong={result.lifelong} />
           <BenchmarkTable />
           <Metrics stats={result.stats} agentTotal={result.agents.length} />
           <LabMetrics />
+          <LifelongMetricsPanel />
+          <NonConvergencePanel stats={result.stats} />
           <AgentList />
         </>
       )}
@@ -47,7 +49,7 @@ export default function TelemetryColumn() {
   )
 }
 
-function StatusBanner({ stats }: { stats: Stats }) {
+function StatusBanner({ stats, lifelong }: { stats: Stats; lifelong?: LifelongMetrics | null }) {
   const intl = useIntl()
 
   if (stats.status === 'Completed') {
@@ -56,11 +58,22 @@ function StatusBanner({ stats }: { stats: Stats }) {
         <div className="flex items-center gap-2 text-accent">
           <CheckCircle2 size={18} />
           <span className="font-display text-base font-semibold">
-            {intl.formatMessage({ id: 'telemetry.status.completed.title' })}
+            {intl.formatMessage({
+              id: lifelong ? 'telemetry.status.lifelong.title' : 'telemetry.status.completed.title',
+            })}
           </span>
         </div>
         <p className="mt-1 text-sm text-text-primary/90">
-          {intl.formatMessage({ id: 'telemetry.status.completed.desc' })}
+          {lifelong
+            ? intl.formatMessage(
+                { id: 'telemetry.status.lifelong.desc' },
+                {
+                  horizon: lifelong.horizonTicks,
+                  done: lifelong.tasksCompleted,
+                  total: lifelong.tasksReleased,
+                }
+              )
+            : intl.formatMessage({ id: 'telemetry.status.completed.desc' })}
         </p>
       </div>
     )
@@ -359,6 +372,88 @@ function LabMetrics() {
         >
           {intl.formatMessage({ id: 'trace.download' }, { count: trace.length })}
         </button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * (FMS-V3) The lifelong-dispatch continuous-operation metrics, present only on a horizon-bounded LifelongDispatch run:
+ * the headline throughput, tasks turned over, backlog wait (mean / P95), peak queue depth, parking capacity / peak /
+ * saturation, and a first-vs-second-half split (a sustained-progress / no-late-stall check). Mirrors the LabMetrics
+ * panel style. Hidden on every other run.
+ */
+function LifelongMetricsPanel() {
+  const intl = useIntl()
+  const result = useSimStore((s) => s.result)
+  const l = result?.lifelong
+  if (!l) return null
+
+  const pct = (v: number) => `${Math.round(v * 100)}%`
+  const items: { label: string; value: string; warn?: boolean }[] = [
+    { label: intl.formatMessage({ id: 'lifelong.throughput' }), value: l.throughputPerHundredTicks.toFixed(2) },
+    { label: intl.formatMessage({ id: 'lifelong.completed' }), value: `${l.tasksCompleted} / ${l.tasksReleased}` },
+    { label: intl.formatMessage({ id: 'lifelong.meanWait' }), value: l.meanWaitTicks.toFixed(1) },
+    { label: intl.formatMessage({ id: 'lifelong.p95Wait' }), value: String(l.p95WaitTicks) },
+    { label: intl.formatMessage({ id: 'lifelong.maxQueue' }), value: String(l.maxQueueDepth) },
+    {
+      label: intl.formatMessage({ id: 'lifelong.parking' }),
+      value: `${l.peakParkedCount} / ${l.parkingCapacity}`,
+      warn: l.parkingSaturation >= 1,
+    },
+    { label: intl.formatMessage({ id: 'lifelong.saturation' }), value: pct(l.parkingSaturation), warn: l.parkingSaturation >= 0.9 },
+    {
+      label: intl.formatMessage({ id: 'lifelong.halves' }),
+      value: `${l.tasksCompletedFirstHalf} → ${l.tasksCompletedSecondHalf}`,
+      warn: l.tasksCompletedSecondHalf < l.tasksCompletedFirstHalf / 2,
+    },
+  ]
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-2xs uppercase tracking-wider text-accent">
+        {intl.formatMessage({ id: 'lifelong.title' }, { horizon: l.horizonTicks })}
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {items.map((it) => (
+          <div key={it.label} className="rounded-lg border border-hairline bg-base px-3 py-2">
+            <div className="text-2xs uppercase tracking-wider text-text-muted">{it.label}</div>
+            <div
+              className={`mt-0.5 font-mono text-lg tabular-nums ${it.warn ? 'text-danger' : 'text-text-primary'}`}
+            >
+              {it.value}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * (FMS-V2) Why a DidNotConverge run's AGVs failed to arrive: the dominant reason plus the per-agent breakdown. Present
+ * only when the run carries `stats.nonConvergence` (a non-converged run with at least one stranded agent); hidden on a
+ * converged / collision run. The honest diagnostic behind a "did not converge" verdict.
+ */
+function NonConvergencePanel({ stats }: { stats: Stats }) {
+  const intl = useIntl()
+  const nc = stats.nonConvergence
+  if (!nc) return null
+
+  const entries = Object.entries(nc.perAgentReasons).sort((a, b) => a[0].localeCompare(b[0]))
+  return (
+    <div className="rounded-lg border border-hairline bg-base px-3 py-2">
+      <div className="text-2xs uppercase tracking-wider text-text-muted">
+        {intl.formatMessage({ id: 'nonconv.title' }, { reason: nc.dominantReason })}
+      </div>
+      {entries.length > 0 && (
+        <ul className="mt-1.5 space-y-1">
+          {entries.map(([agentId, reason]) => (
+            <li key={agentId} className="flex items-center justify-between gap-2 text-xs">
+              <span className="font-mono text-text-primary">{agentId}</span>
+              <span className="rounded bg-danger-soft px-1.5 py-0.5 font-mono text-2xs text-danger">{reason}</span>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   )

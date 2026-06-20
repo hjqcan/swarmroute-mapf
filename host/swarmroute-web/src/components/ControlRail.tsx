@@ -1,8 +1,8 @@
 import { Button, InputNumber, Segmented, Slider, Switch } from 'antd'
-import { Dices, Play, Loader2, Repeat, Sparkles, BarChart3, FileDown, Package } from 'lucide-react'
+import { Dices, Play, Loader2, Repeat, Sparkles, BarChart3, FileDown, Package, Anchor } from 'lucide-react'
 import { useIntl } from 'react-intl'
 import { useSimStore } from '@/store/simStore'
-import type { PlannerKind, ScenarioKind, AssignmentPolicy } from '@/types'
+import type { PlannerKind, ScenarioKind, AssignmentPolicy, ScenarioMode } from '@/types'
 
 const FIELD_MIN = 4
 const FIELD_MAX = 24
@@ -11,6 +11,14 @@ const AGV_MAX = 24
 const HORIZON_MIN = 1
 const HORIZON_MAX = 64
 const DEFAULT_RHCR_WINDOW_MS = 8
+
+// (FMS-V3) A lifelong-dispatch run wants a larger, sparser grid (the well-formed warehouse carves a parking/
+// workstation ring around a transit core), so selecting it nudges a small grid up to this size; the default
+// horizon over which throughput is measured. Both are nudges — the operator can still adjust width/height/horizon.
+const LIFELONG_MIN_FIELD = 12
+const DEFAULT_LIFELONG_HORIZON_TICKS = 400
+const HORIZON_TICKS_MIN = 50
+const HORIZON_TICKS_MAX = 4000
 
 /** The mutually-exclusive local standoff resolver (cluster owner): none, fast greedy PIBT, or complete CBS. */
 type ResolverMode = 'off' | 'pibt' | 'cbs'
@@ -61,6 +69,31 @@ export default function ControlRail() {
     // standoffs, so RHCR (a discrete throughput lever) is not applicable to SIPPwRT — drop to full-path.
     if (next === 'Sippwrt') setParam('horizonWindowMs', undefined)
   }
+  // (FMS) The high-level scenario family. RandomStress is today's random run; WarehouseWellFormed carves a well-formed
+  // warehouse; LifelongDispatch runs a horizon-bounded continuous operation (needs lifelongHorizonTicks too). Selecting
+  // LifelongDispatch nudges a larger/sparser grid + plants the default horizon so the run is well-posed; leaving it
+  // sets the horizon back to undefined so the other modes stay one-shot. M-F1 is a separate fixed-demo button below.
+  const scenarioMode: ScenarioMode = params.scenarioMode ?? 'RandomStress'
+  const isLifelong = scenarioMode === 'LifelongDispatch'
+  const lifelongHorizon = params.lifelongHorizonTicks ?? DEFAULT_LIFELONG_HORIZON_TICKS
+  const setScenarioMode = (next: ScenarioMode) => {
+    setParam('scenarioMode', next)
+    if (next === 'LifelongDispatch') {
+      setParam('lifelongHorizonTicks', params.lifelongHorizonTicks ?? DEFAULT_LIFELONG_HORIZON_TICKS)
+      // Nudge a small grid up so the warehouse ring + transit core fit; never shrink an already-large grid.
+      if (params.width < LIFELONG_MIN_FIELD) setParam('width', LIFELONG_MIN_FIELD)
+      if (params.height < LIFELONG_MIN_FIELD) setParam('height', LIFELONG_MIN_FIELD)
+    } else {
+      // The horizon is inert (and confusing) outside a lifelong run — drop it so the request stays clean.
+      setParam('lifelongHorizonTicks', undefined)
+    }
+  }
+
+  // (FMS-V1) Launch the fixed M-F1 dock-admission demo: a one-shot run override that sets stationScenario='MF1' (the
+  // backend then ignores the random grid + scenarioMode and runs the fixed corridor-with-one-blocking-station demo).
+  // Passed as a run override so it never persists in params — a subsequent normal Run leaves stationScenario unset.
+  const runMf1Demo = () => run({ stationScenario: 'MF1' })
+
   // RHCR is meaningful only for the discrete executors (1 tick = 1 hop). SIPPwRT plans in real continuous time.
   const horizonApplicable = planner !== 'Sippwrt'
   const plannerTag =
@@ -106,6 +139,64 @@ export default function ControlRail() {
           onChange={(v) => setParam('agvCount', v)}
         />
       </Field>
+
+      {/* (FMS) Scenario mode: the high-level run family. RandomStress = today's random start/goal stress run;
+          WarehouseWellFormed = a well-formed warehouse (parking/workstation ring, goals at workstations, clear-to-
+          parking); LifelongDispatch = a horizon-bounded continuous operation (a task stream the dispatcher hands out,
+          re-tasking each AGV that clears to parking). Selecting LifelongDispatch reveals the horizon + nudges a larger
+          grid. The fixed M-F1 dock-admission demo is the button below. */}
+      <div>
+        <div className="mb-1.5 flex items-baseline justify-between">
+          <label className="text-sm text-text-muted">
+            {intl.formatMessage({ id: 'controls.scenarioMode' })}
+          </label>
+        </div>
+        <Segmented
+          block
+          value={scenarioMode}
+          onChange={(v) => setScenarioMode(v as ScenarioMode)}
+          options={[
+            { label: intl.formatMessage({ id: 'controls.scenarioMode.random' }), value: 'RandomStress' },
+            { label: intl.formatMessage({ id: 'controls.scenarioMode.warehouse' }), value: 'WarehouseWellFormed' },
+            { label: intl.formatMessage({ id: 'controls.scenarioMode.lifelong' }), value: 'LifelongDispatch' },
+          ]}
+        />
+        {isLifelong && (
+          <div className="mt-3">
+            <div className="mb-1.5 flex items-baseline justify-between">
+              <label className="text-sm text-text-muted">
+                {intl.formatMessage({ id: 'controls.lifelongHorizon' })}
+              </label>
+              <span className="font-mono text-xs text-text-muted">
+                {intl.formatMessage({ id: 'controls.lifelongHorizon.tag' })}
+              </span>
+            </div>
+            <InputNumber
+              className="w-full font-tabular"
+              min={HORIZON_TICKS_MIN}
+              max={HORIZON_TICKS_MAX}
+              step={50}
+              value={lifelongHorizon}
+              onChange={(v) =>
+                setParam('lifelongHorizonTicks', v == null ? DEFAULT_LIFELONG_HORIZON_TICKS : Number(v))
+              }
+            />
+          </div>
+        )}
+      </div>
+
+      {/* (FMS-V1) Fixed M-F1 dock-admission demo: a corridor with one hard-blocking station — one AGV docks (via its
+          pre-dock buffer) while transit AGVs cross; the docking AGV holds at the buffer until the corridor clears.
+          A one-shot run (stationScenario='MF1') that ignores the random grid + scenario mode above. */}
+      <Button
+        block
+        loading={loading}
+        onClick={runMf1Demo}
+        icon={<Anchor size={16} />}
+        className="font-display"
+      >
+        {intl.formatMessage({ id: 'controls.mf1Demo' })}
+      </Button>
 
       {/* (v4 SwarmRoute Lab — ScenarioBench) Map layout: Open uniform grid vs a walled bottleneck (one corridor) vs
           a lattice of pillar obstacles — the non-uniform fields where the metrics / heatmap / guidance come alive. */}

@@ -213,7 +213,13 @@ public sealed record FieldDto(
     IReadOnlyList<LaneDto> Lanes);
 
 /// <summary>A single control point on the grid at planar (<paramref name="X"/>=col, <paramref name="Y"/>=row).</summary>
-public sealed record SiteDto(string Id, double X, double Y, string Type);
+/// <param name="Role">(FMS) The site's FMS <c>SiteRole</c> name (Transit/Workstation/Parking/Charger/Buffer/
+/// PreDockBuffer/DockPoint) on an FMS run, so the frontend can render docks/parking/buffers distinctly. Present ONLY
+/// when an <c>FmsScenario</c> assigns this site a role; <see langword="null"/> (omitted from the JSON) on a non-FMS
+/// run, so a non-FMS field is byte-identical.</param>
+public sealed record SiteDto(
+    string Id, double X, double Y, string Type,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Role = null);
 
 /// <summary>A directed lane between two control points.</summary>
 public sealed record LaneDto(string Id, string From, string To);
@@ -248,7 +254,13 @@ public sealed record FrameDto(int Tick, IReadOnlyList<PositionDto> Positions);
 /// One agent's position on one tick: the control point it occupies, its planar (X,Y), and its motion state
 /// (<c>Waiting</c> = not yet granted right-of-way, sitting at its start; <c>Moving</c> = en route; <c>Arrived</c>).
 /// </summary>
-public sealed record PositionDto(string AgentId, string SiteId, double X, double Y, string State);
+/// <param name="Mission">(FMS) The agent's <c>AgvMissionState</c> name on this tick (Idle/MovingToPreDockBuffer/
+/// WaitingDockAdmission/Docking/InService/Undocking/MovingToNextTask/MovingToParking/IdleParked/Faulted), so the
+/// frontend can colour an AGV by what its mission is doing. Present ONLY on an FMS run; <see langword="null"/>
+/// (omitted from the JSON) otherwise, so a non-FMS replay frame is byte-identical.</param>
+public sealed record PositionDto(
+    string AgentId, string SiteId, double X, double Y, string State,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Mission = null);
 
 /// <summary>Aggregate run statistics.</summary>
 /// <param name="Ticks">Number of ticks the loop ran (1 frame each).</param>

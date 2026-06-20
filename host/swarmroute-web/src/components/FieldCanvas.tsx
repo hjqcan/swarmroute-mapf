@@ -3,7 +3,7 @@ import { useIntl } from 'react-intl'
 import { useSimStore } from '@/store/simStore'
 import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion'
 import { useElementSize } from '@/hooks/useElementSize'
-import { COLORS, hueFor, trailFor, withAlpha } from '@/utils/palette'
+import { COLORS, hueFor, missionColor, siteRoleColor, trailFor, withAlpha } from '@/utils/palette'
 import { makeProjector, setupHiDpiCanvas } from '@/utils/canvas'
 import {
   buildSiteLookup,
@@ -163,10 +163,59 @@ export default function FieldCanvas() {
     }
     ctx.setLineDash([])
 
-    /* ---- site nodes ---- */
+    /* ---- site nodes ----
+       (FMS) On an FMS run a site can carry a SiteRole; render each distinctly so the warehouse geometry reads at a
+       glance — Workstation = filled square + label, Parking = 'P' tile, Buffer/PreDockBuffer = hollow ringed tile,
+       DockPoint = bold ringed node, Charger = '⚡', Transit/none = the plain node. A non-FMS run has no roles, so
+       every site falls through to the plain node exactly as before. */
+    const roleTile = Math.max(6, proj.cell * 0.42)
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
     for (const s of field.sites) {
       const px = proj.toX(s.x)
       const py = proj.toY(s.y)
+      const role = s.role
+      if (role && role !== 'Transit') {
+        const rc = siteRoleColor(role)
+        const half = roleTile / 2
+        if (role === 'Workstation') {
+          ctx.fillStyle = withAlpha(rc, 0.5)
+          ctx.fillRect(px - half, py - half, roleTile, roleTile)
+          ctx.lineWidth = 1.5
+          ctx.strokeStyle = rc
+          ctx.strokeRect(px - half, py - half, roleTile, roleTile)
+        } else if (role === 'Parking') {
+          ctx.fillStyle = withAlpha(rc, 0.16)
+          ctx.fillRect(px - half, py - half, roleTile, roleTile)
+          ctx.lineWidth = 1.5
+          ctx.strokeStyle = rc
+          ctx.strokeRect(px - half, py - half, roleTile, roleTile)
+          ctx.fillStyle = rc
+          ctx.font = `700 ${Math.max(8, roleTile * 0.7)}px "Space Grotesk", system-ui, sans-serif`
+          ctx.fillText('P', px, py + 0.5)
+        } else if (role === 'Buffer' || role === 'PreDockBuffer') {
+          // Hollow tile (rounded for PreDockBuffer to set it apart from a plain Buffer).
+          ctx.lineWidth = 1.5
+          ctx.strokeStyle = rc
+          ctx.beginPath()
+          ctx.rect(px - half, py - half, roleTile, roleTile)
+          ctx.stroke()
+        } else if (role === 'DockPoint') {
+          // Bold, ringed node — the service point itself.
+          ctx.beginPath()
+          ctx.arc(px, py, half, 0, Math.PI * 2)
+          ctx.fillStyle = withAlpha(rc, 0.35)
+          ctx.fill()
+          ctx.lineWidth = 2.5
+          ctx.strokeStyle = rc
+          ctx.stroke()
+        } else if (role === 'Charger') {
+          ctx.fillStyle = rc
+          ctx.font = `700 ${Math.max(9, roleTile * 0.9)}px "Space Grotesk", system-ui, sans-serif`
+          ctx.fillText('⚡', px, py + 0.5)
+        }
+        continue
+      }
       ctx.beginPath()
       ctx.arc(px, py, r * 0.5, 0, Math.PI * 2)
       ctx.fillStyle = COLORS.panel
@@ -226,6 +275,16 @@ export default function FieldCanvas() {
     const positions = result.continuous
       ? interpolateContinuous(result, msAtCursor(result, liveCursor), reduced)
       : interpolatePositions(result, liveCursor, reduced)
+
+    // (FMS) Per-agent mission state at the cursor — discrete, taken from the floor frame exactly like `state`
+    // (the interpolators don't carry it, and threading it through the shared model would touch the ribbon path).
+    // Empty on a non-FMS run (positions carry no mission), so the colour-by-mission below is inert.
+    const missionFrame = result.timeline.frames[
+      Math.max(0, Math.min(result.timeline.frames.length - 1, Math.floor(liveCursor)))
+    ]
+    const missionById = new Map<string, string | undefined>()
+    missionFrame?.positions.forEach((p) => missionById.set(p.agentId, p.mission))
+
     const markerR = Math.max(5, proj.cell * 0.22)
     for (const agent of agents) {
       const pos = positions.get(agent.id)
@@ -234,20 +293,26 @@ export default function FieldCanvas() {
       const px = proj.toX(pos.x)
       const py = proj.toY(pos.y)
       const isColliding = flashOn && collisionAgents.has(agent.id)
+      // (FMS) Colour by mission when the run carries one (in-service red, docking/waiting amber, parking/parked gray);
+      // null → fall back to the agent's normal hue. A collision flash always wins.
+      const mc = missionColor(missionById.get(agent.id))
+      const fill = isColliding ? COLORS.danger : (mc ?? hue)
+      const inService = missionById.get(agent.id) === 'InService'
 
       if (!reduced && pos.state === 'Moving') {
         ctx.beginPath()
         ctx.arc(px, py, markerR * 1.9, 0, Math.PI * 2)
-        ctx.fillStyle = withAlpha(hue, 0.1)
+        ctx.fillStyle = withAlpha(fill, 0.1)
         ctx.fill()
       }
 
       ctx.beginPath()
       ctx.arc(px, py, markerR, 0, Math.PI * 2)
-      ctx.fillStyle = isColliding ? COLORS.danger : hue
+      ctx.fillStyle = fill
       ctx.fill()
-      ctx.lineWidth = 2
-      ctx.strokeStyle = isColliding ? COLORS.danger : COLORS.base
+      ctx.lineWidth = inService ? 3 : 2
+      // (FMS) An in-service AGV gets a locked ring (it holds a dock, immovable); else the normal base outline.
+      ctx.strokeStyle = isColliding ? COLORS.danger : inService ? COLORS.danger : COLORS.base
       ctx.stroke()
 
       if (pos.state === 'Waiting') {

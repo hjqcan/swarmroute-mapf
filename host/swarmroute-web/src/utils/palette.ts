@@ -70,3 +70,44 @@ export function withAlpha(hex: string, alpha: number): string {
 export function trailFor(colorIndex: number): string {
   return withAlpha(hueFor(colorIndex), 0.32)
 }
+
+/*
+ * (FMS) Site-role render colours, keyed by the backend `SiteRole` name. The canvas draws each role distinctly
+ * (workstation = filled square, parking = 'P' tile, buffers = hollow tile, dock = bold ringed, charger = '⚡',
+ * transit = plain node) using these structural hues — they read as facility geometry, not as agent hues.
+ */
+export const SITE_ROLE_COLORS: Record<string, string> = {
+  Workstation: '#7C9CFF', // a cool indigo — a place where work happens
+  Parking: '#5CE1A8', // calm green — a safe resting slot
+  Charger: '#F4D35E', // amber/yellow — energy
+  Buffer: '#6B7A93', // muted gray — staging
+  PreDockBuffer: '#34D6E8', // cyan — the gate just upstream of a dock
+  DockPoint: '#E85AAD', // magenta — the service point itself
+  Transit: '#25324A', // hairline-ish — plain through-traffic node
+}
+
+/** (FMS) The render colour for a site role, or the transit/hairline default when unknown. */
+export function siteRoleColor(role: string | undefined): string {
+  return (role && SITE_ROLE_COLORS[role]) || SITE_ROLE_COLORS.Transit
+}
+
+/*
+ * (FMS) Mission-state agent colours, keyed by the backend `AgvMissionState` name. An FMS run colours each AGV by what
+ * its mission is doing rather than by its hue: in-service is locked red, docking/waiting amber, moving-to/parked gray,
+ * and the normal motion-state colour (the agent hue) is used for everything else (return null → caller falls back).
+ */
+const MISSION_COLORS: Partial<Record<string, string>> = {
+  InService: '#FF5C5C', // locked / occupying a dock — danger red
+  Docking: '#FFB020', // transitioning onto the dock — amber
+  WaitingDockAdmission: '#FFB020', // held at the buffer awaiting admission — amber
+  MovingToParking: '#6B7A93', // clearing out of the way — gray
+  IdleParked: '#6B7A93', // resting — gray
+  Faulted: '#FF5C5C', // disabled — danger red
+}
+
+/** (FMS) The mission-state colour for an AGV, or `null` when the mission carries no override (the caller then uses the
+ *  agent's normal motion-state colour). Undefined mission (non-FMS run) returns null too. */
+export function missionColor(mission: string | undefined): string | null {
+  if (!mission) return null
+  return MISSION_COLORS[mission] ?? null
+}

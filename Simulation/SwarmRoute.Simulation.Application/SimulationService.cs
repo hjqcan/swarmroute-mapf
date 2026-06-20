@@ -434,8 +434,13 @@ public sealed class SimulationService : ISimulationService
     {
         var positionById = field.Sites.ToDictionary(s => s.Id, s => (X: (double)s.X, Y: (double)s.Y), StringComparer.Ordinal);
 
+        // (FMS) The active scenario's per-site role map (dock / parking / buffer / workstation …), or empty for a
+        // non-FMS run ⇒ every site's Role below is null ⇒ omitted from the JSON ⇒ byte-identical.
+        var siteRoles = fms?.SiteRoles;
         var sites = field.Sites
-            .Select(s => new SiteDto(s.Id, s.X, s.Y, s.Type.ToString()))
+            .Select(s => new SiteDto(
+                s.Id, s.X, s.Y, s.Type.ToString(),
+                Role: siteRoles is not null && siteRoles.TryGetValue(s.Id, out var role) ? role.ToString() : null))
             .ToList();
 
         var lanes = new List<LaneDto>();
@@ -473,7 +478,10 @@ public sealed class SimulationService : ISimulationService
                     .Select(p =>
                     {
                         var pos = positionById.TryGetValue(p.SiteId, out var xy) ? xy : (X: 0d, Y: 0d);
-                        return new PositionDto(p.AgentId, p.SiteId, pos.X, pos.Y, p.State.ToString());
+                        // (FMS) p.Mission is non-null ONLY on an FMS run (the frame-builder gates on the scenario),
+                        // so a non-FMS frame stays null ⇒ omitted from the JSON ⇒ byte-identical.
+                        return new PositionDto(
+                            p.AgentId, p.SiteId, pos.X, pos.Y, p.State.ToString(), p.Mission?.ToString());
                     })
                     .ToList()))
             .ToList();

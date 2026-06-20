@@ -242,10 +242,12 @@ internal sealed partial class FleetLoopRun
 
             _maxConcurrent = Math.Max(_maxConcurrent, _fleet.Count(a => a.EnRoute));
 
+            // (FMS) MissionFor gates on _fms; the continuous executor is never an FMS run (FMS uses the
+            // schedule-faithful discrete path), so this records null for every agent ⇒ byte-identical.
             _frames.Add(new FleetTickFrame(
                 _tick,
                 _fleet.OrderBy(a => a.Id, StringComparer.Ordinal)
-                    .Select(a => new FleetTickPosition(a.Id, a.Position, a.State))
+                    .Select(a => new FleetTickPosition(a.Id, a.Position, a.State, MissionFor(a)))
                     .ToList()));
 
             // Forward-progress check: a reservation, a CP advance, or an arrival resets the stall streak. A run of

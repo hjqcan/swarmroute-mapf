@@ -20,6 +20,10 @@ export const DEFAULT_PARAMS: SimulationRequest = {
   // Default standoff resolver = v3 local CBS (complete: resolves the corridor swaps / blocking chains greedy PIBT
   // can't). The single jointResolver owns a cluster; the control rail switches Off / PIBT / CBS (None/Pibt/Cbs).
   jointResolver: 'Cbs',
+  // (FMS-V2) The default scenario is the random start/goal stress run — the backend treats `RandomStress` exactly as
+  // omitting it (its default), so the default run stays byte-identical. The control rail switches to the well-formed
+  // warehouse / lifelong dispatch scenarios; all the new FMS fields flow through `runSimulation(params)` as-is.
+  scenarioMode: 'RandomStress',
 }
 
 export interface SimState {

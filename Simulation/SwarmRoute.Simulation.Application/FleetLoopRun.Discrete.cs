@@ -587,11 +587,13 @@ internal sealed partial class FleetLoopRun
             _maxConcurrent = Math.Max(_maxConcurrent, _fleet.Count(a => a.EnRoute));
 
             // (4) Record the frame: every agent's position + motion state this tick (incl. a colliding tick).
+            //     (FMS) The mission state is recorded too, but ONLY on an FMS run (MissionFor gates on _fms),
+            //     so a non-FMS run records null for every agent ⇒ byte-identical.
             _frames.Add(new FleetTickFrame(
                 _tick,
                 _fleet
                     .OrderBy(a => a.Id, StringComparer.Ordinal)
-                    .Select(a => new FleetTickPosition(a.Id, a.Position, a.State))
+                    .Select(a => new FleetTickPosition(a.Id, a.Position, a.State, MissionFor(a)))
                     .ToList()));
 
             // Stop the run at the first collision — physical state past it is meaningless to replay.
