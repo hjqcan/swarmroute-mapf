@@ -225,6 +225,10 @@ public sealed record PositionDto(string AgentId, string SiteId, double X, double
 /// <param name="CollisionAgentIds">The agents involved in the first collision, else null.</param>
 /// <param name="FlowtimeTicks">Sum over arrived AGVs of the tick each reached its goal (a throughput signal;
 /// lower is tighter pipelining).</param>
+/// <param name="NonConvergence">(FMS-V2) Diagnostics for a <c>DidNotConverge</c> run: the dominant reason across the
+/// stranded AGVs plus the per-agent breakdown. Present ONLY on a non-converged run with at least one stranded agent;
+/// <see langword="null"/> (omitted from the JSON) for a converged / collision run, so a converging run's response is
+/// byte-identical.</param>
 public sealed record StatsDto(
     int Ticks,
     int Collisions,
@@ -233,4 +237,17 @@ public sealed record StatsDto(
     string Status,
     int? CollisionTick,
     IReadOnlyList<string>? CollisionAgentIds,
-    int FlowtimeTicks = 0);
+    int FlowtimeTicks = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] NonConvergenceDto? NonConvergence = null);
+
+/// <summary>
+/// (FMS-V2) Diagnostics for a <c>DidNotConverge</c> run: why each not-arrived AGV failed to reach its goal. Derived
+/// post-hoc from the recorded timeline + roadmap, so it never perturbs the run, and it is emitted only when the run
+/// did not converge (a converged run carries <see langword="null"/> here ⇒ omitted from the JSON ⇒ byte-identical).
+/// </summary>
+/// <param name="DominantReason">The most frequent per-agent reason (e.g. <c>ParkedGoalBlocker</c>,
+/// <c>LiveStandoffUnresolved</c>, <c>ParkingSaturation</c>, <c>TickBudgetExceeded</c>), as a stable string.</param>
+/// <param name="PerAgentReasons">Each not-arrived AGV's id mapped to its classified reason string.</param>
+public sealed record NonConvergenceDto(
+    string DominantReason,
+    IReadOnlyDictionary<string, string> PerAgentReasons);

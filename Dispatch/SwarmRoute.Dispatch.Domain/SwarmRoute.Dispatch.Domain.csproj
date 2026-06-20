@@ -3,6 +3,9 @@
   <ItemGroup>
     <ProjectReference Include="..\SwarmRoute.Dispatch.Domain.Shared\SwarmRoute.Dispatch.Domain.Shared.csproj" />
     <ProjectReference Include="..\..\Shared\SwarmRoute.SpatioTemporal.Kernel\SwarmRoute.SpatioTemporal.Kernel.csproj" />
+    <!-- FMS-V2: the domain reasons about transit-core connectivity (traffic impact, well-formed endpoints)
+         over the RoadmapGraph value object. One-way Dispatch.Domain -> Map.Domain (Map never refs Dispatch). -->
+    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Domain\SwarmRoute.Map.Domain.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -3,6 +3,9 @@
   <ItemGroup>
     <ProjectReference Include="..\SwarmRoute.Dispatch.Domain\SwarmRoute.Dispatch.Domain.csproj" />
     <ProjectReference Include="..\..\Shared\SwarmRoute.SpatioTemporal.Kernel\SwarmRoute.SpatioTemporal.Kernel.csproj" />
+    <!-- FMS-V2: the impact-analyzer / parking-manager seams speak in RoadmapGraph + SiteRole.
+         One-way Dispatch.Application.Contract -> Map.Domain (Map never refs Dispatch). -->
+    <ProjectReference Include="..\..\Map\SwarmRoute.Map.Domain\SwarmRoute.Map.Domain.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

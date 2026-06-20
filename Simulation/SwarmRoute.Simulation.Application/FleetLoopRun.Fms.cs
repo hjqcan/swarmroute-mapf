@@ -1,3 +1,4 @@
+using SwarmRoute.Dispatch.Application.Contract;
 using SwarmRoute.Dispatch.Domain;
 using SwarmRoute.Dispatch.Domain.Shared;
 using SwarmRoute.Map.Domain.Shared.Enums;
@@ -52,7 +53,7 @@ internal sealed partial class FleetLoopRun
             ag.AllResources = Array.Empty<ResourceRef>();
 
             if (_fms!.Arrival == ArrivalPolicy.ClearToParking
-                && NearestRole(here, SiteRole.Parking) is { } park
+                && ChooseParkingSlot(here) is { } park
                 && !string.Equals(park, here, StringComparison.Ordinal))
             {
                 // Drive off the dock to a parking slot: re-plan from the dock toward parking next cycle.
@@ -159,11 +160,21 @@ internal sealed partial class FleetLoopRun
     /// the pre-dock buffer for admission — so a station AGV's <em>effective</em> goal starts at the buffer. Called
     /// once at construction for each station-bound AGV. Picks the buffer reachable from the AGV's start (the first
     /// pre-dock buffer with a path) so the AGV genuinely routes to it; falls back to the first buffer.
+    /// <para>
+    /// (FMS-V2) A station with NO pre-dock buffer (e.g. a SoftBlocking warehouse workstation whose closure never
+    /// severs the core, so there is nothing to clear before service) skips the admission stage entirely: the AGV is
+    /// marked <see cref="AgvMissionState.Docking"/> at once and heads straight to the dock CP, where the arrival arm
+    /// puts it in service. (M-F1's stations always carry a buffer, so this branch never fires there ⇒ byte-identical.)
+    /// </para>
     /// </summary>
     private void FmsInitStationGoal(RunAgent ag, StationDefinition station)
     {
         if (station.PreDockBuffers.Count == 0)
-            return; // no buffer ⇒ no admission staging; the AGV heads straight to the dock (admission skipped)
+        {
+            // No buffer ⇒ no admission staging: head straight to the dock and dock on arrival (admission skipped).
+            ag.MissionState = AgvMissionState.Docking;
+            return;
+        }
 
         var buffer = station.PreDockBuffers
             .FirstOrDefault(b => _graph.ShortestPath(ag.Start, b) is { Count: >= 1 })
@@ -254,6 +265,28 @@ internal sealed partial class FleetLoopRun
             if (member != dock)
                 resources.Add(member);
         return resources;
+    }
+
+    /// <summary>
+    /// (FMS-V2) Chooses where a serviced vehicle leaving the dock at <paramref name="from"/> clears to. When an
+    /// <see cref="IParkingManager"/> is supplied it picks the nearest FREE <see cref="SiteRole.Parking"/> (falling
+    /// back to <see cref="SiteRole.Buffer"/>) avoiding every cell currently occupied or parked by ANOTHER vehicle —
+    /// so two serviced vehicles never target the same slot. Without a manager it falls back to the FMS-V1 inline
+    /// nearest-<see cref="SiteRole.Parking"/> pick (<see cref="NearestRole"/>), which ignores occupancy — byte-identical.
+    /// </summary>
+    private string? ChooseParkingSlot(string from)
+    {
+        if (_parkingManager is null)
+            return NearestRole(from, SiteRole.Parking);
+
+        // Cells taken by OTHER vehicles (en-route/waiting positions + parked cells): never a relocation target. The
+        // vehicle's own current cell is excluded so it is never asked to "clear" to where it already stands.
+        var occupied = new HashSet<string>(_parkedCells, StringComparer.Ordinal);
+        foreach (var other in _fleet)
+            if (!string.Equals(other.Position, from, StringComparison.Ordinal))
+                occupied.Add(other.Position);
+
+        return _parkingManager.AssignParking(from, _graph, occupied, _fms!.SiteRoles);
     }
 
     /// <summary>

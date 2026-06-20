@@ -1,3 +1,4 @@
+using SwarmRoute.Dispatch.Domain;
 using SwarmRoute.Map.Domain.ValueObjects;
 
 namespace SwarmRoute.Simulation.Application;
@@ -36,12 +37,13 @@ public static class OrderDispatchSimulator
         {
             var span = (long)(field.Width + field.Height) * 1000L;  // ≈ a full traversal in mm/ms
             var fleet = Math.Max(1, fleetSize);
-            // A leg is ≈ empty-to-pickup + loaded-to-dropoff ≈ 2·span; the fleet clears one every ≈ 2·span/fleet. Release
-            // orders ≈ 4× faster than that so a real backlog forms — the regime where assignment quality compounds.
+            // Release orders faster than the fleet clears legs so a real backlog forms — the regime where assignment
+            // quality compounds. Endpoints scatter across the field (real FMS workstations), so a leg can be up to a
+            // full span; the SLA is a small multiple of that so a backlogged poor policy starts missing.
             return new Options(
                 OrderCount: Math.Max(10, fleetSize * 4),
-                InterArrivalMs: Math.Max(150, span / (fleet * 2)),
-                SlaMs: span * 3,                            // tight enough that the backlog makes a poor policy miss
+                InterArrivalMs: Math.Max(120, span / (fleet * 4)),
+                SlaMs: span * 2,
                 BatteryEnabled: true,
                 BatteryRangeMm: span * 12,                  // many legs between charges
                 RechargeMs: span);
@@ -58,9 +60,13 @@ public static class OrderDispatchSimulator
     }
 
     /// <summary>Runs the lifelong dispatch simulation and returns its operations summary. <paramref name="vehicleStarts"/>
-    /// are the fleet's current sites (the same poses the MAPF run used).</summary>
+    /// are the fleet's current sites (the same poses the MAPF run used). When a real Dispatch <paramref name="endpoints"/>
+    /// (FMS <c>SiteRole</c> partition) is supplied, orders run between its <see cref="EndpointSet.Workstations"/> and
+    /// charging uses its <see cref="EndpointSet.Chargers"/>/<see cref="EndpointSet.Parkings"/>; otherwise a grid-edge
+    /// approximation is used so the sim still runs on a bare grid.</summary>
     public static OrderDispatchReportDto Run(
-        GridField field, IReadOnlyList<string> vehicleStarts, int seed, AssignmentPolicy policy, Options options)
+        GridField field, IReadOnlyList<string> vehicleStarts, int seed, AssignmentPolicy policy, Options options,
+        EndpointSet? endpoints = null)
     {
         ArgumentNullException.ThrowIfNull(field);
         ArgumentNullException.ThrowIfNull(vehicleStarts);
@@ -68,7 +74,7 @@ public static class OrderDispatchSimulator
         if (vehicleStarts.Count == 0 || options.OrderCount == 0)
             return Empty(options, policy);
 
-        var (orders, chargers) = GenerateStream(field, seed, options);
+        var (orders, chargers) = GenerateStream(field, seed, options, endpoints);
         if (orders.Count == 0)
             return Empty(options, policy);
 
@@ -213,29 +219,17 @@ public static class OrderDispatchSimulator
         }
     }
 
-    /// <summary>Deterministically builds the order stream + charging stations from the field and seed. Pickup stations
-    /// are the left edge, dropoff the right edge, chargers the corners (falling back to any sites if a scenario carved
-    /// an edge away), so orders cross the field and exercise the dispatch.</summary>
+    /// <summary>Deterministically builds the order stream + charging stations. The geography comes from the real
+    /// Dispatch <paramref name="endpoints"/> when supplied (orders between FMS workstations), else a grid-edge
+    /// approximation; orders cross the field and exercise the dispatch.</summary>
     private static (IReadOnlyList<Order> Orders, IReadOnlyList<string> Chargers) GenerateStream(
-        GridField field, int seed, Options options)
+        GridField field, int seed, Options options, EndpointSet? endpoints)
     {
         var sites = field.Sites;
         if (sites.Count == 0)
             return (Array.Empty<Order>(), Array.Empty<string>());
 
-        var minX = sites.Min(s => s.X);
-        var maxX = sites.Max(s => s.X);
-        var pickups = sites.Where(s => s.X == minX).Select(s => s.Id).ToList();
-        var dropoffs = sites.Where(s => s.X == maxX).Select(s => s.Id).ToList();
-        if (pickups.Count == 0) pickups = sites.Select(s => s.Id).ToList();
-        if (dropoffs.Count == 0) dropoffs = sites.Select(s => s.Id).ToList();
-
-        // Chargers: the four corner-most sites (by Manhattan distance to each grid corner).
-        var corners = new[] { (0, 0), (field.Width - 1, 0), (0, field.Height - 1), (field.Width - 1, field.Height - 1) };
-        var chargers = corners
-            .Select(c => sites.OrderBy(s => Math.Abs(s.X - c.Item1) + Math.Abs(s.Y - c.Item2)).ThenBy(s => s.Id, StringComparer.Ordinal).First().Id)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
+        var (pickups, dropoffs, chargers) = ResolveStations(field, endpoints);
 
         var rng = new Random(seed);
         var orders = new List<Order>(options.OrderCount);
@@ -244,9 +238,55 @@ public static class OrderDispatchSimulator
             var release = i * options.InterArrivalMs;
             var pickup = pickups[rng.Next(pickups.Count)];
             var dropoff = dropoffs[rng.Next(dropoffs.Count)];
+            // A transport order moves between two distinct points; nudge to a neighbour endpoint when they coincide.
+            if (string.Equals(pickup, dropoff, StringComparison.Ordinal) && dropoffs.Count > 1)
+                dropoff = dropoffs[(dropoffs.IndexOf(dropoff) + 1) % dropoffs.Count];
             orders.Add(new Order($"ord-{i + 1}", pickup, dropoff, release, release + options.SlaMs));
         }
         return (orders, chargers);
+    }
+
+    /// <summary>Resolves the dispatch geography. With a real Dispatch <see cref="EndpointSet"/> (FMS <c>SiteRole</c>
+    /// semantics) orders run between WORKSTATIONS and charging uses the Charger (then Parking) endpoints; without one —
+    /// or with a degenerate set — it falls back to a grid-edge approximation (left edge → right edge, corner chargers)
+    /// so the sim still runs on a bare grid.</summary>
+    private static (List<string> Pickups, List<string> Dropoffs, List<string> Chargers) ResolveStations(
+        GridField field, EndpointSet? endpoints)
+    {
+        if (endpoints is not null)
+        {
+            var task = endpoints.Workstations.Count >= 2
+                ? endpoints.Workstations.OrderBy(s => s, StringComparer.Ordinal).ToList()
+                : endpoints.Workstations.Concat(endpoints.Parkings).Distinct(StringComparer.Ordinal)
+                    .OrderBy(s => s, StringComparer.Ordinal).ToList();
+            var chargerSet = endpoints.Chargers.Count > 0 ? endpoints.Chargers
+                : endpoints.Parkings.Count > 0 ? endpoints.Parkings
+                : endpoints.Workstations;
+            var chargers = chargerSet.OrderBy(s => s, StringComparer.Ordinal).ToList();
+            if (task.Count >= 2 && chargers.Count > 0)
+                return (task, task, chargers); // real FMS endpoints: workstation → workstation, charge at charger/parking
+        }
+        return GridEdgeStations(field);
+    }
+
+    /// <summary>The bare-grid fallback geography: pickups on the left edge, dropoffs on the right, chargers at the
+    /// corners (any sites if a scenario carved an edge away).</summary>
+    private static (List<string> Pickups, List<string> Dropoffs, List<string> Chargers) GridEdgeStations(GridField field)
+    {
+        var sites = field.Sites;
+        var minX = sites.Min(s => s.X);
+        var maxX = sites.Max(s => s.X);
+        var pickups = sites.Where(s => s.X == minX).Select(s => s.Id).ToList();
+        var dropoffs = sites.Where(s => s.X == maxX).Select(s => s.Id).ToList();
+        if (pickups.Count == 0) pickups = sites.Select(s => s.Id).ToList();
+        if (dropoffs.Count == 0) dropoffs = sites.Select(s => s.Id).ToList();
+
+        var corners = new[] { (0, 0), (field.Width - 1, 0), (0, field.Height - 1), (field.Width - 1, field.Height - 1) };
+        var chargers = corners
+            .Select(c => sites.OrderBy(s => Math.Abs(s.X - c.Item1) + Math.Abs(s.Y - c.Item2)).ThenBy(s => s.Id, StringComparer.Ordinal).First().Id)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return (pickups, dropoffs, chargers);
     }
 
     private static long Percentile(long[] sortedAsc, double q)

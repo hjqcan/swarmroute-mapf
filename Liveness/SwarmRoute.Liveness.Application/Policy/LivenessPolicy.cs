@@ -91,12 +91,29 @@ public sealed class LivenessPolicy : ILivenessPolicy
     {
         var directives = new List<LivenessDirective>();
 
-        // Recover any gatekeeper whose yield window elapses this tick (its window ticks down to 0 and it currently
-        // holds a redirect): it re-plans back to its own goal next cycle. Matches the executor's
-        //   foreach p where YieldTicksRemaining > 0: if (--YieldTicksRemaining == 0 && RedirectTarget != null) restore.
+        // Recover a relocated parked gatekeeper once it may return to its own goal. A relocated gatekeeper is the
+        // sole carrier of an active redirect in the step-aside machinery (the executor sets RedirectTarget ONLY when
+        // enacting a RelocateParked, and clears it ONLY on this RestoreGoal), so `HasActiveRedirect` identifies the
+        // class and `YieldTicksRemaining` tracks its hold window.
+        //
+        //  • Default (fixed-countdown) mode — BYTE-IDENTICAL to the pre-V2 behaviour: it returns the exact tick its
+        //    window elapses. Matches the executor's
+        //      foreach p where YieldTicksRemaining > 0: if (--YieldTicksRemaining == 0 && RedirectTarget != null) restore.
+        //  • PersistentRelocation mode (opt-in): the window is only a MINIMUM hold. The gatekeeper returns once its
+        //    window has elapsed AND the corridor it freed (its own goal cell) is no longer needed — i.e. no live
+        //    agent's approach still routes through it (the walled agent has advanced past / reached goal). Until then
+        //    it keeps holding aside (its window naturally clamps at 0 in the executor's `> 0` decrement), so it cannot
+        //    re-seal the corridor mid-pass. The clearance test is a pure function of this very snapshot.
         foreach (var a in snapshot.Agents)
-            if (a.YieldTicksRemaining == 1 && a.HasActiveRedirect)
+        {
+            if (!a.HasActiveRedirect)
+                continue;
+            var mayReturn = _options.PersistentRelocation
+                ? a.YieldTicksRemaining <= 1 && !CorridorStillNeeded(a, snapshot)
+                : a.YieldTicksRemaining == 1;
+            if (mayReturn)
                 directives.Add(new RestoreGoal(a.Id));
+        }
 
         // Parked step-aside (opt-in): relocate the finished vehicles walling a persistently-stuck waiting agent out
         // of its goal. Off by default — byte-identical when off.
@@ -300,6 +317,38 @@ public sealed class LivenessPolicy : ILivenessPolicy
             })
             .ToList();
         return StuckClusterDetector.Assemble(stuckSnapshots, occById, _options.JointResolverTriggerThreshold);
+    }
+
+    // (PersistentRelocation) Is the corridor a relocated gatekeeper freed still needed by the fleet? The freed cell
+    // is the gatekeeper's OWN goal cell (it stepped aside FROM the cell it was parked on; its EffectiveGoal is now its
+    // temporary aside site). The corridor is still needed while some OTHER live agent is making for a goal whose
+    // shortest approach traverses that cell — including an agent currently standing on it (it is using the corridor
+    // right now). Done (parked) vehicles and vehicles holding at their own aside site are stationary, not transiting,
+    // so they are not counted as needers; the gatekeeper itself is excluded. Pure over the snapshot + bound roadmap.
+    private bool CorridorStillNeeded(AgentLivenessView gatekeeper, LivenessSnapshot snapshot)
+    {
+        var corridor = gatekeeper.Goal;
+        foreach (var other in snapshot.Agents)
+        {
+            if (string.Equals(other.Id, gatekeeper.Id, StringComparison.Ordinal))
+                continue;
+            if (other.Done || other.HoldingAtAvoidSite || other.HasActiveRedirect)
+                continue; // parked / stepped-aside vehicles are not transiting the corridor
+
+            // Already standing on the freed cell ⇒ it is actively occupying the corridor ⇒ still needed.
+            if (string.Equals(other.Position, corridor, StringComparison.Ordinal))
+                return true;
+
+            // Otherwise the corridor is needed iff this agent's shortest approach to its (effective) goal passes
+            // through it. Re-planning would route the same way, so this matches what would re-block on return.
+            var path = _graph.ShortestPath(other.Position, other.EffectiveGoal);
+            if (path is null)
+                continue;
+            foreach (var cell in path)
+                if (string.Equals(cell, corridor, StringComparison.Ordinal))
+                    return true;
+        }
+        return false;
     }
 
     // The agent physically occupying `cell` this tick (the executor's `occupantNow[cell]`), or null if empty.

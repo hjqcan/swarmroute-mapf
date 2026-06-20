@@ -47,6 +47,12 @@ internal sealed partial class FleetLoopRun
     /// physically standing on one of these (and bound for that station's dock) is a dock-admission candidate.</summary>
     private readonly IReadOnlyDictionary<string, StationDefinition> _stationByBuffer;
 
+    /// <summary>(FMS-V2) Optional parking manager used by the clear-to-parking step to choose a serviced vehicle's
+    /// resting slot (nearest free <see cref="SiteRole.Parking"/>, falling back to <see cref="SiteRole.Buffer"/>),
+    /// avoiding cells already occupied/parked by other vehicles. <see langword="null"/> ⇒ the inline nearest-Parking
+    /// pick (<see cref="NearestRole"/>) is used instead, which is byte-identical to the FMS-V1 behaviour.</summary>
+    private readonly IParkingManager? _parkingManager;
+
     /// <summary>Set once at the top of <see cref="ExecuteAsync"/> (run-scoped, never mutated thereafter), so the
     /// loop methods can read it without threading it through every signature — exactly as the original local
     /// functions captured the method's <c>cancellationToken</c> parameter.</summary>
@@ -105,7 +111,8 @@ internal sealed partial class FleetLoopRun
         ILivenessPolicy policy,
         Action<string>? log,
         FmsScenario? fms = null,
-        IStationScheduler? stationScheduler = null)
+        IStationScheduler? stationScheduler = null,
+        IParkingManager? parkingManager = null)
     {
         _cycle = cycle;
         _roadmapId = roadmapId;
@@ -117,6 +124,7 @@ internal sealed partial class FleetLoopRun
         _log = log;
         _fms = fms;
         _stationScheduler = stationScheduler;
+        _parkingManager = parkingManager;
 
         _scheduleFaithful = executionMode == FleetExecutionMode.ScheduleFaithful;
         _pibtEpisodeMaxTicks = 2 * Math.Max(1, graph.VertexCount);

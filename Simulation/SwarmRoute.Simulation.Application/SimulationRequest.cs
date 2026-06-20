@@ -78,6 +78,16 @@ namespace SwarmRoute.Simulation.Application;
 /// station executor honouring dock admission, in-service dock occupancy, and post-service parking. The only built-in
 /// layout is <see cref="StationScenarioKind.MF1"/>.
 /// </param>
+/// <param name="ScenarioMode">
+/// (FMS-V2) The high-level scenario this run is generated under (default <see cref="Simulation.Application.ScenarioMode.RandomStress"/>
+/// ⇒ today's random start/goal stress run ⇒ byte-identical). <see cref="Simulation.Application.ScenarioMode.WarehouseWellFormed"/>
+/// carves a well-formed warehouse out of the request's <see cref="Width"/>×<see cref="Height"/> grid (a parking/workstation
+/// ring around a connected transit core), draws every AGV's task goal ONLY from workstation endpoints, and clears a
+/// serviced AGV to a real parking slot — the scenario-semantics fix that removes permanent goal-blocking (M-F2).
+/// <see cref="Simulation.Application.ScenarioMode.LifelongDispatch"/> is accepted but treated as
+/// <see cref="Simulation.Application.ScenarioMode.RandomStress"/> until FMS-V3. Ignored when <see cref="StationScenario"/>
+/// is set (the built-in fixed station demo takes precedence).
+/// </param>
 public sealed record SimulationRequest(
     int Width,
     int Height,
@@ -94,7 +104,8 @@ public sealed record SimulationRequest(
     AssignmentPolicy Assignment = AssignmentPolicy.Random,
     bool EmitTrace = false,
     bool SimulateOrders = false,
-    StationScenarioKind? StationScenario = null);
+    StationScenarioKind? StationScenario = null,
+    ScenarioMode ScenarioMode = ScenarioMode.RandomStress);
 
 /// <summary>(FMS-V1 R2) The built-in FMS station demo layouts a <see cref="SimulationRequest"/> may opt into.</summary>
 public enum StationScenarioKind

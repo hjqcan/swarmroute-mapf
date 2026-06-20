@@ -41,8 +41,24 @@ public sealed record LivenessOptions
     /// <summary>A waiting agent unplannable for this many ticks is treated as walled out (triggers step-aside).</summary>
     public int GatekeeperUnblockThreshold { get; init; } = 10;
 
-    /// <summary>Ticks a relocated parked gatekeeper holds aside before it re-parks at its goal.</summary>
+    /// <summary>Ticks a relocated parked gatekeeper holds aside before it re-parks at its goal. Under the default
+    /// (countdown) mode this is the exact, forced hold; under <see cref="PersistentRelocation"/> it is the MINIMUM
+    /// hold (the gatekeeper additionally waits until the corridor it freed is no longer needed).</summary>
     public int GatekeeperYieldWindow { get; init; } = 20;
+
+    /// <summary>
+    /// Clearance-driven step-aside (opt-in, additive; requires <see cref="StepAside"/>). When off (the default), a
+    /// relocated parked gatekeeper re-parks at its own goal the moment its fixed <see cref="GatekeeperYieldWindow"/>
+    /// countdown elapses — which can re-seal the corridor while the walled-out agent is still squeezing through it.
+    /// When on, <see cref="GatekeeperYieldWindow"/> becomes a <em>minimum</em> hold rather than a forced return: the
+    /// gatekeeper keeps holding aside past the window until the corridor it vacated (its own goal cell) is no longer
+    /// on any live agent's approach — i.e. the walled agent has advanced past it or reached goal — and only then
+    /// returns. The "still needed" test is a pure function of the snapshot the policy already receives (every live
+    /// agent's pose + effective goal over the bound roadmap), so no new engine state or seam is introduced.
+    /// <para>Default <see langword="false"/> ⇒ the <see cref="RestoreGoal"/> firing condition is byte-identical to
+    /// the fixed-countdown behaviour, so every existing step-aside test and closed-loop run is unchanged.</para>
+    /// </summary>
+    public bool PersistentRelocation { get; init; }
 
     /// <summary>Blocked ticks before a congestion cluster is handed to the joint resolver (below the stall/gatekeeper thresholds).</summary>
     public int JointResolverTriggerThreshold { get; init; } = 8;

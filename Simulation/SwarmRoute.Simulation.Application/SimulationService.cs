@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Logging;
+using SwarmRoute.Dispatch.Application;
+using SwarmRoute.Dispatch.Domain.Endpoints;
 using SwarmRoute.Liveness.Application.Contract.Policy;
 using SwarmRoute.Liveness.Application.Policy;
 using SwarmRoute.PathPlanning.Domain.Shared.Enums;
@@ -44,6 +46,12 @@ public sealed class SimulationService : ISimulationService
         // (null) ⇒ falls through to the normal run below ⇒ byte-identical.
         if (request.StationScenario is { } stationScenario)
             return await RunStationScenarioAsync(stationScenario, request, cancellationToken).ConfigureAwait(false);
+
+        // (FMS-V2) Opt-in well-formed warehouse: carve a parking/workstation endpoint ring around a connected transit
+        // core, draw task goals from workstations, and clear serviced AGVs to real parking. ScenarioMode defaults to
+        // RandomStress => this is skipped => byte-identical. (LifelongDispatch is treated as RandomStress until V3.)
+        if (request.ScenarioMode == ScenarioMode.WarehouseWellFormed)
+            return await RunWarehouseWellFormedAsync(request, cancellationToken).ConfigureAwait(false);
 
         Validate(request);
 
@@ -94,11 +102,15 @@ public sealed class SimulationService : ISimulationService
 
         // (v4 SwarmRoute Lab — Order/Dispatch context) Opt-in lifelong dispatch simulation over the SAME field + fleet:
         // a stream of transport orders releasing over time, queued and continuously assigned by the chosen policy (with
-        // stations, battery and SLA). A self-contained operations-layer analysis; off by default → null → omitted.
+        // stations, battery and SLA). The dispatch geography is drawn from the REAL Dispatch domain — the
+        // WellFormedEndpointGenerator's FMS endpoint partition (orders between workstations, charging at charger/parking
+        // endpoints), the same policy the warehouse scenarios use. A self-contained operations-layer analysis (it reads
+        // the endpoint model, not the live DispatcherService); off by default → null → omitted.
         var orderDispatch = request.SimulateOrders
             ? OrderDispatchSimulator.Run(
                 field, starts, request.Seed ?? DefaultSeed, request.Assignment,
-                OrderDispatchSimulator.Options.Derive(field, request.AgvCount))
+                OrderDispatchSimulator.Options.Derive(field, request.AgvCount),
+                new WellFormedEndpointGenerator().BuildEndpoints(field.Graph, request.AgvCount, request.Seed ?? DefaultSeed))
             : null;
 
         // 5. (v4 SwarmRoute Lab) Optional congestion-fed guidance optimization: re-weight the busiest corridors from
@@ -215,7 +227,51 @@ public sealed class SimulationService : ISimulationService
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
-        return Map(scenario.Field, scenario.Agents, loop, emitTrace: request.EmitTrace);
+        return Map(scenario.Field, scenario.Agents, loop, emitTrace: request.EmitTrace, fms: scenario.Fms);
+    }
+
+    /// <summary>
+    /// (FMS-V2) Runs an opt-in well-formed warehouse scenario end-to-end. <see cref="WarehouseScenarioBuilder"/>
+    /// carves a parking/workstation endpoint partition out of the request's grid (keeping the transit core connected
+    /// with egress), draws each station AGV's task goal from a workstation and the rest from safe endpoints/cells, and
+    /// the station executor drives the service-then-clear-to-parking lifecycle with an <see cref="IParkingManager"/>
+    /// picking each serviced AGV's resting slot. Uses SIPP + the schedule-faithful executor (the M-F1 finding: the
+    /// service window lives on the unified HopMs==1 tick axis SIPP plans on). On non-convergence the result carries the
+    /// per-agent <see cref="NonConvergenceReason"/> diagnostics.
+    /// </summary>
+    private async Task<SimulationResultDto> RunWarehouseWellFormedAsync(
+        SimulationRequest request, CancellationToken cancellationToken)
+    {
+        Validate(request);
+
+        var scenario = WarehouseScenarioBuilder.Build(
+            _gridFactory, request.Width, request.Height, request.AgvCount, request.Seed ?? DefaultSeed);
+
+        // The engine is created WITH the catalog so the dock-admission scheduler shares this run's reservation table.
+        // SIPP planner + schedule-faithful executor: the service window is built in raw ticks on the same HopMs==1 axis
+        // SIPP plans on, so it conflicts correctly with transit leases (Dijkstra's x1000 weight is off that axis).
+        await using var engine = _engineFactory.Create(
+            scenario.Field.Graph, PlannerKind.Sipp, request.HorizonWindowMs, request.PreventDeadlockCycles,
+            stationCatalog: scenario.Catalog);
+
+        var policy = new LivenessPolicy(
+            scenario.Field.Graph,
+            new LivenessOptions { JointResolver = request.JointResolver, StepAside = request.StepAside });
+
+        var loop = await _loopDriver
+            .RunToCompletionAsync(
+                engine.Cycle, engine.RoadmapId, scenario.Field.Graph, scenario.Agents, MaxTicks(request),
+                advanceClock: engine.Clock.SetTick,
+                executionMode: FleetExecutionMode.ScheduleFaithful,
+                policy: policy,
+                log: msg => _logger.LogInformation("[warehouse] {Detail}", msg),
+                fms: scenario.Fms,
+                stationScheduler: engine.StationScheduler,
+                parkingManager: new ParkingManager(),
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        return Map(scenario.Field, scenario.Agents, loop, emitTrace: request.EmitTrace, fms: scenario.Fms);
     }
 
     private static IReadOnlyDictionary<string, (double X, double Y)> PositionById(GridField field)
@@ -290,7 +346,8 @@ public sealed class SimulationService : ISimulationService
         FleetLoopResult loop,
         GuidanceReportDto? guidance = null,
         bool emitTrace = false,
-        OrderDispatchReportDto? orderDispatch = null)
+        OrderDispatchReportDto? orderDispatch = null,
+        FmsScenario? fms = null)
     {
         var positionById = field.Sites.ToDictionary(s => s.Id, s => (X: (double)s.X, Y: (double)s.Y), StringComparer.Ordinal);
 
@@ -340,6 +397,12 @@ public sealed class SimulationService : ISimulationService
 
         var timeline = new TimelineDto(loop.Frames.Count, frames);
 
+        // (FMS-V2) On a DidNotConverge run, classify each stranded AGV (ParkedGoalBlocker / ParkingSaturation /
+        // LiveStandoffUnresolved / TickBudgetExceeded / …) from the timeline + roadmap. Null for a converged /
+        // collision run ⇒ omitted from the JSON ⇒ byte-identical. FMS site roles (when present) enable the
+        // parking-saturation classification; a non-FMS run passes none and that branch never fires.
+        var nonConvergence = ToDto(NonConvergenceClassifier.Classify(loop, specs, field.Graph, fms?.SiteRoles));
+
         var stats = new StatsDto(
             loop.Stats.Ticks,
             loop.Stats.Collisions,
@@ -348,7 +411,8 @@ public sealed class SimulationService : ISimulationService
             loop.Stats.Status.ToString(),
             loop.Collision?.Tick,
             loop.Collision?.AgentIds,
-            loop.Stats.FlowtimeTicks);
+            loop.Stats.FlowtimeTicks,
+            nonConvergence);
 
         // (v3 SIPPwRT) When the run used the continuous executor, attach the real-ms trajectory replay (CP
         // arrivals + render coords). Null for every discrete planner → omitted from the JSON (byte-identical).
@@ -392,6 +456,15 @@ public sealed class SimulationService : ISimulationService
     }
 
     private static string RoadmapGraphLaneId(string from, string to) => $"{from}-{to}";
+
+    /// <summary>(FMS-V2) Maps the internal non-convergence classification to its DTO (reason enums as stable strings),
+    /// or <see langword="null"/> when there is nothing to report (a converged run) ⇒ omitted from the JSON.</summary>
+    private static NonConvergenceDto? ToDto(NonConvergenceReport? report)
+        => report is null
+            ? null
+            : new NonConvergenceDto(
+                report.DominantReason.ToString(),
+                report.PerAgentReasons.ToDictionary(kv => kv.Key, kv => kv.Value.ToString(), StringComparer.Ordinal));
 
     /// <summary>Deterministic Fisher–Yates shuffle driven by the seeded RNG (in-place on a copy).</summary>
     private static List<string> Shuffle(List<string> items, Random rng)

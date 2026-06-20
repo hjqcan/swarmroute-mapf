@@ -64,6 +64,10 @@ public sealed class FleetLoopDriver
     /// <paramref name="fms"/> is set, to decide whether an AGV queued at a station's pre-dock buffer may advance onto
     /// the dock (its service window reserved over the SAME reservation system the fleet plans on). Required when
     /// <paramref name="fms"/> defines stations; ignored when <paramref name="fms"/> is null.</param>
+    /// <param name="parkingManager">(FMS-V2) Optional parking manager the clear-to-parking step uses to pick a
+    /// serviced vehicle's resting slot (nearest free parking, fall back to buffer, avoiding occupied cells). When
+    /// <see langword="null"/> (the default) the executor uses its FMS-V1 inline nearest-parking pick, so behaviour is
+    /// byte-identical. Ignored when <paramref name="fms"/> is null (no service ever completes).</param>
     /// <exception cref="ArgumentNullException">If <paramref name="cycle"/>, <paramref name="graph"/> or <paramref name="agents"/> is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException">If <paramref name="maxTicks"/> &lt; 1.</exception>
     /// <exception cref="FleetLoopException">Only on an internal invariant breach (reserved path does not start at the agent's current CP).</exception>
@@ -79,6 +83,7 @@ public sealed class FleetLoopDriver
         Action<string>? log = null,
         FmsScenario? fms = null,
         IStationScheduler? stationScheduler = null,
+        IParkingManager? parkingManager = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(cycle);
@@ -94,7 +99,7 @@ public sealed class FleetLoopDriver
         // fields) and concurrent calls are isolated.
         return await new FleetLoopRun(
                 cycle, roadmapId, graph, agents, maxTicks, advanceClock, executionMode, policy, log,
-                fms, stationScheduler)
+                fms, stationScheduler, parkingManager)
             .ExecuteAsync(cancellationToken)
             .ConfigureAwait(false);
     }
