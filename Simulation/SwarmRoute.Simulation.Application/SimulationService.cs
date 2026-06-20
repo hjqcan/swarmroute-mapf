@@ -60,20 +60,27 @@ public sealed class SimulationService : ISimulationService
         var allCells = field.Sites.Select(s => s.Id).ToList();
         var agentSpecs = new List<FleetAgentSpec>(request.AgvCount);
 
+        // Per-agent starts + a pool of distinct goals (one per agent); the dispatcher then MATCHES goals to AGVs by the
+        // configured policy. Random keeps the shuffled pairing (byte-identical); Nearest/Optimal cut total travel.
+        IReadOnlyList<string> starts;
+        IReadOnlyList<string> goalPool;
         var continuationStarts = ValidContinuationStarts(request, field);
         if (continuationStarts is not null)
         {
             var startSet = continuationStarts.ToHashSet(StringComparer.Ordinal);
-            var goalPool = Shuffle(allCells.Where(c => !startSet.Contains(c)).ToList(), rng);
-            for (var i = 0; i < request.AgvCount; i++)
-                agentSpecs.Add(new FleetAgentSpec($"agv-{i + 1}", continuationStarts[i], goalPool[i], Priority: i));
+            starts = continuationStarts;
+            goalPool = Shuffle(allCells.Where(c => !startSet.Contains(c)).ToList(), rng).Take(request.AgvCount).ToList();
         }
         else
         {
             var shuffled = Shuffle(allCells, rng);
-            for (var i = 0; i < request.AgvCount; i++)
-                agentSpecs.Add(new FleetAgentSpec($"agv-{i + 1}", shuffled[i], shuffled[request.AgvCount + i], Priority: i));
+            starts = shuffled.Take(request.AgvCount).ToList();
+            goalPool = shuffled.Skip(request.AgvCount).Take(request.AgvCount).ToList();
         }
+
+        var goals = TaskDispatcher.Assign(starts, goalPool, field.Graph, request.Assignment);
+        for (var i = 0; i < request.AgvCount; i++)
+            agentSpecs.Add(new FleetAgentSpec($"agv-{i + 1}", starts[i], goals[i], Priority: i));
 
         // 3-4. Run the closed loop on the (unguided) field.
         var loop = await RunLoopAsync(field, agentSpecs, request, cancellationToken).ConfigureAwait(false);

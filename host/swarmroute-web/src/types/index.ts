@@ -29,6 +29,10 @@ export type PlannerKind = 'Dijkstra' | 'Sipp' | 'Sippwrt'
  *  column except a central corridor; `Obstacles` is a lattice of pillars. Obstacle cells are absent from the field. */
 export type ScenarioKind = 'Open' | 'Bottleneck' | 'Obstacles'
 
+/** (v4 SwarmRoute Lab — Dispatcher) How the dispatcher matches AGVs to goals: `Random` (uncorrelated, the default),
+ *  `Nearest` (greedy nearest-robot), or `Optimal` (Hungarian min-total-travel matching). */
+export type AssignmentPolicy = 'Random' | 'Nearest' | 'Optimal'
+
 /**
  * Which zone-local joint resolver owns a physical standoff cluster (mirrors the backend
  * `SwarmRoute.Liveness.Application.Contract.Policy.JointResolverKind`). Exactly one resolver owns a cluster.
@@ -74,6 +78,9 @@ export interface SimulationRequest {
   /** (v4 SwarmRoute Lab — ScenarioBench) The map layout (default `Open` = uniform grid). Obstacle scenarios carve
    *  walls / pillars so the metrics, heatmap, guidance and continuous-time are exercised on a non-uniform field. */
   scenario?: ScenarioKind
+  /** (v4 SwarmRoute Lab — Dispatcher) How the dispatcher matches AGVs to goals (default `Random`). `Optimal` is the
+   *  Hungarian min-total-travel matching; `Nearest` the greedy nearest-robot heuristic — both cut travel. */
+  assignment?: AssignmentPolicy
 }
 
 /** A single control point on the grid at planar (x=col, y=row). */

@@ -2,7 +2,7 @@ import { Button, InputNumber, Segmented, Slider, Switch } from 'antd'
 import { Dices, Play, Loader2, Repeat, Sparkles, BarChart3 } from 'lucide-react'
 import { useIntl } from 'react-intl'
 import { useSimStore } from '@/store/simStore'
-import type { PlannerKind, ScenarioKind } from '@/types'
+import type { PlannerKind, ScenarioKind, AssignmentPolicy } from '@/types'
 
 const FIELD_MIN = 4
 const FIELD_MAX = 24
@@ -123,6 +123,26 @@ export default function ControlRail() {
             { label: intl.formatMessage({ id: 'controls.scenario.open' }), value: 'Open' },
             { label: intl.formatMessage({ id: 'controls.scenario.bottleneck' }), value: 'Bottleneck' },
             { label: intl.formatMessage({ id: 'controls.scenario.obstacles' }), value: 'Obstacles' },
+          ]}
+        />
+      </div>
+
+      {/* (v4 SwarmRoute Lab — Dispatcher) Goal assignment: Random pairing vs greedy nearest-robot vs Optimal
+          (Hungarian) min-total-travel matching — the dispatcher's core job; the effect shows in the metrics. */}
+      <div>
+        <div className="mb-1.5 flex items-baseline justify-between">
+          <label className="text-sm text-text-muted">
+            {intl.formatMessage({ id: 'controls.assignment' })}
+          </label>
+        </div>
+        <Segmented
+          block
+          value={params.assignment ?? 'Random'}
+          onChange={(v) => setParam('assignment', v as AssignmentPolicy)}
+          options={[
+            { label: intl.formatMessage({ id: 'controls.assignment.random' }), value: 'Random' },
+            { label: intl.formatMessage({ id: 'controls.assignment.nearest' }), value: 'Nearest' },
+            { label: intl.formatMessage({ id: 'controls.assignment.optimal' }), value: 'Optimal' },
           ]}
         />
       </div>

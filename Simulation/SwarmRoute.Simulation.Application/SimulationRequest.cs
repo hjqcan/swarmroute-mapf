@@ -81,4 +81,5 @@ public sealed record SimulationRequest(
     bool PreventDeadlockCycles = false,
     JointResolverKind JointResolver = JointResolverKind.None,
     bool OptimizeGuidance = false,
-    ScenarioKind Scenario = ScenarioKind.Open);
+    ScenarioKind Scenario = ScenarioKind.Open,
+    AssignmentPolicy Assignment = AssignmentPolicy.Random);
