@@ -21,7 +21,28 @@ public sealed record SimulationResultDto(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] GuidanceReportDto? Guidance = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<TraceEventDto>? Trace = null,
     RobustnessDto? Robustness = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DelayResilienceDto? DelayResilience = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DelayResilienceDto? DelayResilience = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] OrderDispatchReportDto? OrderDispatch = null);
+
+/// <summary>
+/// (v4 SwarmRoute Lab — Order/Dispatch context) The lifelong / online dispatch summary: a stream of transport orders
+/// releasing over time, queued and continuously assigned to the fleet (pickup → dropoff stations, with battery and SLA
+/// deadlines), simulated at the operations layer above MAPF. Present only when the request opts in (`simulateOrders`).
+/// The headline is policy sensitivity — smarter assignment turns the backlog over faster, lifting on-time delivery.
+/// </summary>
+/// <param name="OrdersTotal">Orders released over the run.</param>
+/// <param name="OrdersCompleted">Orders delivered.</param>
+/// <param name="OnTimeRate">Fraction of completed orders delivered within their SLA deadline.</param>
+/// <param name="MeanLatencyMs">Mean order latency (release → delivery), in ms.</param>
+/// <param name="P95LatencyMs">95th-percentile order latency, in ms.</param>
+/// <param name="MakespanMs">Time the last order was delivered, in ms.</param>
+/// <param name="FleetUtilization">Fraction of fleet-time spent busy on legs (incl. charging).</param>
+/// <param name="ChargingStops">Number of mid-stream recharge detours.</param>
+/// <param name="MaxQueueDepth">Peak number of released-but-unassigned orders (the backlog the dispatch faced).</param>
+/// <param name="Policy">The assignment policy used (Random / Nearest / Optimal).</param>
+public sealed record OrderDispatchReportDto(
+    int OrdersTotal, int OrdersCompleted, double OnTimeRate, long MeanLatencyMs, long P95LatencyMs,
+    long MakespanMs, double FleetUtilization, int ChargingStops, int MaxQueueDepth, string Policy);
 
 /// <summary>
 /// (v4 SwarmRoute Lab — Robust Execution) The ADG/TPG-following executor's what-if: inject a delay into the most

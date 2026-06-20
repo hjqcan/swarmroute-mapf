@@ -29,7 +29,8 @@ internal static class RoadmapFactory
         ToPosition(dto.Pos),
         dto.Enable,
         dto.InterferenceSiteIds,
-        dto.InterferenceLineIds);
+        dto.InterferenceLineIds,
+        dto.SiteRole);
 
     private static MapLine ToLine(MapLineDto dto) => new(
         dto.LineId,

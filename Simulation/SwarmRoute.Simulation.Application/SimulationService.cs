@@ -85,11 +85,20 @@ public sealed class SimulationService : ISimulationService
         // 3-4. Run the closed loop on the (unguided) field.
         var loop = await RunLoopAsync(field, agentSpecs, request, cancellationToken).ConfigureAwait(false);
 
+        // (v4 SwarmRoute Lab — Order/Dispatch context) Opt-in lifelong dispatch simulation over the SAME field + fleet:
+        // a stream of transport orders releasing over time, queued and continuously assigned by the chosen policy (with
+        // stations, battery and SLA). A self-contained operations-layer analysis; off by default → null → omitted.
+        var orderDispatch = request.SimulateOrders
+            ? OrderDispatchSimulator.Run(
+                field, starts, request.Seed ?? DefaultSeed, request.Assignment,
+                OrderDispatchSimulator.Options.Derive(field, request.AgvCount))
+            : null;
+
         // 5. (v4 SwarmRoute Lab) Optional congestion-fed guidance optimization: re-weight the busiest corridors from
         //    this run's measured congestion, then re-run the SAME fleet on the guided field and return the guided run
         //    alongside the baseline metrics for comparison. Off by default → single pass, byte-identical.
         if (!request.OptimizeGuidance)
-            return Map(field, agentSpecs, loop, emitTrace: request.EmitTrace);
+            return Map(field, agentSpecs, loop, emitTrace: request.EmitTrace, orderDispatch: orderDispatch);
 
         var baselineMetrics = SimulationMetricsCalculator.Compute(loop, agentSpecs, PositionById(field));
         var guidance = CongestionGuidanceOptimizer.Derive(baselineMetrics, field);
@@ -97,7 +106,7 @@ public sealed class SimulationService : ISimulationService
         var guidedLoop = await RunLoopAsync(guidedField, agentSpecs, request, cancellationToken).ConfigureAwait(false);
         return Map(guidedField, agentSpecs, guidedLoop,
             new GuidanceReportDto(baselineMetrics, guidance.AdjustedLaneCount, guidance.MaxMultiplier),
-            emitTrace: request.EmitTrace);
+            emitTrace: request.EmitTrace, orderDispatch: orderDispatch);
     }
 
     /// <summary>
@@ -222,7 +231,8 @@ public sealed class SimulationService : ISimulationService
         IReadOnlyList<FleetAgentSpec> specs,
         FleetLoopResult loop,
         GuidanceReportDto? guidance = null,
-        bool emitTrace = false)
+        bool emitTrace = false,
+        OrderDispatchReportDto? orderDispatch = null)
     {
         var positionById = field.Sites.ToDictionary(s => s.Id, s => (X: (double)s.X, Y: (double)s.Y), StringComparer.Ordinal);
 
@@ -319,7 +329,8 @@ public sealed class SimulationService : ISimulationService
         var delayResilience = AdgExecutor.Simulate(loop);
 
         return new SimulationResultDto(
-            fieldDto, agents, timeline, stats, continuous, metrics, guidance, trace, robustness, delayResilience);
+            fieldDto, agents, timeline, stats, continuous, metrics, guidance, trace, robustness, delayResilience,
+            orderDispatch);
     }
 
     private static string RoadmapGraphLaneId(string from, string to) => $"{from}-{to}";

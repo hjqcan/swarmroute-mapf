@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\SwarmRoute.Dispatch.Application.Contract\SwarmRoute.Dispatch.Application.Contract.csproj" />
+    <ProjectReference Include="..\SwarmRoute.Dispatch.Domain\SwarmRoute.Dispatch.Domain.csproj" />
+    <!-- The station service window is a long interval-lease realised on top of the reservation table;
+         IStationResourceCalendar implementations (Foundations phase) plan over TrafficControl's seam. -->
+    <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Application.Contract\SwarmRoute.TrafficControl.Application.Contract.csproj" />
+    <ProjectReference Include="..\..\Shared\SwarmRoute.SpatioTemporal.Kernel\SwarmRoute.SpatioTemporal.Kernel.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

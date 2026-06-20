@@ -83,6 +83,9 @@ export interface SimulationRequest {
   assignment?: AssignmentPolicy
   /** (v4 SwarmRoute Lab — TraceEvent) Opt-in: emit the standardized event trace on the result for export. Default off. */
   emitTrace?: boolean
+  /** (v4 SwarmRoute Lab — Order/Dispatch context) Opt-in: simulate a lifelong order stream over the same field + fleet
+   *  (online assignment, stations, battery, SLA) and report its operations KPIs. Default off. */
+  simulateOrders?: boolean
 }
 
 /** A single control point on the grid at planar (x=col, y=row). */
@@ -235,6 +238,9 @@ export interface SimulationResult {
   /** (v4 SwarmRoute Lab — Robust Execution) The ADG/TPG-following executor what-if: under an injected delay, naive
    *  timestamp replay collides while the dependency-following replay absorbs it. Present only when a cell is shared. */
   delayResilience?: DelayResilience
+  /** (v4 SwarmRoute Lab — Order/Dispatch context) The lifelong online-dispatch operations summary (orders releasing
+   *  over time, queued + assigned to the fleet with stations/battery/SLA). Present only when the request opted in. */
+  orderDispatch?: OrderDispatch
 }
 
 /** (v4 SwarmRoute Lab) An OptimizeGuidance run's comparison payload: the unguided baseline metrics + a summary of
@@ -283,4 +289,21 @@ export interface DelayResilience {
   adgCollisions: number
   adgMakespanInflation: number
   plannedMakespan: number
+}
+
+/** (v4 SwarmRoute Lab — Order/Dispatch context) The lifelong online-dispatch operations summary, simulated above the
+ *  MAPF layer: a stream of transport orders releasing over time, queued and continuously assigned to the fleet (pickup
+ *  → dropoff stations, battery, SLA deadlines). The headline is policy sensitivity — a smarter assignment turns the
+ *  backlog over faster, lifting on-time delivery and cutting latency. All times in ms. */
+export interface OrderDispatch {
+  ordersTotal: number
+  ordersCompleted: number
+  onTimeRate: number
+  meanLatencyMs: number
+  p95LatencyMs: number
+  makespanMs: number
+  fleetUtilization: number
+  chargingStops: number
+  maxQueueDepth: number
+  policy: string
 }

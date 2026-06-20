@@ -205,7 +205,9 @@ function LabMetrics() {
   const trace = result?.trace
   const robustness = result?.robustness
   const delayResilience = result?.delayResilience
+  const orders = result?.orderDispatch
   const pct = (v: number) => `${Math.round(v * 100)}%`
+  const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`
 
   const downloadTrace = () => {
     if (!trace) return
@@ -328,6 +330,27 @@ function LabMetrics() {
         </div>
       )}
 
+      {orders && (
+        // (v4 Order/Dispatch context) The lifelong online-dispatch KPIs over the same field + fleet. Toggle the
+        // Assignment policy (Random → Optimal) and watch on-time delivery climb while latency / utilization fall.
+        <div className="rounded-lg border border-hairline bg-base px-3 py-2">
+          <div className="text-2xs uppercase tracking-wider text-text-muted">
+            {intl.formatMessage(
+              { id: 'orders.title' },
+              { policy: orders.policy, done: orders.ordersCompleted, total: orders.ordersTotal },
+            )}
+          </div>
+          <div className="mt-1.5 grid grid-cols-3 gap-2">
+            <OrderStat label={intl.formatMessage({ id: 'orders.onTime' })} value={pct(orders.onTimeRate)} warn={orders.onTimeRate < 0.8} />
+            <OrderStat label={intl.formatMessage({ id: 'orders.meanLatency' })} value={secs(orders.meanLatencyMs)} />
+            <OrderStat label={intl.formatMessage({ id: 'orders.p95Latency' })} value={secs(orders.p95LatencyMs)} />
+            <OrderStat label={intl.formatMessage({ id: 'orders.utilization' })} value={pct(orders.fleetUtilization)} />
+            <OrderStat label={intl.formatMessage({ id: 'orders.queue' })} value={String(orders.maxQueueDepth)} />
+            <OrderStat label={intl.formatMessage({ id: 'orders.charging' })} value={String(orders.chargingStops)} />
+          </div>
+        </div>
+      )}
+
       {trace && trace.length > 0 && (
         <button
           type="button"
@@ -337,6 +360,16 @@ function LabMetrics() {
           {intl.formatMessage({ id: 'trace.download' }, { count: trace.length })}
         </button>
       )}
+    </div>
+  )
+}
+
+/** (v4 SwarmRoute Lab — Order/Dispatch) One labelled dispatch KPI; turns red when an on-time figure is below target. */
+function OrderStat({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+  return (
+    <div>
+      <div className="text-2xs uppercase tracking-wider text-text-muted">{label}</div>
+      <div className={`mt-0.5 font-mono text-sm tabular-nums ${warn ? 'text-danger' : 'text-text-primary'}`}>{value}</div>
     </div>
   )
 }

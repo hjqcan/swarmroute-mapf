@@ -30,6 +30,10 @@ public class MapSite : Entity
     /// Creates a site. <paramref name="siteId"/> is the topology-stable key (e.g. "A", "S1") used by lines
     /// and the graph; it is distinct from the EF surrogate <see cref="Entity.Id"/>.
     /// </summary>
+    /// <param name="siteRole">
+    /// FMS dispatch role of the site (additive per ADR-F1). Defaults to <see cref="Enums.SiteRole.Transit"/>
+    /// so all existing call-sites and persisted rows behave exactly as before.
+    /// </param>
     /// <exception cref="ArgumentException">Thrown when <paramref name="siteId"/> is null/whitespace.</exception>
     public MapSite(
         string siteId,
@@ -37,7 +41,8 @@ public class MapSite : Entity
         MapPosition pos,
         bool enable = true,
         IEnumerable<string>? interferenceSiteIds = null,
-        IEnumerable<string>? interferenceLineIds = null)
+        IEnumerable<string>? interferenceLineIds = null,
+        SiteRole siteRole = SiteRole.Transit)
     {
         if (string.IsNullOrWhiteSpace(siteId))
             throw new ArgumentException($"[{MapErrorCodes.MissingIdentifier}] Site id must not be empty.", nameof(siteId));
@@ -46,6 +51,7 @@ public class MapSite : Entity
         SiteType = siteType;
         Pos = pos ?? MapPosition.Empty;
         Enable = enable;
+        SiteRole = siteRole;
 
         if (interferenceSiteIds is not null)
             _interferenceSiteIds.AddRange(interferenceSiteIds.Where(id => !string.IsNullOrWhiteSpace(id)).Select(id => id.Trim()));
@@ -58,6 +64,12 @@ public class MapSite : Entity
 
     /// <summary>Functional classification of the site.</summary>
     public MapSiteType SiteType { get; private set; }
+
+    /// <summary>
+    /// FMS dispatch role of the site (additive; complements <see cref="SiteType"/>). Defaults to
+    /// <see cref="Enums.SiteRole.Transit"/>.
+    /// </summary>
+    public SiteRole SiteRole { get; private set; }
 
     /// <summary>Pose (position + heading) of the site.</summary>
     public MapPosition Pos { get; private set; }

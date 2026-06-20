@@ -1,5 +1,5 @@
 import { Button, InputNumber, Segmented, Slider, Switch } from 'antd'
-import { Dices, Play, Loader2, Repeat, Sparkles, BarChart3, FileDown } from 'lucide-react'
+import { Dices, Play, Loader2, Repeat, Sparkles, BarChart3, FileDown, Package } from 'lucide-react'
 import { useIntl } from 'react-intl'
 import { useSimStore } from '@/store/simStore'
 import type { PlannerKind, ScenarioKind, AssignmentPolicy } from '@/types'
@@ -279,6 +279,16 @@ export default function ControlRail() {
           {intl.formatMessage({ id: 'controls.trace' })}
         </label>
         <Switch checked={params.emitTrace ?? false} onChange={(v) => setParam('emitTrace', v)} />
+      </div>
+
+      {/* (v4 SwarmRoute Lab — Order/Dispatch) Simulate a lifelong order stream over the same field + fleet (online
+          assignment, stations, battery, SLA) and report operations KPIs. The Assignment policy above drives it. */}
+      <div className="flex items-center justify-between">
+        <label className="flex items-center gap-2 text-sm text-text-muted">
+          <Package size={14} />
+          {intl.formatMessage({ id: 'controls.orders' })}
+        </label>
+        <Switch checked={params.simulateOrders ?? false} onChange={(v) => setParam('simulateOrders', v)} />
       </div>
 
       {/* Auto-loop: when a run finishes playing, pick a new seed (the field updates) and run again, forever. */}

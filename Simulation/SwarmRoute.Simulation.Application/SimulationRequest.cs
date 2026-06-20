@@ -83,4 +83,5 @@ public sealed record SimulationRequest(
     bool OptimizeGuidance = false,
     ScenarioKind Scenario = ScenarioKind.Open,
     AssignmentPolicy Assignment = AssignmentPolicy.Random,
-    bool EmitTrace = false);
+    bool EmitTrace = false,
+    bool SimulateOrders = false);

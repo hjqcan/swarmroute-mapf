@@ -11,6 +11,9 @@ public sealed record MapSiteDto
     /// <summary>Functional site type.</summary>
     public MapSiteType SiteType { get; init; } = MapSiteType.RelaySite;
 
+    /// <summary>FMS dispatch role of the site (additive; complements <see cref="SiteType"/>). Defaults to <see cref="SiteRole.Transit"/>.</summary>
+    public SiteRole SiteRole { get; init; } = SiteRole.Transit;
+
     /// <summary>Pose of the site.</summary>
     public required MapPositionDto Pos { get; init; }
 

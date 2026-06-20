@@ -7,6 +7,7 @@ using SwarmRoute.Domain.Abstractions.EventBus;
 using SwarmRoute.Infra.Data.Core.Context;
 using SwarmRoute.Map.Domain.Aggregates;
 using SwarmRoute.Map.Domain.Entities;
+using SwarmRoute.Map.Domain.Shared.Enums;
 using SwarmRoute.Map.Domain.ValueObjects;
 using System.Text.Json;
 
@@ -74,6 +75,7 @@ public sealed class MapDbContext : BaseDbContext
 
         sites.Property(s => s.SiteId).HasMaxLength(128).IsRequired();
         sites.Property(s => s.SiteType).HasConversion<string>().HasMaxLength(32).IsRequired();
+        sites.Property(s => s.SiteRole).HasConversion<string>().HasMaxLength(32).IsRequired().HasDefaultValue(SiteRole.Transit);
         sites.Property(s => s.Enable).IsRequired();
 
         sites.Property(s => s.Pos).HasColumnName("Pos").HasColumnType("jsonb").HasConversion(PositionConverter, PositionComparer);

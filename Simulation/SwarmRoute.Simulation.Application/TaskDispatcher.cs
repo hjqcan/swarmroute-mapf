@@ -83,8 +83,10 @@ public static class TaskDispatcher
     /// <summary>
     /// Hungarian (Kuhn–Munkres) minimum-cost perfect matching, O(n³) with potentials. Returns <c>assignment[i] = j</c>
     /// (row/AGV i ↔ column/goal j) minimising the total cost — provably ≤ any other assignment. Deterministic.
+    /// <para>Internal so the online <see cref="OrderDispatchSimulator"/> can reuse the exact same optimal matching for
+    /// each dispatch wave (over a square-padded idle-vehicle × pending-order cost matrix).</para>
     /// </summary>
-    private static int[] Hungarian(long[,] cost)
+    internal static int[] Hungarian(long[,] cost)
     {
         var n = cost.GetLength(0);
         const long inf = long.MaxValue / 4;
