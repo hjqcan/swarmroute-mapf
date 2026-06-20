@@ -74,6 +74,24 @@ export default function FieldCanvas() {
     const atCollision = collisionIdx != null && liveCursor >= collisionIdx - 0.001
     const flashOn = atCollision && (reduced || Math.floor(Date.now() / 350) % 2 === 0)
 
+    /* ---- (v4 SwarmRoute Lab — ScenarioBench) obstacle cells: any grid cell with no control point is a wall ---- */
+    {
+      const siteIds = new Set(field.sites.map((s) => s.id))
+      const wall = proj.cell * 0.96
+      for (let row = 0; row < field.height; row++) {
+        for (let col = 0; col < field.width; col++) {
+          if (siteIds.has(`r${row}c${col}`)) continue
+          const px = proj.toX(col)
+          const py = proj.toY(row)
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'
+          ctx.fillRect(px - wall / 2, py - wall / 2, wall, wall)
+          ctx.lineWidth = 1
+          ctx.strokeStyle = withAlpha(COLORS.hairline, 0.7)
+          ctx.strokeRect(px - wall / 2, py - wall / 2, wall, wall)
+        }
+      }
+    }
+
     /* ---- (v4 SwarmRoute Lab) congestion heatmap: shade each cell by how contested it was over the run.
        Bottlenecks (high occupied + wait agent-ticks) glow red; the network + agents draw on top. ---- */
     if (showHeatmap && result.metrics && result.metrics.heatmap.length > 0) {

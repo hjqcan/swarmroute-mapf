@@ -25,6 +25,10 @@ export type RunStatus = 'Completed' | 'CollisionDetected' | 'DidNotConverge'
  */
 export type PlannerKind = 'Dijkstra' | 'Sipp' | 'Sippwrt'
 
+/** (v4 SwarmRoute Lab — ScenarioBench) The map layout: `Open` is the uniform grid; `Bottleneck` walls the middle
+ *  column except a central corridor; `Obstacles` is a lattice of pillars. Obstacle cells are absent from the field. */
+export type ScenarioKind = 'Open' | 'Bottleneck' | 'Obstacles'
+
 /**
  * Which zone-local joint resolver owns a physical standoff cluster (mirrors the backend
  * `SwarmRoute.Liveness.Application.Contract.Policy.JointResolverKind`). Exactly one resolver owns a cluster.
@@ -67,6 +71,9 @@ export interface SimulationRequest {
    * Dijkstra); hop-uniform SIPP is unaffected.
    */
   optimizeGuidance?: boolean
+  /** (v4 SwarmRoute Lab — ScenarioBench) The map layout (default `Open` = uniform grid). Obstacle scenarios carve
+   *  walls / pillars so the metrics, heatmap, guidance and continuous-time are exercised on a non-uniform field. */
+  scenario?: ScenarioKind
 }
 
 /** A single control point on the grid at planar (x=col, y=row). */

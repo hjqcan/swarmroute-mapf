@@ -40,8 +40,15 @@ public sealed class SimulationService : ISimulationService
         ArgumentNullException.ThrowIfNull(request);
         Validate(request);
 
-        // 1. Build the grid field (graph + render metadata).
-        var field = _gridFactory.BuildGrid(request.Width, request.Height);
+        // 1. Build the grid field (graph + render metadata). (v4 ScenarioBench) Carve the scenario's obstacles into
+        //    the grid; the free cells (field.Sites) are what the fleet plans over and is assigned starts/goals from.
+        var obstacles = ScenarioObstacles.For(request.Scenario, request.Width, request.Height);
+        var field = _gridFactory.BuildGrid(request.Width, request.Height, obstacles: obstacles);
+        if (field.Sites.Count < 2 * request.AgvCount)
+            throw new ArgumentException(
+                $"Scenario '{request.Scenario}' leaves {field.Sites.Count} free cell(s), but {2 * request.AgvCount} are " +
+                $"needed for {request.AgvCount} AGVs (a distinct start + goal each). Use fewer AGVs or a larger / opener field.",
+                nameof(request));
 
         // 2. Assign per-agent starts + distinct goals.
         //    - Continuation run (request.Starts supplied & valid): keep each AGV where it is and give it a NEW
@@ -79,7 +86,7 @@ public sealed class SimulationService : ISimulationService
 
         var baselineMetrics = SimulationMetricsCalculator.Compute(loop, agentSpecs, PositionById(field));
         var guidance = CongestionGuidanceOptimizer.Derive(baselineMetrics, field);
-        var guidedField = _gridFactory.BuildGrid(request.Width, request.Height, guidance);
+        var guidedField = _gridFactory.BuildGrid(request.Width, request.Height, guidance, obstacles);
         var guidedLoop = await RunLoopAsync(guidedField, agentSpecs, request, cancellationToken).ConfigureAwait(false);
         return Map(guidedField, agentSpecs, guidedLoop,
             new GuidanceReportDto(baselineMetrics, guidance.AdjustedLaneCount, guidance.MaxMultiplier));

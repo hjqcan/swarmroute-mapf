@@ -23,13 +23,17 @@ public sealed class GridFieldFactory
     /// metadata (row-major: r0c0, r0c1, …).
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">When <paramref name="width"/> or <paramref name="height"/> &lt; 1.</exception>
-    public GridField BuildGrid(int width, int height, GuidanceGraph? guidance = null)
+    public GridField BuildGrid(
+        int width, int height, GuidanceGraph? guidance = null, IReadOnlySet<string>? obstacles = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(width, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(height, 1);
         // (v4 SwarmRoute Lab) Per-lane weight overlay; Identity (the default) leaves every lane at unit distance, so
         // an unguided build is byte-identical.
         var g = guidance ?? GuidanceGraph.Identity;
+        // (v4 SwarmRoute Lab — ScenarioBench) Obstacle cells get no site and no lanes to/from them, carving walls /
+        // pillars into the grid. Empty (the default) = the open uniform grid, byte-identical.
+        var blocked = obstacles ?? EmptyObstacles;
 
         var gridSites = new List<GridSite>(width * height);
         var mapSites = new List<MapSite>(width * height);
@@ -39,6 +43,8 @@ public sealed class GridFieldFactory
             for (var col = 0; col < width; col++)
             {
                 var id = SiteId(row, col);
+                if (blocked.Contains(id))
+                    continue; // obstacle cell → no control point
                 gridSites.Add(new GridSite(id, X: col, Y: row, MapSiteType.WorkSite));
                 mapSites.Add(new MapSite(id, MapSiteType.WorkSite, new MapPosition(x: col, y: row)));
             }
@@ -50,13 +56,15 @@ public sealed class GridFieldFactory
             for (var col = 0; col < width; col++)
             {
                 var here = SiteId(row, col);
+                if (blocked.Contains(here))
+                    continue; // an obstacle has no lanes
 
-                // Connect to the east neighbour (covers all horizontal adjacencies once).
-                if (col + 1 < width)
+                // Connect to the east neighbour (covers all horizontal adjacencies once), unless it's an obstacle.
+                if (col + 1 < width && !blocked.Contains(SiteId(row, col + 1)))
                     AddBidirectional(lines, here, SiteId(row, col + 1), g);
 
-                // Connect to the south neighbour (covers all vertical adjacencies once).
-                if (row + 1 < height)
+                // Connect to the south neighbour (covers all vertical adjacencies once), unless it's an obstacle.
+                if (row + 1 < height && !blocked.Contains(SiteId(row + 1, col)))
                     AddBidirectional(lines, here, SiteId(row + 1, col), g);
             }
         }
@@ -67,6 +75,8 @@ public sealed class GridFieldFactory
 
     /// <summary>The grid site id for (row, col): <c>r{row}c{col}</c>.</summary>
     public static string SiteId(int row, int col) => $"r{row}c{col}";
+
+    private static readonly IReadOnlySet<string> EmptyObstacles = new HashSet<string>(StringComparer.Ordinal);
 
     private static void AddBidirectional(List<MapLine> lines, string a, string b, GuidanceGraph guidance)
     {

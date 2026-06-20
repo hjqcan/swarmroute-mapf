@@ -2,7 +2,7 @@ import { Button, InputNumber, Segmented, Slider, Switch } from 'antd'
 import { Dices, Play, Loader2, Repeat, Sparkles, BarChart3 } from 'lucide-react'
 import { useIntl } from 'react-intl'
 import { useSimStore } from '@/store/simStore'
-import type { PlannerKind } from '@/types'
+import type { PlannerKind, ScenarioKind } from '@/types'
 
 const FIELD_MIN = 4
 const FIELD_MAX = 24
@@ -106,6 +106,26 @@ export default function ControlRail() {
           onChange={(v) => setParam('agvCount', v)}
         />
       </Field>
+
+      {/* (v4 SwarmRoute Lab — ScenarioBench) Map layout: Open uniform grid vs a walled bottleneck (one corridor) vs
+          a lattice of pillar obstacles — the non-uniform fields where the metrics / heatmap / guidance come alive. */}
+      <div>
+        <div className="mb-1.5 flex items-baseline justify-between">
+          <label className="text-sm text-text-muted">
+            {intl.formatMessage({ id: 'controls.scenario' })}
+          </label>
+        </div>
+        <Segmented
+          block
+          value={params.scenario ?? 'Open'}
+          onChange={(v) => setParam('scenario', v as ScenarioKind)}
+          options={[
+            { label: intl.formatMessage({ id: 'controls.scenario.open' }), value: 'Open' },
+            { label: intl.formatMessage({ id: 'controls.scenario.bottleneck' }), value: 'Bottleneck' },
+            { label: intl.formatMessage({ id: 'controls.scenario.obstacles' }), value: 'Obstacles' },
+          ]}
+        />
+      </div>
 
       {/* Planner: v0 Dijkstra (space-only — can deadlock when dense) vs v1 SIPP (reservation-aware,
           plans in time and reports any remaining standoff honestly). Defaults to SIPP; flip to Dijkstra
