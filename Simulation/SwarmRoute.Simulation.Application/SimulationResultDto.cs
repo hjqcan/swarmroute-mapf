@@ -20,7 +20,24 @@ public sealed record SimulationResultDto(
     SimulationMetricsDto? Metrics = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] GuidanceReportDto? Guidance = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<TraceEventDto>? Trace = null,
-    RobustnessDto? Robustness = null);
+    RobustnessDto? Robustness = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DelayResilienceDto? DelayResilience = null);
+
+/// <summary>
+/// (v4 SwarmRoute Lab — Robust Execution) The ADG/TPG-following executor's what-if: inject a delay into the most
+/// delay-brittle AGV, then re-execute the plan naively (timestamp-following) versus following the dependency graph.
+/// The naive run collides at tight handoffs (<see cref="NaiveCollisions"/> &gt; 0); the ADG run is collision-free
+/// (<see cref="AdgCollisions"/> = 0) and instead pays <see cref="AdgMakespanInflation"/> ticks of makespan to absorb
+/// the delay — the concrete case for following dependencies rather than the clock. Null when no cell is ever shared.
+/// </summary>
+/// <param name="DelayTicks">The injected delay (just past the tightest handoff's slack, so the naive plan breaks).</param>
+/// <param name="DelayedAgent">The AGV that was delayed (the early side of the tightest handoff).</param>
+/// <param name="NaiveCollisions">Cell collisions if everyone kept their planned timestamps under the delay.</param>
+/// <param name="AdgCollisions">Recomputed on the dependency-following schedule — 0 because it cannot collide.</param>
+/// <param name="AdgMakespanInflation">Extra makespan the ADG run pays to absorb the delay collision-free.</param>
+/// <param name="PlannedMakespan">The undelayed plan's makespan, for reference.</param>
+public sealed record DelayResilienceDto(
+    int DelayTicks, string DelayedAgent, int NaiveCollisions, int AdgCollisions, int AdgMakespanInflation, int PlannedMakespan);
 
 /// <summary>
 /// (v4 SwarmRoute Lab — Robust Execution) The run's Action-Dependency-Graph robustness summary: how many inter-AGV

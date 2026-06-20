@@ -314,7 +314,12 @@ public sealed class SimulationService : ISimulationService
         // timeline: cell-handoff dependencies + how much delay the plan absorbs before a naive collision.
         var robustness = RobustnessAnalyzer.Compute(loop);
 
-        return new SimulationResultDto(fieldDto, agents, timeline, stats, continuous, metrics, guidance, trace, robustness);
+        // (v4 SwarmRoute Lab — Robust Execution) The ADG-following executor what-if: inject a delay into the most
+        // brittle AGV and re-execute naively (collides) vs following the dependency graph (absorbs it, collision-free).
+        var delayResilience = AdgExecutor.Simulate(loop);
+
+        return new SimulationResultDto(
+            fieldDto, agents, timeline, stats, continuous, metrics, guidance, trace, robustness, delayResilience);
     }
 
     private static string RoadmapGraphLaneId(string from, string to) => $"{from}-{to}";

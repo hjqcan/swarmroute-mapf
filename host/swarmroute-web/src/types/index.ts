@@ -232,6 +232,9 @@ export interface SimulationResult {
   trace?: TraceEvent[]
   /** (v4 SwarmRoute Lab — Robust Execution) The ADG/TPG robustness summary (present on every run). */
   robustness?: Robustness
+  /** (v4 SwarmRoute Lab — Robust Execution) The ADG/TPG-following executor what-if: under an injected delay, naive
+   *  timestamp replay collides while the dependency-following replay absorbs it. Present only when a cell is shared. */
+  delayResilience?: DelayResilience
 }
 
 /** (v4 SwarmRoute Lab) An OptimizeGuidance run's comparison payload: the unguided baseline metrics + a summary of
@@ -267,4 +270,17 @@ export interface Robustness {
   tightHandoffs: number
   minSlackTicks: number
   tightestCells: string[]
+}
+
+/** (v4 SwarmRoute Lab — Robust Execution) The ADG/TPG-following executor's delay what-if. A delay (just past the
+ *  tightest handoff's slack) is injected into the most brittle AGV, then the plan is re-executed two ways: naively by
+ *  wall-clock timestamps (collides at tight handoffs) versus following the dependency graph (collision-free, paying
+ *  `adgMakespanInflation` extra ticks). The contrast is the case for executing on dependencies, not the clock. */
+export interface DelayResilience {
+  delayTicks: number
+  delayedAgent: string
+  naiveCollisions: number
+  adgCollisions: number
+  adgMakespanInflation: number
+  plannedMakespan: number
 }

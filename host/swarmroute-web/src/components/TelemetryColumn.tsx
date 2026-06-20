@@ -204,6 +204,7 @@ function LabMetrics() {
   const guidance = result?.guidance
   const trace = result?.trace
   const robustness = result?.robustness
+  const delayResilience = result?.delayResilience
   const pct = (v: number) => `${Math.round(v * 100)}%`
 
   const downloadTrace = () => {
@@ -287,6 +288,42 @@ function LabMetrics() {
                 {sid}
               </span>
             ))}
+          </div>
+        </div>
+      )}
+
+      {delayResilience && (
+        // (v4 Robust Execution) The ADG/TPG-following executor what-if: inject a delay into the most brittle AGV, then
+        // re-execute the plan naively (by timestamps → collides) vs following the dependency graph (→ 0 collisions,
+        // paying makespan). The concrete case for executing on dependencies rather than the clock.
+        <div className="rounded-lg border border-accent/40 bg-accent-soft px-3 py-2">
+          <div className="text-2xs uppercase tracking-wider text-accent">
+            {intl.formatMessage(
+              { id: 'metrics.delay.title' },
+              { delay: delayResilience.delayTicks, agent: delayResilience.delayedAgent },
+            )}
+          </div>
+          <div className="mt-1.5 grid grid-cols-3 gap-2">
+            <div>
+              <div className="text-2xs uppercase tracking-wider text-text-muted">
+                {intl.formatMessage({ id: 'metrics.delay.naive' })}
+              </div>
+              <div className="mt-0.5 font-mono text-lg tabular-nums text-danger">{delayResilience.naiveCollisions}</div>
+            </div>
+            <div>
+              <div className="text-2xs uppercase tracking-wider text-text-muted">
+                {intl.formatMessage({ id: 'metrics.delay.adg' })}
+              </div>
+              <div className="mt-0.5 font-mono text-lg tabular-nums text-accent">{delayResilience.adgCollisions}</div>
+            </div>
+            <div>
+              <div className="text-2xs uppercase tracking-wider text-text-muted">
+                {intl.formatMessage({ id: 'metrics.delay.cost' })}
+              </div>
+              <div className="mt-0.5 font-mono text-lg tabular-nums text-text-primary">
+                +{delayResilience.adgMakespanInflation}
+              </div>
+            </div>
           </div>
         </div>
       )}
