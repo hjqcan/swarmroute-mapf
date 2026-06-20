@@ -29,9 +29,14 @@ public enum ScenarioMode
     WarehouseWellFormed = 1,
 
     /// <summary>
-    /// (FMS-V3 — not yet implemented) A lifelong dispatch scenario: a stream of tasks releasing over time, each AGV
-    /// continuously re-tasked to a fresh well-formed endpoint as it finishes. Accepted by the request today but
-    /// treated as <see cref="RandomStress"/> until V3 lands.
+    /// (FMS-V3) A <b>lifelong dispatch</b> scenario: a continuous-operation warehouse over a larger, sparser grid. A
+    /// pool of transport tasks (goals at workstation docks) is released over time and the runtime
+    /// <see cref="Dispatch.Application.Contract.ITaskDispatcher"/> hands each idle AGV its next task; the instant an
+    /// AGV finishes a task and clears to parking it requests another and heads out again — the fleet never stops. The
+    /// run is bounded by <see cref="SimulationRequest.LifelongHorizonTicks"/> (not "all arrived"), and the result
+    /// carries the additive <see cref="LifelongMetricsDto"/> (throughput, wait, queue depth, parking saturation). When
+    /// <see cref="SimulationRequest.LifelongHorizonTicks"/> is left null/0 this mode falls back to a one-shot
+    /// <see cref="WarehouseWellFormed"/> pass, so selecting the mode alone is still byte-identical to that scenario.
     /// </summary>
     LifelongDispatch = 2
 }

@@ -29,7 +29,9 @@ public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
         PlannerKind planner = PlannerKind.Dijkstra,
         long horizonWindowMs = long.MaxValue,
         bool preventCycles = false,
-        IStationCatalog? stationCatalog = null)
+        IStationCatalog? stationCatalog = null,
+        bool costBasedAdmission = false,
+        IFleetPlanProvider? fleetPlan = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
 
@@ -68,7 +70,29 @@ public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
         {
             services.AddSingleton(stationCatalog);
             services.AddSingleton<IStationResourceCalendar, StationResourceCalendar>();
-            services.AddSingleton<IStationScheduler, StationScheduler>();
+
+            if (costBasedAdmission)
+            {
+                // (FMS-V3) Cost-based admission: give the scheduler the traffic-impact analyzer (over this run's
+                // graph), the optional fleet-plan priority snapshot, and the cost policy, so a blocking station weighs
+                // let-pass vs go-first numerically. The scheduler is constructed explicitly (not via DI activation) so
+                // the appended optional ctor params are supplied; off (the default) ⇒ the plain calendar+catalog
+                // scheduler below ⇒ byte-identical.
+                services.AddSingleton<ITrafficImpactAnalyzer>(new TrafficImpactAnalyzer(graph));
+                if (fleetPlan is not null)
+                    services.AddSingleton(fleetPlan);
+                services.AddSingleton<ICostBasedAdmissionPolicy>(new CostBasedAdmissionPolicy());
+                services.AddSingleton<IStationScheduler>(sp => new StationScheduler(
+                    sp.GetRequiredService<IStationResourceCalendar>(),
+                    sp.GetRequiredService<IStationCatalog>(),
+                    sp.GetRequiredService<ITrafficImpactAnalyzer>(),
+                    sp.GetService<IFleetPlanProvider>(),
+                    sp.GetRequiredService<ICostBasedAdmissionPolicy>()));
+            }
+            else
+            {
+                services.AddSingleton<IStationScheduler, StationScheduler>();
+            }
         }
 
         // RHCR (v2): bound this run's planning horizon. The CoordinationCycleService reads HorizonWindowMs from

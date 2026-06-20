@@ -96,13 +96,17 @@ public sealed record FleetLoopStats(
 /// <param name="TimedTrajectories">(v3 SIPPwRT) Per-agent real-millisecond CP arrival schedule — populated ONLY
 /// under <see cref="FleetExecutionMode.Continuous"/>, else <see langword="null"/> (the discrete modes leave it
 /// untouched). Derived from the recorded event frames, so it always matches the discrete <see cref="Frames"/>.</param>
+/// <param name="Lifelong">(FMS-V3) Continuous-operation metrics — populated ONLY on a lifelong-dispatch run (the
+/// driver was handed a lifelong runtime), else <see langword="null"/>. Carries throughput / backlog wait / queue depth
+/// / parking saturation derived from the run's task ledger.</param>
 public sealed record FleetLoopResult(
     IReadOnlyList<FleetTickFrame> Frames,
     IReadOnlyDictionary<string, IReadOnlyList<string>> PerAgentRoute,
     FleetLoopStats Stats,
     int MaxConcurrentEnRoute,
     FleetCollisionInfo? Collision,
-    IReadOnlyList<FleetTimedTrajectory>? TimedTrajectories = null);
+    IReadOnlyList<FleetTimedTrajectory>? TimedTrajectories = null,
+    LifelongMetricsDto? Lifelong = null);
 
 /// <summary>(v3 SIPPwRT) One agent's continuous-time trajectory: the CPs it reached and the fleet-clock
 /// millisecond it reached each (the first waypoint is its start at t=0).</summary>

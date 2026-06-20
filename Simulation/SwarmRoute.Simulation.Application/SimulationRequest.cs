@@ -84,9 +84,25 @@ namespace SwarmRoute.Simulation.Application;
 /// carves a well-formed warehouse out of the request's <see cref="Width"/>×<see cref="Height"/> grid (a parking/workstation
 /// ring around a connected transit core), draws every AGV's task goal ONLY from workstation endpoints, and clears a
 /// serviced AGV to a real parking slot — the scenario-semantics fix that removes permanent goal-blocking (M-F2).
-/// <see cref="Simulation.Application.ScenarioMode.LifelongDispatch"/> is accepted but treated as
-/// <see cref="Simulation.Application.ScenarioMode.RandomStress"/> until FMS-V3. Ignored when <see cref="StationScenario"/>
-/// is set (the built-in fixed station demo takes precedence).
+/// (FMS-V3) <see cref="Simulation.Application.ScenarioMode.LifelongDispatch"/> runs a continuous-operation warehouse:
+/// a stream of transport tasks (goals at workstation docks) the runtime <see cref="Dispatch.Application.Contract.ITaskDispatcher"/>
+/// hands to AGVs, each AGV re-tasked the moment it clears to parking — but ONLY when <see cref="LifelongHorizonTicks"/>
+/// is also set (a lifelong run is horizon-bounded, not "all arrived"). With the mode set but the horizon left null/0
+/// the run still falls back to a one-shot warehouse pass, so the mode alone never changes behaviour. Ignored when
+/// <see cref="StationScenario"/> is set (the built-in fixed station demo takes precedence).
+/// </param>
+/// <param name="LifelongHorizonTicks">
+/// (FMS-V3) The number of ticks a <see cref="Simulation.Application.ScenarioMode.LifelongDispatch"/> run executes
+/// before stopping and reporting its throughput (default <see langword="null"/>/0 = OFF ⇒ no lifelong horizon ⇒ the
+/// run keeps its today run-to-completion behaviour, BYTE-IDENTICAL). When set (and the mode is LifelongDispatch) the
+/// loop runs to exactly this many ticks, re-tasking each AGV that finishes a task, and the result carries the
+/// additive <see cref="LifelongMetricsDto"/> (throughput, wait, queue depth, parking saturation). Inert for every
+/// other <see cref="ScenarioMode"/>.
+/// </param>
+/// <param name="LifelongCostBasedAdmission">
+/// (FMS-V3) Opt-in: wire the cost-based admission policy into a lifelong run's dock-admission scheduler, so a
+/// blocking station weighs let-pass vs go-first numerically (default <see langword="false"/> ⇒ the V2/V1 gate ⇒
+/// byte-identical). Inert outside a lifelong run.
 /// </param>
 public sealed record SimulationRequest(
     int Width,
@@ -105,7 +121,9 @@ public sealed record SimulationRequest(
     bool EmitTrace = false,
     bool SimulateOrders = false,
     StationScenarioKind? StationScenario = null,
-    ScenarioMode ScenarioMode = ScenarioMode.RandomStress);
+    ScenarioMode ScenarioMode = ScenarioMode.RandomStress,
+    long? LifelongHorizonTicks = null,
+    bool LifelongCostBasedAdmission = false);
 
 /// <summary>(FMS-V1 R2) The built-in FMS station demo layouts a <see cref="SimulationRequest"/> may opt into.</summary>
 public enum StationScenarioKind

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using SwarmRoute.Dispatch.Application;
+using SwarmRoute.Dispatch.Application.Contract;
 using SwarmRoute.Dispatch.Domain.Endpoints;
 using SwarmRoute.Liveness.Application.Contract.Policy;
 using SwarmRoute.Liveness.Application.Policy;
@@ -47,10 +48,18 @@ public sealed class SimulationService : ISimulationService
         if (request.StationScenario is { } stationScenario)
             return await RunStationScenarioAsync(stationScenario, request, cancellationToken).ConfigureAwait(false);
 
+        // (FMS-V3) Opt-in lifelong dispatch: a continuous-operation warehouse over a larger, sparser grid driven by the
+        // runtime task dispatcher, bounded by a horizon. Requires BOTH ScenarioMode.LifelongDispatch AND a positive
+        // LifelongHorizonTicks; with the mode set but no horizon it falls back to a one-shot WarehouseWellFormed pass
+        // (so selecting the mode alone is byte-identical to that scenario). Default mode (RandomStress) skips this.
+        if (request.ScenarioMode == ScenarioMode.LifelongDispatch && request.LifelongHorizonTicks is > 0)
+            return await RunLifelongDispatchAsync(request, cancellationToken).ConfigureAwait(false);
+
         // (FMS-V2) Opt-in well-formed warehouse: carve a parking/workstation endpoint ring around a connected transit
         // core, draw task goals from workstations, and clear serviced AGVs to real parking. ScenarioMode defaults to
-        // RandomStress => this is skipped => byte-identical. (LifelongDispatch is treated as RandomStress until V3.)
-        if (request.ScenarioMode == ScenarioMode.WarehouseWellFormed)
+        // RandomStress => this is skipped => byte-identical. (LifelongDispatch with no horizon also runs the one-shot
+        // warehouse here — the mode-without-horizon fallback above falls through to this branch.)
+        if (request.ScenarioMode is ScenarioMode.WarehouseWellFormed or ScenarioMode.LifelongDispatch)
             return await RunWarehouseWellFormedAsync(request, cancellationToken).ConfigureAwait(false);
 
         Validate(request);
@@ -274,6 +283,80 @@ public sealed class SimulationService : ISimulationService
         return Map(scenario.Field, scenario.Agents, loop, emitTrace: request.EmitTrace, fms: scenario.Fms);
     }
 
+    /// <summary>The number of transport tasks a lifelong run generates: roughly one task per AGV per
+    /// <see cref="TaskTicksPerJob"/> ticks of horizon, so the backlog grows and drains realistically. Clamped to at
+    /// least one per AGV.</summary>
+    private static int LifelongTaskCount(SimulationRequest request, long horizon)
+        => Math.Max(request.AgvCount, (int)Math.Min(int.MaxValue, request.AgvCount * Math.Max(1, horizon / TaskTicksPerJob)));
+
+    /// <summary>Nominal ticks one transport job (drive→service→clear→re-task) takes on a sparse grid — the task-count
+    /// pacing constant, so a horizon releases roughly as many tasks as the fleet can serve (a backlog that grows then
+    /// drains, rather than an unservable flood).</summary>
+    private const long TaskTicksPerJob = 18;
+
+    /// <summary>
+    /// (FMS-V3) Runs an opt-in <b>lifelong dispatch</b> scenario end-to-end. <see cref="LifelongScenarioBuilder"/> carves a
+    /// large safe workstation/parking endpoint set out of the request's grid and a STREAM of transport tasks; the runtime
+    /// <see cref="ITaskDispatcher"/> hands each idle AGV its next task, and the executor drives the service-then-clear-to-
+    /// parking-then-re-task loop to the horizon. Uses SIPP + the schedule-faithful executor (the M-F1 finding) and an
+    /// <see cref="IParkingManager"/> for resting slots. The dock-admission scheduler is wired with cost-based admission
+    /// when the request opts in. The result carries the additive <see cref="LifelongMetricsDto"/>.
+    /// </summary>
+    private async Task<SimulationResultDto> RunLifelongDispatchAsync(
+        SimulationRequest request, CancellationToken cancellationToken)
+    {
+        Validate(request);
+
+        var horizon = request.LifelongHorizonTicks!.Value;
+        var taskCount = LifelongTaskCount(request, horizon);
+        var scenario = LifelongScenarioBuilder.Build(
+            _gridFactory, request.Width, request.Height, request.AgvCount, taskCount, horizon,
+            request.Seed ?? DefaultSeed);
+
+        // The engine is created WITH the catalog so the dock-admission scheduler shares this run's reservation table,
+        // optionally with cost-based admission (a long-service blocking station then weighs let-pass vs go-first). SIPP
+        // planner + schedule-faithful executor — the service window lives on the same HopMs==1 tick axis SIPP plans on.
+        await using var engine = _engineFactory.Create(
+            scenario.Field.Graph, PlannerKind.Sipp, request.HorizonWindowMs, request.PreventDeadlockCycles,
+            stationCatalog: scenario.Catalog,
+            costBasedAdmission: request.LifelongCostBasedAdmission,
+            fleetPlan: scenario.FleetPlan);
+
+        // A lifelong run accumulates contention forever (re-tasked AGVs converge on docks, parked AGVs cluster), so it
+        // NEEDS the executor's standoff-recovery levers on — unlike the one-shot warehouse, leaving them off lets a
+        // transient cluster stall the whole loop mid-run. Default StepAside on and use local CBS to crack dense
+        // standoffs (CBS pairs with the SIPP planner here); an explicit request value still overrides. These are
+        // sim/executor-scoped liveness levers (production has no executor), exactly as in the other scenarios.
+        var jointResolver = request.JointResolver == JointResolverKind.None
+            ? JointResolverKind.Cbs
+            : request.JointResolver;
+        var policy = new LivenessPolicy(
+            scenario.Field.Graph,
+            new LivenessOptions { JointResolver = jointResolver, StepAside = true });
+
+        // The lifelong runtime: the deterministic priority dispatcher over the generated task stream + the dock index.
+        // The loop runs to exactly the horizon (the driver's maxTicks IS the horizon), re-tasking on each clear-to-park.
+        var lifelong = new LifelongRuntime(
+            new PriorityTaskDispatcher(), scenario.Tasks, scenario.StationByDock, scenario.Field.Graph, horizon);
+
+        var loop = await _loopDriver
+            .RunToCompletionAsync(
+                engine.Cycle, engine.RoadmapId, scenario.Field.Graph, scenario.Agents,
+                maxTicks: (int)Math.Min(int.MaxValue, horizon),
+                advanceClock: engine.Clock.SetTick,
+                executionMode: FleetExecutionMode.ScheduleFaithful,
+                policy: policy,
+                log: msg => _logger.LogInformation("[lifelong] {Detail}", msg),
+                fms: scenario.Fms,
+                stationScheduler: engine.StationScheduler,
+                parkingManager: new ParkingManager(),
+                lifelong: lifelong,
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        return Map(scenario.Field, scenario.Agents, loop, emitTrace: request.EmitTrace, fms: scenario.Fms);
+    }
+
     private static IReadOnlyDictionary<string, (double X, double Y)> PositionById(GridField field)
         => field.Sites.ToDictionary(s => s.Id, s => (X: (double)s.X, Y: (double)s.Y), StringComparer.Ordinal);
 
@@ -452,7 +535,10 @@ public sealed class SimulationService : ISimulationService
 
         return new SimulationResultDto(
             fieldDto, agents, timeline, stats, continuous, metrics, guidance, trace, robustness, delayResilience,
-            orderDispatch);
+            orderDispatch,
+            // (FMS-V3) Continuous-operation metrics — non-null ONLY on a lifelong run (the loop carried a lifelong
+            // runtime). Null for every other run ⇒ omitted from the JSON ⇒ byte-identical.
+            loop.Lifelong);
     }
 
     private static string RoadmapGraphLaneId(string from, string to) => $"{from}-{to}";

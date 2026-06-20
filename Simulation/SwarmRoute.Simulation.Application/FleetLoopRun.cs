@@ -53,6 +53,15 @@ internal sealed partial class FleetLoopRun
     /// pick (<see cref="NearestRole"/>) is used instead, which is byte-identical to the FMS-V1 behaviour.</summary>
     private readonly IParkingManager? _parkingManager;
 
+    /// <summary>(FMS-V3) Optional lifelong-dispatch runtime: the task dispatcher + backlog + horizon + ledger. When
+    /// <see langword="null"/> (the default) the run is NOT lifelong — it ends at "all arrived", AGVs are never
+    /// re-tasked, and no lifelong metric is recorded — so behaviour is byte-identical. When supplied the loop runs to
+    /// the horizon and re-tasks each AGV that clears to parking.</summary>
+    private readonly LifelongRuntime? _lifelong;
+
+    /// <summary>True iff a lifelong runtime is in play (every lifelong arm is otherwise skipped).</summary>
+    private bool LifelongActive => _lifelong is not null;
+
     /// <summary>Set once at the top of <see cref="ExecuteAsync"/> (run-scoped, never mutated thereafter), so the
     /// loop methods can read it without threading it through every signature — exactly as the original local
     /// functions captured the method's <c>cancellationToken</c> parameter.</summary>
@@ -112,7 +121,8 @@ internal sealed partial class FleetLoopRun
         Action<string>? log,
         FmsScenario? fms = null,
         IStationScheduler? stationScheduler = null,
-        IParkingManager? parkingManager = null)
+        IParkingManager? parkingManager = null,
+        LifelongRuntime? lifelong = null)
     {
         _cycle = cycle;
         _roadmapId = roadmapId;
@@ -125,6 +135,7 @@ internal sealed partial class FleetLoopRun
         _fms = fms;
         _stationScheduler = stationScheduler;
         _parkingManager = parkingManager;
+        _lifelong = lifelong;
 
         _scheduleFaithful = executionMode == FleetExecutionMode.ScheduleFaithful;
         _pibtEpisodeMaxTicks = 2 * Math.Max(1, graph.VertexCount);
@@ -161,6 +172,10 @@ internal sealed partial class FleetLoopRun
                     ag.MissionState = AgvMissionState.MovingToPreDockBuffer;
                     FmsInitStationGoal(ag, station);
                 }
+
+        // (FMS-V3) In a lifelong run every AGV starts idle-parked at its start so the dispatcher assigns even the first
+        // task uniformly. No-op without a lifelong runtime, so the per-agent setup above stands for a one-shot run.
+        LifelongInitFleet();
 
         _agentViews = new List<AgentLivenessView>(_fleet.Count);
     }
@@ -252,7 +267,8 @@ internal sealed partial class FleetLoopRun
             Replans: _fleet.Sum(a => a.Replans),
             FlowtimeTicks: _flowtimeTicks);
 
-        return new FleetLoopResult(_frames, routes, stats, _maxConcurrent, _collision, timedTrajectories);
+        return new FleetLoopResult(
+            _frames, routes, stats, _maxConcurrent, _collision, timedTrajectories, BuildLifelongMetrics());
     }
 
     // ── Shared helpers (were local functions of RunToCompletionAsync) ─────────────────────────────────────────
@@ -331,7 +347,11 @@ internal sealed partial class FleetLoopRun
         public string Id { get; } = spec.Id;
         /// <summary>The current planning origin — the original start, or the CP it was re-routed from.</summary>
         public string Start { get; set; } = spec.StartSiteId;
-        public string Goal { get; } = spec.GoalSiteId;
+        /// <summary>The agent's current goal CP. Get-only in a one-shot run (set once from the spec). In a (FMS-V3)
+        /// lifelong run the re-task arm advances it to each successive transport task's goal via
+        /// <see cref="RetaskTo"/>; that is the ONLY mutation path, and it never fires without a lifelong runtime, so a
+        /// non-lifelong run is byte-identical (the goal is the immutable spec goal exactly as before).</summary>
+        public string Goal { get; private set; } = spec.GoalSiteId;
         public int Priority { get; } = spec.Priority;
 
         /// <summary>(FMS) How freely the liveness layer may relocate this vehicle when resolving contention. The
@@ -429,5 +449,33 @@ internal sealed partial class FleetLoopRun
         public AgentMotionState State => Done ? AgentMotionState.Arrived
             : EnRoute ? AgentMotionState.Moving
             : AgentMotionState.Waiting;
+
+        /// <summary>(FMS-V3 lifelong) Re-point a finished, parked AGV at a fresh transport-task goal and wake it up to
+        /// go again: clears the parked/done state, plants the new goal + station binding, and resets the navigation
+        /// fields to "pending at the current cell" so the next cycle plans toward the new goal. The caller (the lifelong
+        /// re-task arm) is responsible for the station-lifecycle goal override (buffer/dock) and the parked-cell set.</summary>
+        public void RetaskTo(string goal, string? stationId, AgvMissionState missionState)
+        {
+            var here = Position;
+            Goal = goal;
+            StationId = stationId;
+            MissionState = missionState;
+            Done = false;
+            EnRoute = false;
+            PibtActive = false;
+            Mobility = MobilityClass.Movable;
+            RedirectTarget = null;
+            FmsGoalOverride = null;
+            Start = here;
+            CpRoute = new[] { here };
+            CpEntryTicks = Array.Empty<long>();
+            Idx = 0;
+            AllResources = Array.Empty<ResourceRef>();
+            ServiceTicksRemaining = 0;
+            StuckTicks = 0;
+            BlockedTicks = 0;
+            YieldTicksRemaining = 0;
+            FrontierIsGoal = true;
+        }
     }
 }

@@ -58,4 +58,50 @@ public interface IStationResourceCalendar
         string stationId,
         string agentId,
         CancellationToken ct = default);
+
+    // ---- FMS-V3 look-ahead (additive) -------------------------------------------------------------------
+
+    /// <summary>
+    /// Reports the gaps between the windows this calendar currently holds on <paramref name="stationId"/>, within
+    /// the look-ahead horizon <c>[fromMs, fromMs + horizonMs)</c> (空檔查詢). A pure read — no state changes.
+    /// <para>
+    /// <b>FMS-V3 semantics.</b> Lets the scheduler plan a <em>future</em> window instead of only "now": each
+    /// returned half-open <see cref="TimeInterval"/> is a contiguous span, clipped to the horizon, in which no
+    /// held window overlaps — so any sub-window of a returned gap is a candidate the scheduler may then confirm
+    /// authoritatively via <see cref="TryReserveServiceWindowAsync"/>. Windows are returned in ascending start
+    /// order and never overlap. Like <see cref="CanReserveServiceWindow"/>, this consults only this calendar's
+    /// ledger — traffic booked by other paths on the reservation table is invisible here.
+    /// </para>
+    /// </summary>
+    /// <param name="stationId">The station whose free gaps to report.</param>
+    /// <param name="fromMs">The inclusive start of the look-ahead horizon, in fleet-clock milliseconds; must be &gt;= 0.</param>
+    /// <param name="horizonMs">The length of the look-ahead horizon in milliseconds; must be &gt;= 0.</param>
+    /// <returns>The free gaps within the horizon, ascending by start; empty when the horizon is fully occupied (or zero-length).</returns>
+    IReadOnlyList<TimeInterval> FreeWindows(string stationId, long fromMs, long horizonMs);
+
+    /// <summary>
+    /// The earliest fleet-clock instant at or after <paramref name="fromMs"/> at which a
+    /// <paramref name="durationMs"/>-long service window for <paramref name="station"/> could be granted against
+    /// this calendar's ledger, or <see langword="null"/> when no such gap exists within the
+    /// <paramref name="horizonMs"/> look-ahead (最早可授與起始). A pure read — no state changes.
+    /// <para>
+    /// Skips every busy span: returns <paramref name="fromMs"/> when the station is already free for the duration
+    /// there, otherwise the start of the first gap long enough to host the window. The verdict is advisory (same
+    /// ledger-only visibility as <see cref="FreeWindows"/>); the authoritative grant is still
+    /// <see cref="TryReserveServiceWindowAsync"/>.
+    /// </para>
+    /// </summary>
+    /// <param name="station">The station the window would be reserved on (its id selects the ledger).</param>
+    /// <param name="durationMs">The required service-window length in milliseconds; must be &gt; 0.</param>
+    /// <param name="fromMs">The earliest instant the window may start, in fleet-clock milliseconds; must be &gt;= 0.</param>
+    /// <param name="horizonMs">
+    /// How far past <paramref name="fromMs"/> to search; must be &gt;= 0. A window must fit entirely within
+    /// <c>[fromMs, fromMs + horizonMs)</c>. Defaults to <see cref="long.MaxValue"/> (search effectively unbounded).
+    /// </param>
+    /// <returns>The earliest grantable start, or <see langword="null"/> if none fits within the horizon.</returns>
+    long? EarliestGrantableStart(
+        StationDefinition station,
+        long durationMs,
+        long fromMs,
+        long horizonMs = long.MaxValue);
 }

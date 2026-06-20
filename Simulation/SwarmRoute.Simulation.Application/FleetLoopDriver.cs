@@ -68,6 +68,11 @@ public sealed class FleetLoopDriver
     /// serviced vehicle's resting slot (nearest free parking, fall back to buffer, avoiding occupied cells). When
     /// <see langword="null"/> (the default) the executor uses its FMS-V1 inline nearest-parking pick, so behaviour is
     /// byte-identical. Ignored when <paramref name="fms"/> is null (no service ever completes).</param>
+    /// <param name="lifelong">(FMS-V3) Optional lifelong-dispatch runtime: the task dispatcher + released-over-time
+    /// backlog + horizon + ledger. When <see langword="null"/> (the default) the run ends at "all arrived", AGVs are
+    /// never re-tasked, and no lifelong metric is recorded — byte-identical. When supplied (alongside an
+    /// <paramref name="fms"/> whose workstation docks are all stations) the loop runs to the horizon and hands each AGV
+    /// that clears to parking its next task, recording continuous-operation metrics on the result.</param>
     /// <exception cref="ArgumentNullException">If <paramref name="cycle"/>, <paramref name="graph"/> or <paramref name="agents"/> is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException">If <paramref name="maxTicks"/> &lt; 1.</exception>
     /// <exception cref="FleetLoopException">Only on an internal invariant breach (reserved path does not start at the agent's current CP).</exception>
@@ -84,6 +89,7 @@ public sealed class FleetLoopDriver
         FmsScenario? fms = null,
         IStationScheduler? stationScheduler = null,
         IParkingManager? parkingManager = null,
+        LifelongRuntime? lifelong = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(cycle);
@@ -99,7 +105,7 @@ public sealed class FleetLoopDriver
         // fields) and concurrent calls are isolated.
         return await new FleetLoopRun(
                 cycle, roadmapId, graph, agents, maxTicks, advanceClock, executionMode, policy, log,
-                fms, stationScheduler, parkingManager)
+                fms, stationScheduler, parkingManager, lifelong)
             .ExecuteAsync(cancellationToken)
             .ConfigureAwait(false);
     }

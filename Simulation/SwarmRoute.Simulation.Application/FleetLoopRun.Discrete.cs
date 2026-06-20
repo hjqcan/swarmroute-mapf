@@ -17,14 +17,17 @@ internal sealed partial class FleetLoopRun
     /// </summary>
     private async Task ExecuteDiscreteAsync()
     {
-        while (_fleet.Any(a => !a.Done))
+        // A normal run ends at "all arrived"; a (FMS-V3) lifelong run runs to its horizon regardless of all-parked
+        // lulls (ShouldContinueDiscrete forks on the lifelong runtime — byte-identical when off).
+        while (ShouldContinueDiscrete())
         {
             _cancellationToken.ThrowIfCancellationRequested();
 
             if (_tick + 1 > _maxTicks)
             {
-                // Tick budget exhausted before everyone arrived: report non-convergence (don't throw).
-                _status = FleetLoopStatus.DidNotConverge;
+                // Tick budget exhausted before everyone arrived: report non-convergence (don't throw). A lifelong run
+                // reaching its horizon is the EXPECTED stop, not a failure, so it ends Completed rather than DidNotConverge.
+                _status = LifelongActive ? FleetLoopStatus.Completed : FleetLoopStatus.DidNotConverge;
                 break;
             }
 
@@ -41,6 +44,13 @@ internal sealed partial class FleetLoopRun
             //     once its service window is free, else it holds at the buffer). Both are inert without an FmsScenario,
             //     so a non-FMS run is byte-identical.
             await FmsTickServiceCountdownAsync().ConfigureAwait(false);
+
+            // (0.5) (FMS-V3) Lifelong re-tasking, AFTER the service countdown (which parks a just-serviced AGV as
+            //     IdleParked) and BEFORE admission/planning: record each finished task and hand each idle-parked AGV its
+            //     next task from the dispatcher, waking it toward a fresh workstation dock. Inert without a lifelong
+            //     runtime, so a non-lifelong run is byte-identical.
+            LifelongRetaskPass();
+
             await FmsDockAdmissionPassAsync().ConfigureAwait(false);
 
             // (0.6) Liveness policy — BeforePlanning phase. The policy decides the parked-gatekeeper recovery and

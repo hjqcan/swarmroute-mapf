@@ -43,6 +43,7 @@ public sealed class StationScheduler : IStationScheduler
     private readonly IStationCatalog _catalog;
     private readonly ITrafficImpactAnalyzer? _impactAnalyzer;
     private readonly IFleetPlanProvider? _fleetPlan;
+    private readonly ICostBasedAdmissionPolicy? _costPolicy;
 
     /// <summary>Creates the scheduler over the service-window calendar and the station catalog.</summary>
     /// <param name="calendar">The long-lease calendar windows are reserved through.</param>
@@ -56,16 +57,24 @@ public sealed class StationScheduler : IStationScheduler
     /// priority-override rule. When <see langword="null"/> the analyser sees an empty fleet plan (so no vehicle is
     /// ever affected) and the V2 gate is inert — still exactly V1.
     /// </param>
+    /// <param name="costPolicy">
+    /// Optional FMS-V3 cost-based admission policy. When <see langword="null"/> the scheduler keeps its exact V2
+    /// (binary clearance / priority-override) gate; when supplied <em>and</em> an <paramref name="impactAnalyzer"/>
+    /// is also present, the binary gate is replaced by the numeric score (high score → admit now; low → defer with
+    /// the affected vehicles to clear first). With no analyzer there is no impact to score, so this is inert.
+    /// </param>
     public StationScheduler(
         IStationResourceCalendar calendar,
         IStationCatalog catalog,
         ITrafficImpactAnalyzer? impactAnalyzer = null,
-        IFleetPlanProvider? fleetPlan = null)
+        IFleetPlanProvider? fleetPlan = null,
+        ICostBasedAdmissionPolicy? costPolicy = null)
     {
         _calendar = calendar ?? throw new ArgumentNullException(nameof(calendar));
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _impactAnalyzer = impactAnalyzer;
         _fleetPlan = fleetPlan;
+        _costPolicy = costPolicy;
     }
 
     /// <inheritdoc />
@@ -109,9 +118,12 @@ public sealed class StationScheduler : IStationScheduler
     }
 
     /// <summary>
-    /// Applies the FMS-V2 clearance-before-service / priority-override rules. Returns a <em>denial</em> decision
-    /// when the service must wait for affected transit to clear, or <see langword="null"/> when admission may
-    /// proceed to the authoritative reservation (no affected vehicles, or the priority override fires).
+    /// Applies the transit gate. Returns a <em>denial</em> decision when the service must wait for affected transit
+    /// to clear, or <see langword="null"/> when admission may proceed to the authoritative reservation.
+    /// <para>
+    /// When an FMS-V3 <see cref="ICostBasedAdmissionPolicy"/> is supplied the verdict is its numeric score;
+    /// otherwise the FMS-V2 binary clearance-before-service / priority-override rules apply.
+    /// </para>
     /// </summary>
     private ServiceAdmissionDecision? EvaluateTransitGate(
         ServiceAdmissionRequest request,
@@ -121,10 +133,15 @@ public sealed class StationScheduler : IStationScheduler
         var fleetPlanned = _fleetPlan?.GetPlannedResources() ?? EmptyPlan;
         var impact = _impactAnalyzer!.AnalyzeBlockingImpact(station.BlockingClosure, window, fleetPlanned);
 
-        // No vehicle is impacted by holding the closure -> nothing to clear, admit as V1.
+        // No vehicle is impacted by holding the closure -> nothing to clear, admit (shared by V2 and V3).
         if (impact.AffectedAgentIds.Count == 0)
             return null;
 
+        // FMS-V3 cost-based mode: replace the binary gate with the numeric score.
+        if (_costPolicy is not null)
+            return EvaluateCostGate(request, impact);
+
+        // FMS-V2 binary gate.
         // A severed transit core leaves the affected vehicles no bypass: never preempt, clear them first.
         if (impact.BlocksTransitCore)
             return ClearFirst(impact);
@@ -135,6 +152,22 @@ public sealed class StationScheduler : IStationScheduler
         return StrictlyHigherThanAllAffected(request, impact) && impact.HasBypass
             ? null
             : ClearFirst(impact);
+    }
+
+    /// <summary>
+    /// The FMS-V3 cost-based verdict: a high score admits the service now (return <see langword="null"/> so the
+    /// reservation proceeds); a low score defers with the affected vehicles to clear first.
+    /// </summary>
+    private ServiceAdmissionDecision? EvaluateCostGate(ServiceAdmissionRequest request, TrafficImpact impact)
+    {
+        var scored = _costPolicy!.Score(request, impact, _fleetPlan);
+        return scored.Admit
+            ? null
+            : new ServiceAdmissionDecision(
+                Granted: false,
+                ServiceStartMs: null,
+                Reason: ClearFirstReason,
+                VehiclesToClearFirst: scored.VehiclesToClearFirst);
     }
 
     /// <summary>

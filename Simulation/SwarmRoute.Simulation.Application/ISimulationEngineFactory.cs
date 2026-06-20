@@ -26,12 +26,20 @@ public interface ISimulationEngineFactory
     /// <see cref="ISimulationEngine.StationScheduler"/>, so an FMS executor's per-tick admission coordinates with the
     /// fleet's transit reservations. Null (the default) ⇒ no scheduler ⇒ <see cref="ISimulationEngine.StationScheduler"/>
     /// is null and the engine is byte-identical to a non-FMS run.</param>
+    /// <param name="costBasedAdmission">(FMS-V3) When <see langword="true"/> AND a <paramref name="stationCatalog"/> is
+    /// supplied, the dock-admission scheduler is additionally given the traffic-impact analyzer + the optional
+    /// <paramref name="fleetPlan"/> + the cost-based admission policy, so a blocking station weighs let-pass vs go-first
+    /// numerically. Default <see langword="false"/> ⇒ the scheduler keeps its V2/V1 gate ⇒ byte-identical.</param>
+    /// <param name="fleetPlan">(FMS-V3) Optional per-agent priority snapshot the cost-based admission reads to count
+    /// high-priority blocked traffic. Ignored unless <paramref name="costBasedAdmission"/> is on.</param>
     ISimulationEngine Create(
         RoadmapGraph graph,
         PlannerKind planner = PlannerKind.Dijkstra,
         long horizonWindowMs = long.MaxValue,
         bool preventCycles = false,
-        IStationCatalog? stationCatalog = null);
+        IStationCatalog? stationCatalog = null,
+        bool costBasedAdmission = false,
+        IFleetPlanProvider? fleetPlan = null);
 }
 
 /// <summary>A disposable simulation engine instance with its own coordination/traffic state.</summary>

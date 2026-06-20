@@ -128,6 +128,100 @@ public sealed class StationResourceCalendar : IStationResourceCalendar
             await _coordinator.ReleaseAsync(agentId, resources, ct).ConfigureAwait(false);
     }
 
+    /// <inheritdoc />
+    public IReadOnlyList<TimeInterval> FreeWindows(string stationId, long fromMs, long horizonMs)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stationId);
+        ArgumentOutOfRangeException.ThrowIfNegative(fromMs);
+        ArgumentOutOfRangeException.ThrowIfNegative(horizonMs);
+
+        // The horizon end is clamped so an unbounded (long.MaxValue) horizon cannot overflow [fromMs, end).
+        var horizonEnd = fromMs > long.MaxValue - horizonMs ? long.MaxValue : fromMs + horizonMs;
+        if (horizonEnd <= fromMs)
+            return [];
+
+        // Snapshot the held windows under the lock, then compute gaps lock-free.
+        List<TimeInterval> held;
+        lock (_sync)
+        {
+            held = SnapshotWindows(stationId);
+        }
+
+        return ComputeFreeGaps(held, fromMs, horizonEnd);
+    }
+
+    /// <inheritdoc />
+    public long? EarliestGrantableStart(
+        StationDefinition station,
+        long durationMs,
+        long fromMs,
+        long horizonMs = long.MaxValue)
+    {
+        ArgumentNullException.ThrowIfNull(station);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(durationMs);
+        ArgumentOutOfRangeException.ThrowIfNegative(fromMs);
+        ArgumentOutOfRangeException.ThrowIfNegative(horizonMs);
+
+        // The first free gap long enough to host a duration-long window starts at the earliest grantable instant.
+        foreach (var gap in FreeWindows(station.StationId, fromMs, horizonMs))
+        {
+            if (gap.Duration >= durationMs)
+                return gap.StartMs;
+        }
+
+        return null;
+    }
+
+    /// <summary>Must be called under <see cref="_sync"/>. The held windows on a station, unsorted; empty when none.</summary>
+    private List<TimeInterval> SnapshotWindows(string stationId)
+    {
+        if (!_grantsByStation.TryGetValue(stationId, out var grants))
+            return [];
+
+        var windows = new List<TimeInterval>(grants.Count);
+        foreach (var grant in grants)
+            windows.Add(grant.Window);
+
+        return windows;
+    }
+
+    /// <summary>
+    /// The contiguous half-open gaps in <c>[fromMs, horizonEnd)</c> not overlapped by any of <paramref name="held"/>.
+    /// Pure: sorts and coalesces a copy of the held windows, then walks the cursor over the merged busy spans,
+    /// emitting each clipped gap before it. Ascending by start, non-overlapping.
+    /// </summary>
+    private static IReadOnlyList<TimeInterval> ComputeFreeGaps(List<TimeInterval> held, long fromMs, long horizonEnd)
+    {
+        if (held.Count == 0)
+            return [new TimeInterval(fromMs, horizonEnd)];
+
+        held.Sort(static (a, b) => a.StartMs.CompareTo(b.StartMs));
+
+        var gaps = new List<TimeInterval>();
+        var cursor = fromMs;
+
+        foreach (var window in held)
+        {
+            // Clip the busy span to the horizon; ignore windows entirely outside it.
+            var busyStart = Math.Max(window.StartMs, fromMs);
+            var busyEnd = Math.Min(window.EndMs, horizonEnd);
+            if (busyEnd <= cursor)
+                continue; // wholly before the cursor (or before the horizon) — nothing to subtract.
+
+            if (busyStart > cursor)
+                gaps.Add(new TimeInterval(cursor, busyStart)); // a free gap precedes this busy span.
+
+            cursor = busyEnd;
+            if (cursor >= horizonEnd)
+                break; // the horizon is fully consumed.
+        }
+
+        if (cursor < horizonEnd)
+            gaps.Add(new TimeInterval(cursor, horizonEnd)); // trailing free gap after the last busy span.
+
+        return gaps;
+    }
+
     /// <summary>
     /// The ordered resource set of a station service window: the dock-point CP first, then every
     /// <see cref="StationDefinition.BlockingClosure"/> member. The same set is reserved (as a

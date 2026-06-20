@@ -246,8 +246,16 @@ internal sealed partial class FleetLoopRun
             return true;
         }
 
-        // (c) Reached a parking slot after service (MovingToParking) ⇒ fall through to today's "arrived" behaviour
-        //     (mark done + park + release): nothing FMS-specific to do, so return false. Likewise any other arrival.
+        // (c) Reached a parking slot after service (MovingToParking): mark it idle-parked and drop the parking goal
+        //     override, THEN fall through (return false) to today's "arrived" behaviour (mark done + park + release).
+        //     Settling MissionState to IdleParked is the terminal state of a serviced AGV; it does not change the
+        //     recorded frame (a done AGV is Arrived either way) so a non-lifelong run is byte-identical, and it is what
+        //     the (FMS-V3) lifelong re-task arm keys on to hand the AGV its next task. Other arrivals: return false.
+        if (ag.MissionState == AgvMissionState.MovingToParking)
+        {
+            ag.MissionState = AgvMissionState.IdleParked;
+            ag.FmsGoalOverride = null;
+        }
         return false;
     }
 

@@ -22,7 +22,42 @@ public sealed record SimulationResultDto(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<TraceEventDto>? Trace = null,
     RobustnessDto? Robustness = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DelayResilienceDto? DelayResilience = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] OrderDispatchReportDto? OrderDispatch = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] OrderDispatchReportDto? OrderDispatch = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] LifelongMetricsDto? Lifelong = null);
+
+/// <summary>
+/// (FMS-V3) Lifelong-dispatch run metrics — present ONLY on a horizon-bounded
+/// <see cref="ScenarioMode.LifelongDispatch"/> run (a non-lifelong run carries <see langword="null"/> here ⇒ omitted
+/// from the JSON ⇒ byte-identical). Where <see cref="SimulationMetricsDto"/> measures a one-shot fleet reaching its
+/// goals, these measure CONTINUOUS operation: how many transport tasks the fleet turned over across the horizon, how
+/// long tasks waited in the backlog, the peak backlog depth, and how close the fleet came to running out of parking.
+/// Derived deterministically from the run's task ledger, so the same request always yields the same numbers.
+/// </summary>
+/// <param name="HorizonTicks">The horizon the run executed to (the denominator of throughput).</param>
+/// <param name="TasksReleased">Transport tasks released into the backlog over the horizon.</param>
+/// <param name="TasksCompleted">Transport tasks fully completed (serviced + cleared) within the horizon.</param>
+/// <param name="ThroughputPerHundredTicks">Completed tasks per 100 ticks — the headline continuous-operation rate.</param>
+/// <param name="MeanWaitTicks">Mean backlog wait (release → assignment) over completed tasks, in ticks.</param>
+/// <param name="P95WaitTicks">95th-percentile backlog wait over completed tasks, in ticks.</param>
+/// <param name="MaxQueueDepth">Peak number of released-but-unassigned tasks (the deepest backlog the dispatch faced).</param>
+/// <param name="ParkingCapacity">Number of parking slots the warehouse provides (the saturation denominator).</param>
+/// <param name="PeakParkedCount">Peak number of AGVs simultaneously parked (resting between tasks).</param>
+/// <param name="ParkingSaturation">Peak parked / parking capacity (0..1; →1 means parking nearly ran out).</param>
+/// <param name="TasksCompletedFirstHalf">Tasks completed in the first half of the horizon (sustained-progress check).</param>
+/// <param name="TasksCompletedSecondHalf">Tasks completed in the second half of the horizon (no late-run stall check).</param>
+public sealed record LifelongMetricsDto(
+    long HorizonTicks,
+    int TasksReleased,
+    int TasksCompleted,
+    double ThroughputPerHundredTicks,
+    double MeanWaitTicks,
+    int P95WaitTicks,
+    int MaxQueueDepth,
+    int ParkingCapacity,
+    int PeakParkedCount,
+    double ParkingSaturation,
+    int TasksCompletedFirstHalf,
+    int TasksCompletedSecondHalf);
 
 /// <summary>
 /// (v4 SwarmRoute Lab — Order/Dispatch context) The lifelong / online dispatch summary: a stream of transport orders
