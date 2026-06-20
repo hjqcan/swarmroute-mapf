@@ -1,5 +1,5 @@
 import { Button, InputNumber, Segmented, Slider, Switch } from 'antd'
-import { Dices, Play, Loader2, Repeat } from 'lucide-react'
+import { Dices, Play, Loader2, Repeat, Sparkles, BarChart3 } from 'lucide-react'
 import { useIntl } from 'react-intl'
 import { useSimStore } from '@/store/simStore'
 import type { PlannerKind } from '@/types'
@@ -26,6 +26,7 @@ export default function ControlRail() {
   const setParam = useSimStore((s) => s.setParam)
   const randomizeSeed = useSimStore((s) => s.randomizeSeed)
   const run = useSimStore((s) => s.run)
+  const runBenchmark = useSimStore((s) => s.runBenchmark)
   const loading = useSimStore((s) => s.loading)
   const autoLoop = useSimStore((s) => s.autoLoop)
   const setAutoLoop = useSimStore((s) => s.setAutoLoop)
@@ -55,7 +56,13 @@ export default function ControlRail() {
     setParam('planner', next)
     if (next === 'Dijkstra') setResolver('off')
     else if (next === 'Sippwrt' && params.jointResolver === 'Pibt') setResolver('cbs')
+    // RHCR's window is in discrete-tick units (~1ms/hop); SIPPwRT runs in real ms (~2000ms/edge), so the tiny
+    // tick window can't commit even one edge → a 0-tick run. The continuous executor + CCBS already handle
+    // standoffs, so RHCR (a discrete throughput lever) is not applicable to SIPPwRT — drop to full-path.
+    if (next === 'Sippwrt') setParam('horizonWindowMs', undefined)
   }
+  // RHCR is meaningful only for the discrete executors (1 tick = 1 hop). SIPPwRT plans in real continuous time.
+  const horizonApplicable = planner !== 'Sippwrt'
   const plannerTag =
     planner === 'Dijkstra'
       ? 'controls.planner.dijkstraTag'
@@ -131,14 +138,15 @@ export default function ControlRail() {
           </label>
           <span className="font-mono text-xs text-text-muted">
             {intl.formatMessage(
-              { id: horizonEnabled ? 'controls.horizon.rhcrTag' : 'controls.horizon.unboundedTag' },
+              { id: horizonEnabled && horizonApplicable ? 'controls.horizon.rhcrTag' : 'controls.horizon.unboundedTag' },
               { value: horizonWindow }
             )}
           </span>
         </div>
         <Segmented
           block
-          value={horizonEnabled ? 'rhcr' : 'full'}
+          disabled={!horizonApplicable}
+          value={horizonEnabled && horizonApplicable ? 'rhcr' : 'full'}
           onChange={(v) =>
             setParam('horizonWindowMs', String(v) === 'rhcr' ? horizonWindow : undefined)
           }
@@ -147,7 +155,7 @@ export default function ControlRail() {
             { label: intl.formatMessage({ id: 'controls.horizon.rhcr' }), value: 'rhcr' },
           ]}
         />
-        {horizonEnabled && (
+        {horizonEnabled && horizonApplicable && (
           <div className="mt-3">
             <SliderNumber
               min={HORIZON_MIN}
@@ -210,6 +218,19 @@ export default function ControlRail() {
         </div>
       </div>
 
+      {/* (v4 SwarmRoute Lab) Optimize traffic: run once, re-weight the congested corridors from the measured
+          congestion, then re-run the same fleet — the telemetry shows baseline → guided. Steers SIPPwRT / Dijkstra. */}
+      <div className="flex items-center justify-between">
+        <label className="flex items-center gap-2 text-sm text-text-muted">
+          <Sparkles size={14} />
+          {intl.formatMessage({ id: 'controls.optimize' })}
+        </label>
+        <Switch
+          checked={params.optimizeGuidance ?? false}
+          onChange={(v) => setParam('optimizeGuidance', v)}
+        />
+      </div>
+
       {/* Auto-loop: when a run finishes playing, pick a new seed (the field updates) and run again, forever. */}
       <div className="flex items-center justify-between">
         <label className="flex items-center gap-2 text-sm text-text-muted">
@@ -236,6 +257,20 @@ export default function ControlRail() {
         className="!h-11 font-display !font-semibold"
       >
         {intl.formatMessage({ id: loading ? 'controls.running' : 'controls.run' })}
+      </Button>
+
+      {/* (v4 SwarmRoute Lab) Planner benchmark: run this exact scenario under v0 Dijkstra / v1 SIPP / v3 SIPPwRT and
+          compare their metrics side-by-side in the telemetry column. */}
+      <Button
+        size="large"
+        block
+        loading={loading}
+        disabled={agvTooMany}
+        onClick={() => runBenchmark()}
+        icon={<BarChart3 size={16} />}
+        className="!h-10 font-display !font-medium"
+      >
+        {intl.formatMessage({ id: 'controls.benchmark' })}
       </Button>
 
       <p className="mt-auto text-xs leading-relaxed text-text-muted">

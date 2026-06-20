@@ -2,22 +2,22 @@ import { create } from 'zustand'
 import { devtools } from 'zustand/middleware'
 import { runSimulation } from '@/api/simulation'
 import { HttpError } from '@/api/client'
-import type { SimulationRequest, SimulationResult } from '@/types'
+import type { SimulationRequest, SimulationResult, BenchmarkEntry, PlannerKind } from '@/types'
 
 export type PlaybackSpeed = 0.5 | 1 | 2 | 4
 
 /** Default form parameters for a run. Defaults to the SIPP planner: it is reservation-aware and reports dense
  *  physical standoffs honestly when they do not converge (switchable in the control rail). */
 export const DEFAULT_PARAMS: SimulationRequest = {
-  width: 10,
-  height: 8,
-  agvCount: 6,
+  width: 7,
+  height: 7,
+  agvCount: 16,
   planner: 'Sipp',
   // Omit horizonWindowMs for the backend's unbounded whole-path SIPP default. The control rail sets a finite
   // value only when RHCR mode is selected.
   // Enable executor recovery for parked goal blockers; edge-collision safety is independent and always on.
   stepAside: true,
-  // Default standoff resolver = v4 local CBS (complete: resolves the corridor swaps / blocking chains greedy PIBT
+  // Default standoff resolver = v3 local CBS (complete: resolves the corridor swaps / blocking chains greedy PIBT
   // can't). The single jointResolver owns a cluster; the control rail switches Off / PIBT / CBS (None/Pibt/Cbs).
   jointResolver: 'Cbs',
 }
@@ -36,6 +36,12 @@ export interface SimState {
    *  current AGV positions as `starts` so a continued run re-plans from where they are). */
   run: (override?: Partial<SimulationRequest>) => Promise<void>
 
+  /* ---- (v4 SwarmRoute Lab) planner-portfolio benchmark: the same map / fleet / seed run under v0/v1/v3 ---- */
+  benchmark: BenchmarkEntry[] | null
+  /** Runs the current scenario under Dijkstra, SIPP and SIPPwRT (no resolver/guidance) and stores their metrics for a
+   *  side-by-side comparison. The field shows the last (SIPPwRT) run. */
+  runBenchmark: () => Promise<void>
+
   /* ---- auto-loop: when a run finishes playing, pick a new seed and run again, forever ---- */
   autoLoop: boolean
   setAutoLoop: (autoLoop: boolean) => void
@@ -44,6 +50,10 @@ export interface SimState {
   hiddenPaths: Set<string>
   /** Toggle one agent's route on the field (its planned-path polyline + A/B markers). */
   togglePath: (agentId: string) => void
+
+  /* ---- (v4 SwarmRoute Lab) congestion heatmap overlay on the field ---- */
+  showHeatmap: boolean
+  setShowHeatmap: (showHeatmap: boolean) => void
 
   /* ---- playback (a "frame cursor" is a float index into timeline.frames) ---- */
   playing: boolean
@@ -111,7 +121,7 @@ export const useSimStore = create<SimState>()(
         // auto-loop a run is seed + starts, so the seed field alone can't replay it; copy this JSON to reproduce.
         // eslint-disable-next-line no-console
         console.info('[swarmroute] run request (copy to reproduce):', JSON.stringify(params))
-        set({ loading: true, error: null })
+        set({ loading: true, error: null, benchmark: null })
         try {
           const result = await runSimulation(params)
           set({
@@ -135,6 +145,38 @@ export const useSimStore = create<SimState>()(
         }
       },
 
+      benchmark: null,
+      runBenchmark: async () => {
+        const base = get().params
+        const planners: PlannerKind[] = ['Dijkstra', 'Sipp', 'Sippwrt']
+        set({ loading: true, error: null, benchmark: null })
+        const entries: BenchmarkEntry[] = []
+        try {
+          for (const planner of planners) {
+            // Pure planner comparison on the same map / fleet / seed: no resolver, no guidance, full-path horizon.
+            const result = await runSimulation({
+              ...base,
+              planner,
+              jointResolver: 'None',
+              optimizeGuidance: false,
+              horizonWindowMs: undefined,
+            })
+            entries.push({ planner, metrics: result.metrics ?? null })
+            // Show the latest run on the field as the benchmark progresses (the final one stays = SIPPwRT).
+            set({ result, cursor: 0, playing: false })
+          }
+          set({ benchmark: entries, loading: false })
+        } catch (err) {
+          const message =
+            err instanceof HttpError
+              ? err.detail
+                ? `${err.message}：${err.detail}`
+                : err.message
+              : (err as Error)?.message || '运行失败 / Run failed'
+          set({ loading: false, error: message })
+        }
+      },
+
       hiddenPaths: new Set<string>(),
       togglePath: (agentId) =>
         set((s) => {
@@ -144,6 +186,9 @@ export const useSimStore = create<SimState>()(
           else next.add(agentId)
           return { hiddenPaths: next }
         }),
+
+      showHeatmap: true,
+      setShowHeatmap: (showHeatmap) => set({ showHeatmap }),
 
       autoLoop: false,
       setAutoLoop: (autoLoop) => set({ autoLoop }),

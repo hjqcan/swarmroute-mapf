@@ -18,6 +18,11 @@ namespace SwarmRoute.Coordination.Application;
 /// <param name="Attempts">How many plan→reserve attempts were made (1 + the number of prune-and-replan retries).</param>
 /// <param name="Path">The path that was reserved (when <see cref="Reserved"/>), else the last planned path (may be null).</param>
 /// <param name="FailureReason">A human-readable reason when the agent was neither planned nor reserved.</param>
+/// <param name="IntendedNextCell">The control point the agent actually tried to enter next this cycle — the first hop
+/// of its last planned <see cref="Path"/>, i.e. a reservation/blacklist-aware "next cell" (the planner routed around
+/// the live view + accumulated prune set to produce it). <see langword="null"/> when no path was planned, the agent is
+/// already at its goal, or the plan held in place. The joint standoff resolver clusters on this rather than a
+/// reservation-blind geometric shortest hop, so it links the agents that are genuinely physically blocking each other.</param>
 public sealed record AgentCycleResult(
     string AgentId,
     bool Planned,
@@ -25,7 +30,8 @@ public sealed record AgentCycleResult(
     AllocationOutcome? Outcome,
     int Attempts,
     SpaceTimePath? Path,
-    string? FailureReason);
+    string? FailureReason,
+    string? IntendedNextCell = null);
 
 /// <summary>
 /// The result of running one full coordination cycle over a set of agent goals: the per-agent results in the

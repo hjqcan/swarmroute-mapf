@@ -233,6 +233,91 @@ public sealed class ReservationTable : Entity, IAggregateRoot
     }
 
     // ---------------------------------------------------------------------------------------------
+    // Joint step (the host-seam atomic commit: PIBT's one-tick joint move, table as the authority)
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Atomically reserves a one-tick <b>joint step</b> for a cluster: each <see cref="JointStepMove"/> claims its
+    /// destination CP — and, when it actually moves, the lane it traverses — over the half-open window
+    /// <c>[nowMs, nowMs+stepMs)</c>, expanded to the same topology closure (parent block + interference) as
+    /// <see cref="TryGrant"/>. The commit is all-or-nothing: if <em>any</em> requested resource conflicts with
+    /// another agent's existing lease over the window, or two moves by different agents would land on the same CP or
+    /// swap a lane head-on, <em>nothing</em> is reserved and the result is <see cref="AllocationOutcome.Blocked"/>;
+    /// otherwise every lease is created and the result is <see cref="AllocationOutcome.Granted"/>. This makes the
+    /// reservation table the single authority for the joint step (closing the cross-tick soundness gap the
+    /// executor-anchored resolver leaves open), so the autonomous loop can drive PIBT through it safely. The
+    /// per-step windows are half-open, so a mover's lease expires on its own once the clock passes <c>nowMs+stepMs</c>.
+    /// </summary>
+    public AllocationOutcome TryGrantJointStep(IReadOnlyList<JointStepMove> moves, long nowMs, long stepMs)
+    {
+        ArgumentNullException.ThrowIfNull(moves);
+        if (stepMs <= 0)
+            throw new ArgumentOutOfRangeException(nameof(stepMs), "A joint step must span a positive window.");
+        if (moves.Count == 0)
+            return AllocationOutcome.Granted; // an empty step trivially commits
+
+        lock (_sync)
+        {
+            var window = new TimeInterval(nowMs, nowMs + stepMs);
+
+            // The requested (resource, agent) cells: each mover's destination CP plus — only when it actually moves —
+            // the lane it traverses, every cell expanded to its topology closure so blocks/interference are reserved
+            // too, exactly like the whole-path TryGrant.
+            var requested = new List<(ResourceRef Resource, string AgentId)>();
+            foreach (var move in moves)
+            {
+                if (string.IsNullOrWhiteSpace(move.AgentId))
+                    throw new ArgumentException("Every JointStepMove must carry an agentId.", nameof(moves));
+
+                foreach (var member in _topology.ClosureOf(new ResourceRef(ResourceKind.CP, move.ToSiteId)))
+                    requested.Add((member, move.AgentId));
+
+                if (!string.Equals(move.FromSiteId, move.ToSiteId, StringComparison.Ordinal))
+                    foreach (var member in _topology.ClosureOf(new ResourceRef(ResourceKind.Lane, $"{move.FromSiteId}-{move.ToSiteId}")))
+                        requested.Add((member, move.AgentId));
+            }
+
+            // (a) No requested cell may conflict with a DIFFERENT agent's existing lease over the window.
+            foreach (var (resource, agentId) in requested)
+                if (FindBlockingLease(resource, window, agentId) is not null)
+                    return AllocationOutcome.Blocked;
+
+            // (b) No two moves by DIFFERENT agents may claim conflicting resources within the batch (vertex-distinct +
+            //     no head-on lane swap). They all share the window, so a resource conflict across agents is a collision.
+            for (var i = 0; i < requested.Count; i++)
+                for (var j = i + 1; j < requested.Count; j++)
+                    if (!string.Equals(requested[i].AgentId, requested[j].AgentId, StringComparison.Ordinal)
+                        && ResourcesConflict(requested[i].Resource, requested[j].Resource))
+                        return AllocationOutcome.Blocked;
+
+            // All clear → create every lease over the window atomically (the pre-checks guarantee Insert never throws).
+            var changed = 0;
+            foreach (var (resource, agentId) in requested)
+                if (Insert(new ResourceLease(resource, agentId, window, LeaseState.Reserved)))
+                    changed++;
+
+            // A granted joint step means each moving agent is no longer waiting on a previous failed candidate path —
+            // mirror the per-path TryGrant success behaviour so the step leaves no phantom "Waits" edge in the snapshot
+            // (Waits comes from `_contended`): drop every contended request for the distinct agents in this step, then
+            // prune any other request the new leases now satisfy.
+            var pruned = 0;
+            foreach (var agentId in moves.Select(m => m.AgentId).Distinct(StringComparer.Ordinal))
+                pruned += _contended.RemoveAll(r => string.Equals(r.AgentId, agentId, StringComparison.Ordinal));
+            pruned += PruneSatisfiedContendedRequests();
+
+            if (changed > 0 || pruned > 0)
+            {
+                Touch();
+                if (changed > 0)
+                    foreach (var agentId in moves.Select(m => m.AgentId).Distinct(StringComparer.Ordinal))
+                        AddDomainEvent(new ReservationGrantedEvent(Id, agentId, changed));
+            }
+
+            return AllocationOutcome.Granted;
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Release (ports UnlockPath — WITH the parent-block + interference closure leak FIXED)
     // ---------------------------------------------------------------------------------------------
 

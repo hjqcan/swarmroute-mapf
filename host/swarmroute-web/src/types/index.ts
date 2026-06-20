@@ -57,9 +57,16 @@ export interface SimulationRequest {
   /**
    * Opt-in zone-local joint resolver for physical standoff clusters (SIPP-only; default `None`). One resolver owns
    * a cluster: `Pibt` is the fast greedy priority-inheritance drive (v3); `Cbs` is the complete local Conflict-Based
-   * Search (v4) that cracks the swaps/chains greedy PIBT can't (heavier). Edge-collision safety is independent.
+   * Search (v3) that cracks the swaps/chains greedy PIBT can't (heavier). Edge-collision safety is independent.
    */
   jointResolver?: JointResolverKind
+  /**
+   * (v4 SwarmRoute Lab) Opt-in 2-pass congestion-fed guidance optimization: run once, re-weight the busiest
+   * corridors from the measured congestion, then re-run the SAME fleet on the guided field. The result then carries
+   * a {@link GuidanceReport} comparing baseline vs guided. Off by default. Steers weight-aware planners (SIPPwRT,
+   * Dijkstra); hop-uniform SIPP is unaffected.
+   */
+  optimizeGuidance?: boolean
 }
 
 /** A single control point on the grid at planar (x=col, y=row). */
@@ -152,6 +159,44 @@ export interface Stats {
   collisionAgentIds: string[] | null
 }
 
+/** (v4 SwarmRoute Lab) Time-to-goal distribution in the run's clock units (ticks; ms for the continuous executor). */
+export interface TravelTimeStats {
+  mean: number
+  p50: number
+  p95: number
+  p99: number
+  max: number
+}
+
+/** (v4 SwarmRoute Lab) One control point's congestion over the run — the data behind the bottleneck heatmap. */
+export interface CellCongestion {
+  siteId: string
+  x: number
+  y: number
+  occupiedTicks: number
+  waitTicks: number
+}
+
+/** (v4 SwarmRoute Lab) Quantitative metrics for one run — throughput, travel-time tail, wait, fairness,
+ *  reliability, and the per-cell congestion heatmap. The "is it good?" layer, deterministic for a given request. */
+export interface SimulationMetrics {
+  agvCount: number
+  arrived: number
+  completionRate: number
+  makespanTicks: number
+  throughputPerThousandTicks: number
+  travelTime: TravelTimeStats
+  meanWaitRatio: number
+  totalWaitTicks: number
+  totalReplans: number
+  maxConcurrent: number
+  collisions: number
+  status: RunStatus
+  fairnessIndex: number
+  heatmap: CellCongestion[]
+  bottleneckSiteIds: string[]
+}
+
 /** The full result of one simulation run. */
 export interface SimulationResult {
   field: FieldDto
@@ -161,4 +206,24 @@ export interface SimulationResult {
   /** (v3 SIPPwRT) Present only for the continuous executor (planner = `Sippwrt`); drives smooth time-based
    *  playback on the field. Undefined for discrete planners — the field then animates off the tick timeline. */
   continuous?: ContinuousTimeline
+  /** (v4 SwarmRoute Lab) Quantitative run metrics + the per-cell congestion heatmap. Present on every run. */
+  metrics?: SimulationMetrics
+  /** (v4 SwarmRoute Lab) Present only on an OptimizeGuidance run: the baseline (pre-guidance) metrics + the applied
+   *  guidance summary; the top-level {@link metrics} are then the GUIDED run, for a baseline→guided comparison. */
+  guidance?: GuidanceReport
+}
+
+/** (v4 SwarmRoute Lab) An OptimizeGuidance run's comparison payload: the unguided baseline metrics + a summary of
+ *  the applied edge-weight guidance. The result's top-level `metrics` are the guided run. */
+export interface GuidanceReport {
+  baseline: SimulationMetrics
+  adjustedLanes: number
+  maxMultiplier: number
+}
+
+/** (v4 SwarmRoute Lab) One planner's result in a portfolio benchmark — the same map / fleet / seed run under each
+ *  planner so their unit-free metrics (completion, wait ratio, fairness) are directly comparable. */
+export interface BenchmarkEntry {
+  planner: PlannerKind
+  metrics: SimulationMetrics | null
 }

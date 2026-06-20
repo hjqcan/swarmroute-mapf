@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using SwarmRoute.Liveness.Application.Contract.Policy;
 
 namespace SwarmRoute.Coordination.Application;
 
@@ -35,6 +36,16 @@ public sealed class CoordinationLoopOptions
     /// Set per-run by the engine factory for the SIPPwRT planner. Default false = discrete CBS, byte-identical.
     /// </summary>
     public bool Continuous { get; set; }
+
+    /// <summary>
+    /// The joint resolver the autonomous loop applies to a physical standoff left contended after a cycle
+    /// (<see cref="JointResolverKind.None"/> = none, the loop just retries the contended agents next tick;
+    /// <see cref="JointResolverKind.Cbs"/> = solve each mutually-blocking cluster jointly via CBS/CCBS and reserve
+    /// atomically; <see cref="JointResolverKind.Pibt"/> = grant each cluster's next joint single-hop atomically
+    /// through the reservation table). Default <see cref="JointResolverKind.None"/> = byte-identical to the plain
+    /// plan+reserve loop (the post-cycle standoff pass is skipped entirely).
+    /// </summary>
+    public JointResolverKind JointResolver { get; set; } = JointResolverKind.None;
 }
 
 /// <summary>
@@ -112,7 +123,33 @@ public sealed class FleetCoordinationLoop : BackgroundService
         {
             using var scope = _scopeFactory.CreateScope();
             var cycle = scope.ServiceProvider.GetRequiredService<IFleetCoordinationCycle>();
-            return await cycle.RunCycleAsync(roadmapId.Value, goals, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var report = await cycle.RunCycleAsync(roadmapId.Value, goals, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            // (v3) Joint standoff resolution. Hand the agents left contended after the per-agent cycle to the
+            // configured joint resolver: CBS/CCBS solves each mutually-blocking cluster jointly and reserves it
+            // atomically; PIBT grants each cluster's next joint single-hop through the reservation table (the table
+            // as the single authority). Opt-in — when JointResolver=None this whole pass is skipped and the loop is
+            // byte-identical to the plain plan+reserve cycle.
+            if (_options.JointResolver != JointResolverKind.None)
+            {
+                var contended = report.ContendedAgentIds.ToHashSet(StringComparer.Ordinal);
+                if (contended.Count >= 2)
+                {
+                    var clusterGoals = goals.Where(g => contended.Contains(g.AgentId)).ToList();
+                    // Carry each contended agent's actual attempted next cell (the reservation/blacklist-aware first hop
+                    // of its planned path) from the cycle report into the resolver, so it clusters on what the agents
+                    // really blocked on rather than a reservation-blind geometric hop.
+                    var intendedNextCells = report.Results
+                        .Where(r => contended.Contains(r.AgentId))
+                        .ToDictionary(r => r.AgentId, r => r.IntendedNextCell, StringComparer.Ordinal);
+                    var resolved = await cycle.ResolveStandoffsAsync(roadmapId.Value, clusterGoals, intendedNextCells: intendedNextCells, cancellationToken: cancellationToken)
+                        .ConfigureAwait(false);
+                    if (resolved.Results.Count > 0)
+                        report = MergeResolved(report, resolved);
+                }
+            }
+
+            return report;
         }
         catch (OperationCanceledException)
         {
@@ -123,5 +160,15 @@ public sealed class FleetCoordinationLoop : BackgroundService
             _logger.LogError(ex, "Coordination cycle failed for roadmap {RoadmapId}.", roadmapId);
             return CycleReport.Empty;
         }
+    }
+
+    /// <summary>Overlays the joint-resolver outcomes onto the base cycle report, preserving its deterministic order.</summary>
+    private static CycleReport MergeResolved(CycleReport baseReport, CycleReport resolved)
+    {
+        var overlay = resolved.Results.ToDictionary(r => r.AgentId, StringComparer.Ordinal);
+        var merged = baseReport.Results
+            .Select(r => overlay.TryGetValue(r.AgentId, out var o) ? o : r)
+            .ToList();
+        return new CycleReport(merged);
     }
 }

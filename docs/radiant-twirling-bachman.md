@@ -10,7 +10,7 @@ Consequently **all real resolution leaked into `FleetLoopDriver`** as six ad-hoc
 
 **Decisions taken (user-confirmed):**
 1. **Full synchronous collapse.** Delete the async event choreography + `DeadlockCase`/`AvoidancePlan` aggregates + recovery/registry/escalation services + the cross-context integration events + the Coordination `FleetRedirectStore`. Recovery becomes "re-evaluate on fresh state each tick → threat gone ⇒ restore goal."
-2. **Keep the manual OFF/PIBT/CBS toggle** (the v4 A/B lever). PIBT moves into the Liveness context; CBS stays in PathPlanning (it's a planner). The policy invokes both as mechanism, selected by `LivenessOptions.JointResolver`.
+2. **Keep the manual OFF/PIBT/CBS toggle** (the v3 A/B lever). PIBT moves into the Liveness context; CBS stays in PathPlanning (it's a planner). The policy invokes both as mechanism, selected by `LivenessOptions.JointResolver`.
 
 ---
 

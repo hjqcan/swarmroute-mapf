@@ -16,7 +16,74 @@ public sealed record SimulationResultDto(
     IReadOnlyList<AgentDto> Agents,
     TimelineDto Timeline,
     StatsDto Stats,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ContinuousTimelineDto? Continuous = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ContinuousTimelineDto? Continuous = null,
+    SimulationMetricsDto? Metrics = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] GuidanceReportDto? Guidance = null);
+
+/// <summary>
+/// (v4 SwarmRoute Lab) Present only on an <c>OptimizeGuidance</c> run: the <see cref="Baseline"/> metrics (the run
+/// BEFORE the congestion-fed re-weighting) plus a summary of the applied <c>GuidanceGraph</c>. The result's
+/// top-level <see cref="SimulationResultDto.Metrics"/> are the GUIDED run; these are what it is compared against, so
+/// the frontend can show "wait / throughput / convergence: baseline → guided". Omitted from the JSON when absent.
+/// </summary>
+/// <param name="Baseline">The metrics of the unguided baseline pass.</param>
+/// <param name="AdjustedLanes">How many lanes the optimizer re-weighted from the baseline congestion.</param>
+/// <param name="MaxMultiplier">The heaviest weight multiplier applied (the strength of the steer; 1.0 = none).</param>
+public sealed record GuidanceReportDto(SimulationMetricsDto Baseline, int AdjustedLanes, double MaxMultiplier);
+
+// ── (v4 SwarmRoute Lab) Run metrics — the "is it good?" quantification layer ─────────────────────────────────────
+
+/// <summary>
+/// (v4 SwarmRoute Lab) Quantitative metrics for one run, derived deterministically from the recorded timeline
+/// (positions + motion state per tick) plus the aggregate stats — the same schedule the frontend replays, so the
+/// numbers are reproducible for a given request. These turn "looks like it runs" into "here is throughput, travel
+/// time, wait, fairness, reliability, and where the bottlenecks are", which is what makes one planner / policy / map
+/// comparable to another. Units follow the run's clock: ticks for the discrete executors, fleet-clock milliseconds
+/// for the continuous (SIPPwRT) executor.
+/// </summary>
+/// <param name="AgvCount">Fleet size.</param>
+/// <param name="Arrived">AGVs that reached their goal.</param>
+/// <param name="CompletionRate">Arrived / fleet size (0..1) — reliability at a glance.</param>
+/// <param name="MakespanTicks">The last recorded tick (when the fleet finished, or the budget ran out).</param>
+/// <param name="ThroughputPerThousandTicks">Arrivals per 1000 ticks (makespan-normalised) — the headline rate.</param>
+/// <param name="TravelTime">Per-arrived-agent time-to-goal distribution (mean + P50/P95/P99 + max).</param>
+/// <param name="MeanWaitRatio">Fleet-mean fraction of each agent's run spent not making forward progress (0..1).</param>
+/// <param name="TotalWaitTicks">Total agent-ticks spent stationary-not-arrived (pending or gate-blocked).</param>
+/// <param name="TotalReplans">Prune-and-replan retries across the run (planning stability / churn).</param>
+/// <param name="MaxConcurrent">Peak simultaneously en-route AGVs (parallelism the route network sustained).</param>
+/// <param name="Collisions">Detected control-point collisions (0 for a clean run).</param>
+/// <param name="Status">Run outcome: <c>Completed</c>, <c>CollisionDetected</c>, or <c>DidNotConverge</c>.</param>
+/// <param name="FairnessIndex">Jain's fairness index over the WHOLE fleet's effective-completion times — every agent
+/// contributes, an un-arrived one counted at the makespan (1 = perfectly even; →0 = a few agents finish while many
+/// starve at the makespan). Fleet-wide so starvation lowers it honestly; outright starvation is read most directly
+/// from <see cref="SimulationMetricsDto.CompletionRate"/>.</param>
+/// <param name="Heatmap">Per-cell congestion (occupied + waited agent-ticks) for the bottleneck heatmap overlay.</param>
+/// <param name="BottleneckSiteIds">The most-congested control points, worst first (a quick bottleneck ranking).</param>
+public sealed record SimulationMetricsDto(
+    int AgvCount,
+    int Arrived,
+    double CompletionRate,
+    int MakespanTicks,
+    double ThroughputPerThousandTicks,
+    TravelTimeStatsDto TravelTime,
+    double MeanWaitRatio,
+    int TotalWaitTicks,
+    int TotalReplans,
+    int MaxConcurrent,
+    int Collisions,
+    string Status,
+    double FairnessIndex,
+    IReadOnlyList<CellCongestionDto> Heatmap,
+    IReadOnlyList<string> BottleneckSiteIds);
+
+/// <summary>A time-to-goal distribution (in the run's clock units): mean plus the tail percentiles that matter for
+/// SLA ("most agents are fine, but the worst 5% / 1%?") and the maximum (= the makespan among arrivals).</summary>
+public sealed record TravelTimeStatsDto(double Mean, int P50, int P95, int P99, int Max);
+
+/// <summary>One control point's congestion over the whole run: how many agent-ticks were spent ON it
+/// (<paramref name="OccupiedTicks"/>) and how many of those were stationary-not-arrived (<paramref name="WaitTicks"/>,
+/// the contention signal). Carries planar <paramref name="X"/>,<paramref name="Y"/> so the frontend can shade the cell.</summary>
+public sealed record CellCongestionDto(string SiteId, double X, double Y, int OccupiedTicks, int WaitTicks);
 
 /// <summary>
 /// (v3 SIPPwRT) The continuous-time replay: each agent's real-millisecond control-point arrival schedule. Unlike

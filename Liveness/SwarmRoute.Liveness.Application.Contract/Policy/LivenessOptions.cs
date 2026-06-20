@@ -1,7 +1,7 @@
 namespace SwarmRoute.Liveness.Application.Contract.Policy;
 
 /// <summary>
-/// Which joint resolver owns a physical standoff cluster (the user-selectable v4 lever; was the
+/// Which joint resolver owns a physical standoff cluster (the user-selectable v3 lever; was the
 /// <c>UsePibt</c>/<c>UseCbs</c> request bools). Exactly one resolver owns a cluster.
 /// </summary>
 public enum JointResolverKind

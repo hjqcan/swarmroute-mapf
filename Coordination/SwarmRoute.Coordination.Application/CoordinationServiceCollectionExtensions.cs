@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using SwarmRoute.Liveness.Domain.Resolution;
 
 namespace SwarmRoute.Coordination.Application;
 
@@ -37,6 +38,10 @@ public static class CoordinationServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.AddScoped<IFleetCoordinationCycle, CoordinationCycleService>();
+
+        // The PIBT joint-step port for the autonomous loop's JointResolver=Pibt path (the host-seam wrapper over the
+        // pure zone-local resolver). Default; a host may register its own before calling this.
+        services.TryAddSingleton<IJointStepPlanner, PibtJointStepPlanner>();
 
         // Default in-memory goal book; the Host may register its own ICoordinationGoalSource before this.
         services.TryAddSingleton<InMemoryCoordinationGoalSource>();

@@ -68,36 +68,49 @@ public sealed class SimulationService : ISimulationService
                 agentSpecs.Add(new FleetAgentSpec($"agv-{i + 1}", shuffled[i], shuffled[request.AgvCount + i], Priority: i));
         }
 
-        // 3. Get a fresh REAL engine for THIS request (isolation between concurrent runs), planning with the
-        //    requested planner and rolling-horizon window (RHCR, v2; unbounded by default = whole-path).
+        // 3-4. Run the closed loop on the (unguided) field.
+        var loop = await RunLoopAsync(field, agentSpecs, request, cancellationToken).ConfigureAwait(false);
+
+        // 5. (v4 SwarmRoute Lab) Optional congestion-fed guidance optimization: re-weight the busiest corridors from
+        //    this run's measured congestion, then re-run the SAME fleet on the guided field and return the guided run
+        //    alongside the baseline metrics for comparison. Off by default → single pass, byte-identical.
+        if (!request.OptimizeGuidance)
+            return Map(field, agentSpecs, loop);
+
+        var baselineMetrics = SimulationMetricsCalculator.Compute(loop, agentSpecs, PositionById(field));
+        var guidance = CongestionGuidanceOptimizer.Derive(baselineMetrics, field);
+        var guidedField = _gridFactory.BuildGrid(request.Width, request.Height, guidance);
+        var guidedLoop = await RunLoopAsync(guidedField, agentSpecs, request, cancellationToken).ConfigureAwait(false);
+        return Map(guidedField, agentSpecs, guidedLoop,
+            new GuidanceReportDto(baselineMetrics, guidance.AdjustedLaneCount, guidance.MaxMultiplier));
+    }
+
+    /// <summary>
+    /// Runs one closed-loop pass for a given <paramref name="field"/> + fleet — the engine / executor-mode / policy
+    /// wiring — logging a reproducible request on non-convergence. Extracted so a guidance-optimization run can drive
+    /// a second pass over a re-weighted field with the same fleet.
+    /// </summary>
+    private async Task<FleetLoopResult> RunLoopAsync(
+        GridField field, IReadOnlyList<FleetAgentSpec> agentSpecs, SimulationRequest request, CancellationToken cancellationToken)
+    {
+        // A fresh REAL engine for THIS pass (isolation between concurrent runs), planning with the requested planner
+        // and rolling-horizon window. SIPPwRT → continuous executor; SIPP → schedule-faithful; Dijkstra → greedy gate.
         await using var engine = _engineFactory.Create(field.Graph, request.Planner, request.HorizonWindowMs, request.PreventDeadlockCycles);
 
-        // 4. Run the closed loop to completion, recording the timeline. The driver advances the engine's tick
-        //    clock each tick so reservation intervals share the executor's axis (no wall-clock drift). SIPP plans
-        //    a faithful schedule → execute it faithfully; Dijkstra's spatial locks → the v0 greedy gate.
         var executionMode = request.Planner switch
         {
-            // v3 SIPPwRT: continuous-time edge durations → the event-driven continuous executor.
             PlannerKind.Sippwrt => FleetExecutionMode.Continuous,
-            // v1 SIPP: a faithful time-axis schedule → execute it faithfully. v0 Dijkstra: the greedy gate.
             PlannerKind.Sipp => FleetExecutionMode.ScheduleFaithful,
             _ => FleetExecutionMode.Greedy,
         };
-        var maxTicks = MaxTicks(request);
 
-        // Build the liveness policy from the request's standoff levers (JointResolver + StepAside are mapped onto
-        // LivenessOptions here, not carried on the policy's wire). Exactly one joint resolver owns a cluster.
         var policy = new LivenessPolicy(
             field.Graph,
-            new LivenessOptions
-            {
-                JointResolver = request.JointResolver,
-                StepAside = request.StepAside,
-            });
+            new LivenessOptions { JointResolver = request.JointResolver, StepAside = request.StepAside });
 
         var loop = await _loopDriver
             .RunToCompletionAsync(
-                engine.Cycle, engine.RoadmapId, field.Graph, agentSpecs, maxTicks,
+                engine.Cycle, engine.RoadmapId, field.Graph, agentSpecs, MaxTicks(request),
                 advanceClock: engine.Clock.SetTick,
                 executionMode: executionMode,
                 policy: policy,
@@ -105,27 +118,26 @@ public sealed class SimulationService : ISimulationService
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
-        // 4b. On non-convergence, log the EXACT reproducing request (including the per-agent starts) — the
-        //     auto-loop's continuation makes a seed alone insufficient to reproduce a stuck state, so capture the
-        //     full input. Paste the JSON into POST /api/simulation/run (or a test) to replay it deterministically.
+        // On non-convergence, log the EXACT reproducing request (incl. per-agent starts) — paste into
+        // POST /api/simulation/run to replay deterministically.
         if (loop.Stats.Status == FleetLoopStatus.DidNotConverge)
         {
             var starts = "[\"" + string.Join("\",\"", agentSpecs.Select(a => a.StartSiteId)) + "\"]";
-            // Capture EVERY field that changes execution, or the repro won't reproduce: planner, the RHCR window,
-            // the StepAside executor recovery, the deadlock-prevention toggle, and the joint resolver — not just seed + starts.
             var repro = $"{{\"width\":{request.Width},\"height\":{request.Height},\"agvCount\":{request.AgvCount}," +
                         $"\"seed\":{request.Seed?.ToString() ?? "null"},\"planner\":\"{request.Planner}\"," +
                         $"\"horizonWindowMs\":{request.HorizonWindowMs}," +
                         $"\"stepAside\":{(request.StepAside ? "true" : "false")}," +
                         $"\"preventDeadlockCycles\":{(request.PreventDeadlockCycles ? "true" : "false")}," +
-                        $"\"jointResolver\":\"{request.JointResolver}\",\"starts\":{starts}}}";
+                        $"\"jointResolver\":\"{request.JointResolver}\",\"optimizeGuidance\":{(request.OptimizeGuidance ? "true" : "false")},\"starts\":{starts}}}";
             _logger.LogWarning("[did-not-converge] arrived {Arrived}/{Total} in {Ticks} ticks. Repro: {Repro}",
                 loop.Stats.Arrived, request.AgvCount, loop.Stats.Ticks, repro);
         }
 
-        // 5. Map to the transport DTO.
-        return Map(field, agentSpecs, loop);
+        return loop;
     }
+
+    private static IReadOnlyDictionary<string, (double X, double Y)> PositionById(GridField field)
+        => field.Sites.ToDictionary(s => s.Id, s => (X: (double)s.X, Y: (double)s.Y), StringComparer.Ordinal);
 
     private static void Validate(SimulationRequest request)
     {
@@ -193,7 +205,8 @@ public sealed class SimulationService : ISimulationService
     private static SimulationResultDto Map(
         GridField field,
         IReadOnlyList<FleetAgentSpec> specs,
-        FleetLoopResult loop)
+        FleetLoopResult loop,
+        GuidanceReportDto? guidance = null)
     {
         var positionById = field.Sites.ToDictionary(s => s.Id, s => (X: (double)s.X, Y: (double)s.Y), StringComparer.Ordinal);
 
@@ -273,7 +286,11 @@ public sealed class SimulationService : ISimulationService
             continuous = new ContinuousTimelineDto(durationMs, trajectories);
         }
 
-        return new SimulationResultDto(fieldDto, agents, timeline, stats, continuous);
+        // (v4 SwarmRoute Lab) Quantify the run — throughput, travel-time tail, wait, fairness, reliability, and the
+        // per-cell congestion heatmap — deterministically from the same timeline the frontend replays.
+        var metrics = SimulationMetricsCalculator.Compute(loop, specs, positionById);
+
+        return new SimulationResultDto(fieldDto, agents, timeline, stats, continuous, metrics, guidance);
     }
 
     private static string RoadmapGraphLaneId(string from, string to) => $"{from}-{to}";

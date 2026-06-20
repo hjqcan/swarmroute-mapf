@@ -43,4 +43,18 @@ public interface ITrafficCoordinatorAppService
         string agentId,
         IReadOnlyList<ResourceRef> passedResources,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Atomically reserves a one-tick <b>joint step</b> for a congestion cluster (the host-seam commit): each
+    /// <see cref="JointStepMove"/> claims its destination CP — and, when it actually moves, the lane it traverses —
+    /// over the window <c>[nowMs, nowMs+stepMs)</c>, all-or-nothing. Returns <see cref="AllocationOutcome.Granted"/>
+    /// when the whole step was free (every lease created) or <see cref="AllocationOutcome.Blocked"/> with nothing
+    /// reserved. Lets the autonomous loop drive the zone-local PIBT resolver through the reservation table as the
+    /// single authority, sealing cross-tick soundness.
+    /// </summary>
+    Task<AllocationOutcome> TryGrantJointStepAsync(
+        IReadOnlyList<JointStepMove> moves,
+        long nowMs,
+        long stepMs,
+        CancellationToken cancellationToken = default);
 }

@@ -8,6 +8,9 @@
     <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Domain\SwarmRoute.PathPlanning.Domain.csproj" />
     <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Application.Contract\SwarmRoute.TrafficControl.Application.Contract.csproj" />
     <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Domain.Shared\SwarmRoute.TrafficControl.Domain.Shared.csproj" />
+    <!-- The joint resolver (v3): cluster detection + the PIBT joint-step port live in Liveness; the resolver-kind lever is in its contract. -->
+    <ProjectReference Include="..\..\Liveness\SwarmRoute.Liveness.Domain\SwarmRoute.Liveness.Domain.csproj" />
+    <ProjectReference Include="..\..\Liveness\SwarmRoute.Liveness.Application.Contract\SwarmRoute.Liveness.Application.Contract.csproj" />
   </ItemGroup>
 
   <ItemGroup>

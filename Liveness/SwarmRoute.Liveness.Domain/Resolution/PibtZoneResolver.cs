@@ -11,7 +11,7 @@ namespace SwarmRoute.Liveness.Domain.Resolution;
 /// This is the principled, deadlock-aware generalization of the executor's ad-hoc stall-reroute / step-aside
 /// band-aids: a stuck pocket is shuffled one hop at a time until the standoff dissolves, after which each agent
 /// re-plans back to prioritized-SIPP. It is a <b>pure function</b> (no engine, no I/O, no mutable driver state),
-/// so it is unit-testable in isolation and v4 can wrap it behind an <c>IJointStepPlanner</c> port unchanged.
+/// so it is unit-testable in isolation and the v3 host-seam wraps it behind an <c>IJointStepPlanner</c> port unchanged.
 /// </para>
 /// <para><b>Guarantees.</b> Every decided target is claimed by exactly one agent (vertex-distinct); a 2-cycle
 /// swap is refused (longer rotations a→b→c→a are allowed and are collision-free); the highest-priority agent

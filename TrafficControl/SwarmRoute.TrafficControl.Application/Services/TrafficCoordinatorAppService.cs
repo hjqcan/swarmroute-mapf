@@ -60,6 +60,23 @@ public sealed class TrafficCoordinatorAppService : ITrafficCoordinatorAppService
         => _allocator.BlockedResources(_table, path, agentId);
 
     /// <inheritdoc />
+    public async Task<AllocationOutcome> TryGrantJointStepAsync(
+        IReadOnlyList<JointStepMove> moves, long nowMs, long stepMs, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(moves);
+
+        var outcome = _table.TryGrantJointStep(moves, nowMs, stepMs);
+        if (outcome == AllocationOutcome.Granted)
+            SwarmRouteMetrics.ReservationGrants.Add(1);
+        else
+            SwarmRouteMetrics.ReservationDenials.Add(1);
+        _logger.LogDebug("TryGrantJointStep moves={Moves} window=[{Now},{End}) -> {Outcome}",
+            moves.Count, nowMs, nowMs + stepMs, outcome);
+        await DrainAndPublishAsync(cancellationToken).ConfigureAwait(false);
+        return outcome;
+    }
+
+    /// <inheritdoc />
     public async Task ReleaseAsync(
         string agentId,
         IReadOnlyList<ResourceRef> passedResources,

@@ -3,7 +3,7 @@ namespace SwarmRoute.Liveness.Domain.Resolution;
 /// <summary>
 /// An immutable snapshot of one congestion-cluster agent handed to <see cref="PibtZoneResolver"/>. Keeping the
 /// resolver on this read-only view (rather than the driver's mutable run-state) makes it a pure function — and
-/// lets a future v4 lift it verbatim behind an <c>IJointStepPlanner</c> port.
+/// lets the v3 host-seam lift it verbatim behind an <c>IJointStepPlanner</c> port.
 /// </summary>
 /// <param name="Id">Stable agent id.</param>
 /// <param name="Cell">The control point the agent physically sits on this tick.</param>

@@ -27,6 +27,14 @@ const MARGIN = 44
  * we draw once whenever cursor/size/result/motion changes (scrubbing). React is
  * not re-rendered per animation frame — only the canvas repaints.
  */
+/** (v4 SwarmRoute Lab) Congestion heat ramp: low load → faint amber, high → solid red. `t` is normalised 0..1. */
+function heatColor(t: number): string {
+  const u = Math.min(1, Math.max(0, t))
+  const g = Math.round(150 * (1 - u) + 40 * u) // amber→red: drop the green channel as load rises
+  const alpha = 0.1 + 0.55 * u
+  return `rgba(230, ${g}, 40, ${alpha})`
+}
+
 export default function FieldCanvas() {
   const intl = useIntl()
   const [setRef, size] = useElementSize<HTMLDivElement>()
@@ -37,6 +45,7 @@ export default function FieldCanvas() {
   const cursor = useSimStore((s) => s.cursor)
   const playing = useSimStore((s) => s.playing)
   const hiddenPaths = useSimStore((s) => s.hiddenPaths)
+  const showHeatmap = useSimStore((s) => s.showHeatmap)
 
   const lookup = useMemo(() => (result ? buildSiteLookup(result) : null), [result])
 
@@ -64,6 +73,20 @@ export default function FieldCanvas() {
     const collisionAgents = new Set(stats.collisionAgentIds ?? [])
     const atCollision = collisionIdx != null && liveCursor >= collisionIdx - 0.001
     const flashOn = atCollision && (reduced || Math.floor(Date.now() / 350) % 2 === 0)
+
+    /* ---- (v4 SwarmRoute Lab) congestion heatmap: shade each cell by how contested it was over the run.
+       Bottlenecks (high occupied + wait agent-ticks) glow red; the network + agents draw on top. ---- */
+    if (showHeatmap && result.metrics && result.metrics.heatmap.length > 0) {
+      const heat = result.metrics.heatmap
+      const maxLoad = Math.max(...heat.map((c) => c.occupiedTicks + c.waitTicks), 1)
+      const cellSize = proj.cell * 0.92
+      for (const c of heat) {
+        const t = (c.occupiedTicks + c.waitTicks) / maxLoad
+        if (t <= 0) continue
+        ctx.fillStyle = heatColor(t)
+        ctx.fillRect(proj.toX(c.x) - cellSize / 2, proj.toY(c.y) - cellSize / 2, cellSize, cellSize)
+      }
+    }
 
     /* ---- lanes (faint directed edges) ---- */
     ctx.lineWidth = 1
@@ -237,7 +260,7 @@ export default function FieldCanvas() {
         ctx.stroke()
       }
     }
-  }, [result, lookup, size, reduced, hiddenPaths])
+  }, [result, lookup, size, reduced, hiddenPaths, showHeatmap])
 
   // While playing: one persistent RAF loop that repaints every frame. It reads the
   // LIVE store cursor inside draw(), so it must NOT depend on `cursor` — adding cursor

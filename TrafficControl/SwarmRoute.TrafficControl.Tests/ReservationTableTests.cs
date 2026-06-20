@@ -315,4 +315,81 @@ public class ReservationTableTests
         Assert.Equal(version, table.StateVersion);
         Assert.True(table.DomainEvents is null || table.DomainEvents.Count == 0);
     }
+
+    // ---- Joint step: the host-seam atomic one-tick commit (PIBT's joint move, table as authority) ----
+
+    [Fact]
+    public void JointStep_grants_a_non_conflicting_cluster_step_atomically()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        var moves = new[]
+        {
+            new JointStepMove("AGV-A", "A", "B"),
+            new JointStepMove("AGV-C", "C", "D"),
+        };
+
+        Assert.Equal(AllocationOutcome.Granted, table.TryGrantJointStep(moves, nowMs: 0, stepMs: 100));
+        Assert.Equal(4, table.ActiveLeases.Count); // each mover: destination CP + traversed lane over [0,100)
+    }
+
+    [Fact]
+    public void JointStep_with_a_vertex_conflict_commits_nothing()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        var moves = new[]
+        {
+            new JointStepMove("AGV-A", "A", "X"),
+            new JointStepMove("AGV-B", "B", "X"), // both land on X this tick
+        };
+
+        Assert.Equal(AllocationOutcome.Blocked, table.TryGrantJointStep(moves, 0, 100));
+        Assert.Empty(table.ActiveLeases); // all-or-nothing — nothing committed
+    }
+
+    [Fact]
+    public void JointStep_with_a_head_on_swap_commits_nothing()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        var moves = new[]
+        {
+            new JointStepMove("AGV-A", "A", "B"),
+            new JointStepMove("AGV-B", "B", "A"), // swap: lane A-B vs the reversed lane B-A
+        };
+
+        Assert.Equal(AllocationOutcome.Blocked, table.TryGrantJointStep(moves, 0, 100));
+        Assert.Empty(table.ActiveLeases);
+    }
+
+    [Fact]
+    public void JointStep_blocked_by_an_existing_lease_commits_nothing()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        Assert.Equal(AllocationOutcome.Granted, table.TryGrant(Path(Cell(Cp("B"), 0, 100)), "AGV-Z"));
+
+        var moves = new[] { new JointStepMove("AGV-A", "A", "B") }; // wants B, held by Z over [0,100)
+        Assert.Equal(AllocationOutcome.Blocked, table.TryGrantJointStep(moves, 0, 100));
+        Assert.Single(table.ActiveLeases); // only Z's lease remains
+    }
+
+    [Fact]
+    public void JointStep_hold_reserves_only_the_cp_not_a_lane()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        var moves = new[] { new JointStepMove("AGV-A", "A", "A") }; // hold in place
+
+        Assert.Equal(AllocationOutcome.Granted, table.TryGrantJointStep(moves, 0, 100));
+        Assert.Single(table.ActiveLeases);
+        Assert.Equal(ResourceKind.CP, table.ActiveLeases[0].Resource.Kind);
+    }
+
+    [Fact]
+    public void JointStep_grant_is_collision_free_against_the_committed_window()
+    {
+        var table = new ReservationTable(EmptyTopology);
+        Assert.Equal(AllocationOutcome.Granted, table.TryGrantJointStep(
+            new[] { new JointStepMove("AGV-A", "A", "B") }, 0, 100));
+
+        // A different agent cannot then reserve B over an overlapping window — the joint step holds it.
+        Assert.Equal(AllocationOutcome.Queued, table.TryGrant(Path(Cell(Cp("B"), 50, 150)), "AGV-B"));
+    }
 }

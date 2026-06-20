@@ -23,10 +23,13 @@ public sealed class GridFieldFactory
     /// metadata (row-major: r0c0, r0c1, …).
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">When <paramref name="width"/> or <paramref name="height"/> &lt; 1.</exception>
-    public GridField BuildGrid(int width, int height)
+    public GridField BuildGrid(int width, int height, GuidanceGraph? guidance = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(width, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(height, 1);
+        // (v4 SwarmRoute Lab) Per-lane weight overlay; Identity (the default) leaves every lane at unit distance, so
+        // an unguided build is byte-identical.
+        var g = guidance ?? GuidanceGraph.Identity;
 
         var gridSites = new List<GridSite>(width * height);
         var mapSites = new List<MapSite>(width * height);
@@ -50,11 +53,11 @@ public sealed class GridFieldFactory
 
                 // Connect to the east neighbour (covers all horizontal adjacencies once).
                 if (col + 1 < width)
-                    AddBidirectional(lines, here, SiteId(row, col + 1));
+                    AddBidirectional(lines, here, SiteId(row, col + 1), g);
 
                 // Connect to the south neighbour (covers all vertical adjacencies once).
                 if (row + 1 < height)
-                    AddBidirectional(lines, here, SiteId(row + 1, col));
+                    AddBidirectional(lines, here, SiteId(row + 1, col), g);
             }
         }
 
@@ -65,9 +68,10 @@ public sealed class GridFieldFactory
     /// <summary>The grid site id for (row, col): <c>r{row}c{col}</c>.</summary>
     public static string SiteId(int row, int col) => $"r{row}c{col}";
 
-    private static void AddBidirectional(List<MapLine> lines, string a, string b)
+    private static void AddBidirectional(List<MapLine> lines, string a, string b, GuidanceGraph guidance)
     {
-        lines.Add(new MapLine($"{a}-{b}", a, b, distance: 1));
-        lines.Add(new MapLine($"{b}-{a}", b, a, distance: 1));
+        // Base unit distance × the lane's guidance multiplier (1.0 when unguided → distance 1, byte-identical).
+        lines.Add(new MapLine($"{a}-{b}", a, b, distance: guidance.MultiplierFor($"{a}-{b}")));
+        lines.Add(new MapLine($"{b}-{a}", b, a, distance: guidance.MultiplierFor($"{b}-{a}")));
     }
 }

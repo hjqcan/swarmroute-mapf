@@ -51,4 +51,25 @@ public interface IFleetCoordinationCycle
         IReadOnlySet<SwarmRoute.SpatioTemporal.Kernel.ResourceRef>? blockedResources = null,
         CancellationToken cancellationToken = default)
         => Task.FromResult(CycleReport.Empty);
+
+    /// <summary>
+    /// Resolves the physical standoffs among the <paramref name="contended"/> agents (those left unreserved after a
+    /// cycle) with the loop's configured joint resolver. Mutually-blocking agents — head-on swaps and circular
+    /// blocking chains — are grouped into clusters; each cluster is either solved jointly by CBS/CCBS and reserved
+    /// atomically (as <see cref="PlanClusterAsync"/> does), or advanced one joint single-hop committed atomically
+    /// through the reservation table (PIBT via <c>TryGrantJointStep</c>, the table as the single authority). Returns a
+    /// <see cref="CycleReport"/> for the agents it acted on, which the loop overlays onto the cycle report. The
+    /// default is a no-op (<see cref="CycleReport.Empty"/>), so the seam stays inert unless a real cycle implements it.
+    /// </summary>
+    /// <param name="intendedNextCells">Optional per-agent <c>agentId → the cell it actually tried to enter next</c>
+    /// (the reservation/blacklist-aware first hop of its last planned path, from the cycle report). The standoff
+    /// clusterer keys off these so it links the agents genuinely blocking each other; when an agent is absent (or the
+    /// map is null) the resolver falls back to a geometric next-hop toward its goal.</param>
+    Task<CycleReport> ResolveStandoffsAsync(
+        Guid roadmapId,
+        IReadOnlyCollection<AgentGoal> contended,
+        IReadOnlySet<SwarmRoute.SpatioTemporal.Kernel.ResourceRef>? blockedResources = null,
+        IReadOnlyDictionary<string, string?>? intendedNextCells = null,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(CycleReport.Empty);
 }

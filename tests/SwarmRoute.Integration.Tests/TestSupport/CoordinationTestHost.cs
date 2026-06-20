@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using SwarmRoute.Coordination.Application;
 using SwarmRoute.EventBus.Extensions;
+using SwarmRoute.Liveness.Application.Contract.Policy;
 using SwarmRoute.Map.Application.Contract.Services;
 using SwarmRoute.Map.Domain.ValueObjects;
 using SwarmRoute.PathPlanning.Domain.Planners;
@@ -39,7 +40,8 @@ public sealed class CoordinationTestHost : IDisposable
         RoadmapGraph graph,
         IFleetClock? clock = null,
         IResourceTopology? topology = null,
-        PlannerKind planner = PlannerKind.Dijkstra)
+        PlannerKind planner = PlannerKind.Dijkstra,
+        JointResolverKind jointResolver = JointResolverKind.None)
     {
         var roadmapId = Guid.NewGuid();
         var services = new ServiceCollection();
@@ -71,8 +73,9 @@ public sealed class CoordinationTestHost : IDisposable
             services.AddSingleton(clock);
         }
 
-        // 5. Coordination cycle (no hosted loop — tests drive RunCycleAsync directly).
-        services.AddCoordination();
+        // 5. Coordination cycle (no hosted loop — tests drive RunCycleAsync / ResolveStandoffsAsync directly).
+        //    The joint resolver is opt-in; default None leaves the cycle byte-identical for the existing tests.
+        services.AddCoordination(registerHostedLoop: false, configure: o => o.JointResolver = jointResolver);
 
         return new CoordinationTestHost(roadmapId, graph, services.BuildServiceProvider());
     }

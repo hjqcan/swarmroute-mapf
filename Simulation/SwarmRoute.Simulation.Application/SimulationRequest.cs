@@ -79,4 +79,5 @@ public sealed record SimulationRequest(
     long HorizonWindowMs = long.MaxValue,
     bool StepAside = false,
     bool PreventDeadlockCycles = false,
-    JointResolverKind JointResolver = JointResolverKind.None);
+    JointResolverKind JointResolver = JointResolverKind.None,
+    bool OptimizeGuidance = false);
