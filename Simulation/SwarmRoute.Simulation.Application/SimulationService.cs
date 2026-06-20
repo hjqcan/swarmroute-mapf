@@ -38,6 +38,13 @@ public sealed class SimulationService : ISimulationService
     public async Task<SimulationResultDto> RunAsync(SimulationRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // (FMS-V1 R2) Opt-in station demo: ignore the random grid layout and run a fixed FMS scenario (e.g. M-F1)
+        // with the station executor honouring dock admission / in-service occupancy / post-service parking. Off
+        // (null) ⇒ falls through to the normal run below ⇒ byte-identical.
+        if (request.StationScenario is { } stationScenario)
+            return await RunStationScenarioAsync(stationScenario, request, cancellationToken).ConfigureAwait(false);
+
         Validate(request);
 
         // 1. Build the grid field (graph + render metadata). (v4 ScenarioBench) Carve the scenario's obstacles into
@@ -158,6 +165,57 @@ public sealed class SimulationService : ISimulationService
         }
 
         return loop;
+    }
+
+    /// <summary>
+    /// (FMS-V1 R2) Runs an opt-in fixed FMS station demo end-to-end: builds the scenario (grid + fleet + station
+    /// overlay + catalog), creates a per-request engine WITH the catalog so the dock-admission scheduler shares the
+    /// run's reservation system, and drives the SIPP schedule-faithful discrete executor with the FMS overlay so it
+    /// honours stations (buffer admission hold, in-service dock occupancy, post-service relocation to parking). The
+    /// only built-in layout is <see cref="StationScenarioKind.MF1"/>.
+    /// </summary>
+    private async Task<SimulationResultDto> RunStationScenarioAsync(
+        StationScenarioKind kind, SimulationRequest request, CancellationToken cancellationToken)
+    {
+        var scenario = kind switch
+        {
+            StationScenarioKind.MF1 => MF1ScenarioBuilder.Build(_gridFactory, transitAgvCount: Math.Max(2, request.AgvCount)),
+            _ => throw new ArgumentOutOfRangeException(nameof(request),
+                $"Unknown station scenario '{kind}'."),
+        };
+
+        // The engine is created WITH the catalog, so it wires the dock-admission scheduler over this run's reservation
+        // table; the executor consults it per tick. The station demo runs the SIPP planner + schedule-faithful
+        // executor: SIPP's timeline is on the unified HopMs==1 tick axis (one hop = one tick), so the dock-admission
+        // service window — built in raw ticks ([currentTick, currentTick+serviceMs)) — shares that exact axis and
+        // correctly conflicts with transit AGVs' control-point leases on the station's blocking closure. (Dijkstra
+        // scales intervals by ×1000 edge weight, off the tick axis, so its leases would not line up with the window.)
+        await using var engine = _engineFactory.Create(
+            scenario.Field.Graph, PlannerKind.Sipp, request.HorizonWindowMs, request.PreventDeadlockCycles,
+            stationCatalog: scenario.Catalog);
+
+        var policy = new LivenessPolicy(
+            scenario.Field.Graph,
+            new LivenessOptions { JointResolver = JointResolverKind.None, StepAside = request.StepAside });
+
+        // Tick budget: corridor travel for every AGV plus the full service window plus the dock AGV's wait-then-dock-
+        // then-park trip — generous so a converging run is never truncated (non-convergence is reported, not hidden).
+        var maxTicks = ((scenario.Field.Width + scenario.Field.Height) * (scenario.Agents.Count + 2) * 2)
+            + (int)Math.Min(int.MaxValue / 2, MF1ScenarioBuilder.ServiceDurationMs) + 200;
+
+        var loop = await _loopDriver
+            .RunToCompletionAsync(
+                engine.Cycle, engine.RoadmapId, scenario.Field.Graph, scenario.Agents, maxTicks,
+                advanceClock: engine.Clock.SetTick,
+                executionMode: FleetExecutionMode.ScheduleFaithful,
+                policy: policy,
+                log: msg => _logger.LogInformation("[fms] {Detail}", msg),
+                fms: scenario.Fms,
+                stationScheduler: engine.StationScheduler,
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        return Map(scenario.Field, scenario.Agents, loop, emitTrace: request.EmitTrace);
     }
 
     private static IReadOnlyDictionary<string, (double X, double Y)> PositionById(GridField field)

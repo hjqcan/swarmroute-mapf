@@ -1,3 +1,4 @@
+using SwarmRoute.Dispatch.Domain.Shared;
 using SwarmRoute.Liveness.Application.Contract.Policy;
 using SwarmRoute.Liveness.Domain.Detection;
 using SwarmRoute.Liveness.Domain.Resolution;
@@ -104,8 +105,12 @@ public sealed class LivenessPolicy : ILivenessPolicy
             var states = snapshot.Agents
                 .Select(a => new RelocationAgentState(
                     a.Id, a.Position, a.Goal, a.StuckTicks, a.YieldTicksRemaining,
-                    IsWalledCandidate: !a.Done && !a.EnRoute && !a.HoldingAtAvoidSite && !a.HasActiveRedirect,
-                    IsParked: a.Done))
+                    // (FMS InService gate) An in-service immovable vehicle is neither a walled goal-seeker to unblock
+                    // nor a blocker to step aside; the selector also guards on Mobility. Default Movable ⇒ unchanged.
+                    IsWalledCandidate: !a.Done && !a.EnRoute && !a.HoldingAtAvoidSite && !a.HasActiveRedirect
+                        && a.Mobility != MobilityClass.ImmovableUntilServiceComplete,
+                    IsParked: a.Done,
+                    a.Mobility))
                 .ToList();
 
             foreach (var r in ParkedRelocationSelector.Select(
@@ -138,6 +143,8 @@ public sealed class LivenessPolicy : ILivenessPolicy
                     var a = byId[id];
                     if (a.InJointResolver || a.HasActiveRedirect)
                         continue; // already in PIBT, or owned by the deadlock-redirect machinery
+                    if (a.Mobility == MobilityClass.ImmovableUntilServiceComplete)
+                        continue; // (FMS InService gate) docked & in service ⇒ hard obstacle, never PIBT-driven
                     directives.Add(new EnterJointResolver(new[] { id }));
                 }
         }
@@ -147,7 +154,9 @@ public sealed class LivenessPolicy : ILivenessPolicy
             {
                 var members = cluster
                     .OrderBy(id => id, StringComparer.Ordinal)
-                    .Where(id => !byId[id].InJointResolver && !byId[id].HasActiveRedirect)
+                    // (FMS InService gate) never hand a docked, in-service immovable vehicle to CBS.
+                    .Where(id => !byId[id].InJointResolver && !byId[id].HasActiveRedirect
+                        && byId[id].Mobility != MobilityClass.ImmovableUntilServiceComplete)
                     .ToList();
                 if (members.Count < 2)
                     continue;
@@ -220,6 +229,11 @@ public sealed class LivenessPolicy : ILivenessPolicy
 
         foreach (var a in snapshot.Agents)
         {
+            // (FMS InService gate) a docked, in-service immovable vehicle is never yielded / re-planned — it is a
+            // hard obstacle the rest of the fleet routes around. Default Movable ⇒ no agent is skipped here.
+            if (a.Mobility == MobilityClass.ImmovableUntilServiceComplete)
+                continue;
+
             if (!a.EnRoute || a.Done || a.AtRouteEnd)
                 continue;
 
@@ -270,7 +284,12 @@ public sealed class LivenessPolicy : ILivenessPolicy
         var stuckSnapshots = snapshot.Agents
             .Select(a =>
             {
-                var candidate = !a.Done && !a.InJointResolver && !a.HasActiveRedirect && !a.HoldingAtAvoidSite;
+                // (FMS InService gate) An in-service immovable vehicle is a hard obstacle: it is never a cluster
+                // candidate, so it is neither PIBT-driven nor CBS-driven, and — like a parked/finished vehicle — a
+                // neighbour blocked by it is left unlinked (deferred to step-aside, itself gated off for it). Default
+                // Movable ⇒ this term is always true ⇒ cluster assembly is byte-identical to the pre-FMS path.
+                var candidate = !a.Done && !a.InJointResolver && !a.HasActiveRedirect && !a.HoldingAtAvoidSite
+                    && a.Mobility != MobilityClass.ImmovableUntilServiceComplete;
                 // Candidate-gated intent (mirrors the executor's former BuildStuckSnapshots): en-route agents use
                 // their committed next route CP; pending candidates the greedy next hop toward their effective goal.
                 var intended = !candidate ? null

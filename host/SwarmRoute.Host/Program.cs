@@ -94,6 +94,12 @@ builder.Services.AddSingleton<IResourceTopology, MapResourceTopologyAdapter>();
 // 7. Coordination cycle + hosted watchdog loop.
 builder.Services.AddCoordination(registerHostedLoop: true);
 
+// 7a'. (FMS-V1 R2) Dispatch dock-admission layer, opt-in via Fms:Enabled (default false). Registered AFTER
+//      AddCoordination so its goal-filtering IDockAdmissionController overrides the loop's inert pass-through default,
+//      and after the Map-backed IResourceTopology (it re-registers that singleton with a station-closure overlay).
+//      OFF by default ⇒ byte-identical boot.
+builder.AddSwarmRouteFms();
+
 // 7b. Simulation API — the Host supplies the per-request engine factory because it knows Infra bootstrappers
 //     and registration order. The SimulationController lives in this Host assembly and is discovered by
 //     AddControllers() automatically.

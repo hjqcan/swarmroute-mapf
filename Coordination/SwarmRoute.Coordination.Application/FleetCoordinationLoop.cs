@@ -67,6 +67,14 @@ public sealed class FleetCoordinationLoop : BackgroundService
     private readonly CoordinationLoopOptions _options;
     private readonly ILogger<FleetCoordinationLoop> _logger;
 
+    /// <summary>
+    /// The inert dock-admission fallback bound when no FMS <see cref="IDockAdmissionController"/> is registered.
+    /// Stateless and thread-safe, so a single shared instance is sufficient — it admits every goal unchanged and
+    /// blocks nothing, keeping the cycle byte-identical to its pre-FMS behaviour.
+    /// </summary>
+    private static readonly IDockAdmissionController PassThroughDockAdmission =
+        new PassThroughDockAdmissionController();
+
     public FleetCoordinationLoop(
         IServiceScopeFactory scopeFactory,
         ICoordinationGoalSource goalSource,
@@ -123,7 +131,19 @@ public sealed class FleetCoordinationLoop : BackgroundService
         {
             using var scope = _scopeFactory.CreateScope();
             var cycle = scope.ServiceProvider.GetRequiredService<IFleetCoordinationCycle>();
-            var report = await cycle.RunCycleAsync(roadmapId.Value, goals, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            // (FMS-V1 R2) Dock-admission gate. Filter this cycle's goals through the FMS controller before planning:
+            // a goal denied dock admission is rewritten to hold its vehicle at the station's pre-dock buffer, and the
+            // denied stations' blocking closures are reported so the planner routes the rest of the fleet around the
+            // contended docks (ADR-F3). The result feeds the loop's existing blockedResources path. Opt-in /
+            // byte-identical: when no FMS implementation is registered we bind the inert PassThrough, which returns the
+            // goals unchanged and an empty blocked set, so the cycle is identical to its pre-FMS behaviour.
+            var admission = scope.ServiceProvider.GetService<IDockAdmissionController>()
+                ?? PassThroughDockAdmission;
+            var (admittedGoals, blockedResources) = await EvaluateAdmissionAsync(admission, roadmapId.Value, goals, cancellationToken)
+                .ConfigureAwait(false);
+
+            var report = await cycle.RunCycleAsync(roadmapId.Value, admittedGoals, blockedResources, cancellationToken).ConfigureAwait(false);
 
             // (v3) Joint standoff resolution. Hand the agents left contended after the per-agent cycle to the
             // configured joint resolver: CBS/CCBS solves each mutually-blocking cluster jointly and reserves it
@@ -135,7 +155,10 @@ public sealed class FleetCoordinationLoop : BackgroundService
                 var contended = report.ContendedAgentIds.ToHashSet(StringComparer.Ordinal);
                 if (contended.Count >= 2)
                 {
-                    var clusterGoals = goals.Where(g => contended.Contains(g.AgentId)).ToList();
+                    // Cluster on the admitted goals (the goals the cycle actually planned), so a buffer-held goal is
+                    // standoff-resolved toward its held destination, not its original dock. With PassThrough admission
+                    // admittedGoals is the same instance as goals, so this is byte-identical.
+                    var clusterGoals = admittedGoals.Where(g => contended.Contains(g.AgentId)).ToList();
                     // Carry each contended agent's actual attempted next cell (the reservation/blacklist-aware first hop
                     // of its planned path) from the cycle report into the resolver, so it clusters on what the agents
                     // really blocked on rather than a reservation-blind geometric hop.
@@ -160,6 +183,26 @@ public sealed class FleetCoordinationLoop : BackgroundService
             _logger.LogError(ex, "Coordination cycle failed for roadmap {RoadmapId}.", roadmapId);
             return CycleReport.Empty;
         }
+    }
+
+    /// <summary>
+    /// Runs the dock-admission pass and returns the (possibly buffer-rewritten) goals to plan plus the resources to
+    /// treat as blocked this cycle. The pass-through controller returns the goals unchanged with an empty blocked set
+    /// (byte-identical). A null verdict, or one that does not cover every input goal, degrades safely to the original
+    /// goals with no blocked resources, so a misbehaving FMS controller can never strand the loop or drop an agent.
+    /// </summary>
+    private static async Task<(IReadOnlyCollection<AgentGoal> AdmittedGoals, IReadOnlySet<SwarmRoute.SpatioTemporal.Kernel.ResourceRef>? BlockedResources)> EvaluateAdmissionAsync(
+        IDockAdmissionController admission,
+        Guid roadmapId,
+        IReadOnlyCollection<AgentGoal> goals,
+        CancellationToken cancellationToken)
+    {
+        var result = await admission.EvaluateAdmissionAsync(roadmapId, goals, cancellationToken).ConfigureAwait(false);
+        if (result is null || result.AdmittedGoals.Count != goals.Count)
+            return (goals, null);
+
+        var blocked = result.BlockedResources.Count > 0 ? result.BlockedResources : null;
+        return (result.AdmittedGoals, blocked);
     }
 
     /// <summary>Overlays the joint-resolver outcomes onto the base cycle report, preserving its deterministic order.</summary>

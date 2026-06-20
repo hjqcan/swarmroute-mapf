@@ -33,21 +33,45 @@ public sealed class MapResourceTopologyAdapter : IResourceTopology
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ICoordinationGoalSource _goalSource;
+    private readonly IReadOnlyDictionary<ResourceRef, IReadOnlyCollection<ResourceRef>> _stationClosures;
     private readonly ConcurrentDictionary<Guid, RoadmapTopology> _cache = new();
 
+    /// <param name="scopeFactory">Resolves the Map <c>IRoadmapRepository</c> off the hot path to build the index.</param>
+    /// <param name="goalSource">Supplies the active roadmap id (the single source of "which roadmap is live").</param>
+    /// <param name="stationClosures">
+    /// (FMS-V1 R2) Optional additive station-closure overlay: a map from a station's
+    /// <c>DockPoint</c> <see cref="ResourceRef"/> to the <c>BlockingClosure</c> zone that must be locked together with
+    /// it, so reserving the dock control point also locks the station's zone and releasing it frees the zone (停靠閉包).
+    /// <see langword="null"/> (the default) = no overlay, so <see cref="ClosureOf"/> is byte-identical to the pure
+    /// roadmap-derived closure. The Host binds this only when FMS is enabled and a station catalog is present.
+    /// </param>
     public MapResourceTopologyAdapter(
         IServiceScopeFactory scopeFactory,
-        ICoordinationGoalSource goalSource)
+        ICoordinationGoalSource goalSource,
+        IReadOnlyDictionary<ResourceRef, IReadOnlyCollection<ResourceRef>>? stationClosures = null)
     {
         _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
         _goalSource = goalSource ?? throw new ArgumentNullException(nameof(goalSource));
+        _stationClosures = stationClosures
+            ?? new Dictionary<ResourceRef, IReadOnlyCollection<ResourceRef>>();
     }
 
     /// <inheritdoc />
     public IReadOnlyCollection<ResourceRef> ClosureOf(ResourceRef resource)
     {
         var topology = Current();
-        return topology is null ? new[] { resource } : topology.ClosureOf(resource);
+        var roadmapClosure = topology is null ? new[] { resource } : topology.ClosureOf(resource);
+
+        // (FMS-V1 R2) Fast path: no station overlay configured (default) ⇒ byte-identical roadmap closure.
+        if (_stationClosures.Count == 0 || !_stationClosures.TryGetValue(resource, out var stationClosure))
+            return roadmapClosure;
+
+        // A station dock point: union the roadmap closure with the station's blocking-closure zone so locking the dock
+        // control point locks the whole zone and releasing it frees the zone (grant/release stay symmetric — the same
+        // closure drives both). The result still contains `resource` itself, honouring the IResourceTopology contract.
+        var union = new HashSet<ResourceRef>(roadmapClosure);
+        union.UnionWith(stationClosure);
+        return union.ToArray();
     }
 
     /// <inheritdoc />

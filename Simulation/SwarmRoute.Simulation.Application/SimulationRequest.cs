@@ -69,6 +69,15 @@ namespace SwarmRoute.Simulation.Application;
 /// Independent of <see cref="StepAside"/> and <see cref="HorizonWindowMs"/> (CBS honors the rolling-horizon window
 /// through its SIPP low level). Like every standoff lever it is sim/executor-scoped (production has no executor).
 /// </param>
+/// <param name="StationScenario">
+/// (FMS-V1 R2) Opt-in FMS station demo selector (default <see langword="null"/> = off ⇒ byte-identical to a normal
+/// run; the request's <see cref="Width"/>/<see cref="Height"/>/<see cref="AgvCount"/>/<see cref="Scenario"/> grid is
+/// used as today). When set, the service ignores the random grid layout and instead builds a fixed station scenario
+/// — a corridor with one <see cref="Dispatch.Domain.Shared.StationType.HardBlocking"/> station — assigns one AGV to
+/// the station (routed via its pre-dock buffer) and the rest as corridor transit, and drives the closed loop with the
+/// station executor honouring dock admission, in-service dock occupancy, and post-service parking. The only built-in
+/// layout is <see cref="StationScenarioKind.MF1"/>.
+/// </param>
 public sealed record SimulationRequest(
     int Width,
     int Height,
@@ -84,4 +93,15 @@ public sealed record SimulationRequest(
     ScenarioKind Scenario = ScenarioKind.Open,
     AssignmentPolicy Assignment = AssignmentPolicy.Random,
     bool EmitTrace = false,
-    bool SimulateOrders = false);
+    bool SimulateOrders = false,
+    StationScenarioKind? StationScenario = null);
+
+/// <summary>(FMS-V1 R2) The built-in FMS station demo layouts a <see cref="SimulationRequest"/> may opt into.</summary>
+public enum StationScenarioKind
+{
+    /// <summary>The M-F1 demo: a single-row transit corridor with one <see cref="Dispatch.Domain.Shared.StationType.HardBlocking"/>
+    /// station — a dock point off the corridor, a pre-dock buffer between corridor and dock, and a blocking closure
+    /// covering the corridor cells the dock straddles during service. One AGV docks (routed via the buffer) while
+    /// transit AGVs cross the corridor; the docking AGV must wait at the buffer until the corridor clears (M-F1).</summary>
+    MF1 = 0
+}

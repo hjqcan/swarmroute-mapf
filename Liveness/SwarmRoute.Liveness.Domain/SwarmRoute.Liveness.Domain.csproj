@@ -12,6 +12,9 @@
     <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Domain\SwarmRoute.TrafficControl.Domain.csproj" />
     <!-- Map roadmap graph: the PIBT resolver / hop-distance oracle / standoff cluster detector plan over it. -->
     <ProjectReference Include="..\..\Map\SwarmRoute.Map.Domain\SwarmRoute.Map.Domain.csproj" />
+    <!-- Dispatch mobility-class leaf (a pure-enum project, references nothing): the parked-relocation selector
+         excludes an in-service (immovable) vehicle from ever being stepped aside. One-way ref — no cycle. -->
+    <ProjectReference Include="..\..\Dispatch\SwarmRoute.Dispatch.Domain.Shared\SwarmRoute.Dispatch.Domain.Shared.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

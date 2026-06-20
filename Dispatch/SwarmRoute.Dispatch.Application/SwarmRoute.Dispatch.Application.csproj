@@ -7,6 +7,9 @@
          IStationResourceCalendar implementations (Foundations phase) plan over TrafficControl's seam. -->
     <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Application.Contract\SwarmRoute.TrafficControl.Application.Contract.csproj" />
     <ProjectReference Include="..\..\Shared\SwarmRoute.SpatioTemporal.Kernel\SwarmRoute.SpatioTemporal.Kernel.csproj" />
+    <!-- FMS goal-filtering admission (ADR-F3): the IDockAdmissionController PORT is declared in Coordination
+         (it deals in AgentGoal); Dispatch IMPLEMENTS it here. One-way Dispatch -> Coordination, no cycle. -->
+    <ProjectReference Include="..\..\Coordination\SwarmRoute.Coordination.Application\SwarmRoute.Coordination.Application.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

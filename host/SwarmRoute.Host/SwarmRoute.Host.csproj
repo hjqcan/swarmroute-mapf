@@ -39,6 +39,16 @@
     <ProjectReference Include="..\..\TrafficControl\SwarmRoute.TrafficControl.Infra.Data\SwarmRoute.TrafficControl.Infra.Data.csproj" />
     <ProjectReference Include="..\..\Liveness\SwarmRoute.Liveness.Domain\SwarmRoute.Liveness.Domain.csproj" />
     <ProjectReference Include="..\..\Liveness\SwarmRoute.Liveness.Application\SwarmRoute.Liveness.Application.csproj" />
+
+    <!-- (FMS-V1 R2) Dispatch dock-admission scheduler + service-window calendar: the in-memory simulation engine
+         factory wires them over a run's reservation system when given a station catalog, so an FMS executor's
+         per-tick admission shares the same reservation table the fleet plans on. Additive — the existing engine
+         (no catalog) is byte-identical. -->
+    <ProjectReference Include="..\..\Dispatch\SwarmRoute.Dispatch.Application\SwarmRoute.Dispatch.Application.csproj" />
+    <ProjectReference Include="..\..\Dispatch\SwarmRoute.Dispatch.Application.Contract\SwarmRoute.Dispatch.Application.Contract.csproj" />
+    <!-- (FMS-V1 R2) Dispatch context composition root, wired opt-in by FmsHostExtensions (Fms:Enabled, default off):
+         registers the dock-admission scheduler/calendar + the goal-filtering IDockAdmissionController. -->
+    <ProjectReference Include="..\..\Dispatch\SwarmRoute.Dispatch.Infra.CrossCutting.IoC\SwarmRoute.Dispatch.Infra.CrossCutting.IoC.csproj" />
   </ItemGroup>
 
 </Project>

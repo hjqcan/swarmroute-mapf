@@ -1,4 +1,5 @@
 using SwarmRoute.Coordination.Application;
+using SwarmRoute.Dispatch.Domain.Shared;
 using SwarmRoute.Map.Domain.ValueObjects;
 using SwarmRoute.Liveness.Application.Contract.Policy;
 using SwarmRoute.SpatioTemporal.Kernel;
@@ -33,6 +34,14 @@ internal sealed partial class FleetLoopRun
             // expressed in tick units (the axis the executor below advances on). This is what couples the
             // reservation table's interval collision-freedom to actual execution.
             _advanceClock?.Invoke(_tick);
+
+            // (0.4) (FMS-V1 R2) Station lifecycle, BEFORE planning. First count down in-service vehicles (a service
+            //     that completes this tick releases its dock + closure and redirects the vehicle to parking), then run
+            //     the per-tick dock-admission gate (an AGV staged at a pre-dock buffer is admitted onto the dock only
+            //     once its service window is free, else it holds at the buffer). Both are inert without an FmsScenario,
+            //     so a non-FMS run is byte-identical.
+            await FmsTickServiceCountdownAsync().ConfigureAwait(false);
+            await FmsDockAdmissionPassAsync().ConfigureAwait(false);
 
             // (0.6) Liveness policy — BeforePlanning phase. The policy decides the parked-gatekeeper recovery and
             //     step-aside (a WAITING agent walled out of its goal by finished vehicles on the only approach — a
@@ -80,9 +89,14 @@ internal sealed partial class FleetLoopRun
                 }
 
             // (1) Plan + reserve every agent that still needs right-of-way. A victim holding at its avoidance
-            //     site (waiting for recovery) is intentionally NOT re-planned.
+            //     site (waiting for recovery) is intentionally NOT re-planned. (FMS-V1 R2) Two station states are
+            //     owned by the FMS arm rather than the planner and are excluded here: an in-service vehicle is a hard
+            //     immovable obstacle holding its dock lease, and a vehicle awaiting dock admission is held at its
+            //     buffer (re-planning it would only re-derive a degenerate wait at the buffer). Both predicates are
+            //     false for a non-FMS agent (MissionState stays Idle), so the pending set is byte-identical when off.
             var pending = _fleet
-                .Where(a => !a.Done && !a.EnRoute && !a.HoldingAtAvoidSite && !a.PibtActive)
+                .Where(a => !a.Done && !a.EnRoute && !a.HoldingAtAvoidSite && !a.PibtActive
+                    && !a.InService && a.MissionState != AgvMissionState.WaitingDockAdmission)
                 .Select(a => new AgentGoal(a.Id, a.Start, a.EffectiveGoal, a.Priority))
                 .ToList();
 
@@ -285,7 +299,14 @@ internal sealed partial class FleetLoopRun
                     {
                         var ag = _fleet.Single(a => a.Id == exit.AgentId);
                         ag.PibtActive = false;
-                        if (string.Equals(ag.Position, ag.Goal, StringComparison.Ordinal))
+                        // (FMS-V1 R2) A joint-resolver agent that exits on its station's buffer/dock follows the same
+                        // station lifecycle as a normal arrival (stage for admission / go in service) instead of
+                        // parking. Inert (returns false) without an FmsScenario, so the exit logic below is unchanged.
+                        if (await FmsHandleArrivalAsync(ag, ag.Position).ConfigureAwait(false))
+                        {
+                            // handled: staged at the buffer or now in service (the FMS arm set the state + leases).
+                        }
+                        else if (string.Equals(ag.Position, ag.Goal, StringComparison.Ordinal))
                         {
                             // Reached the real goal: park (hand back nothing — it held no lease).
                             ag.Done = true;
@@ -453,6 +474,17 @@ internal sealed partial class FleetLoopRun
                 if (ag.Idx >= ag.CpRoute.Count - 1)
                 {
                     var here = ag.CpRoute[ag.Idx];
+
+                    // (FMS-V1 R2) Station arrival: reaching a pre-dock buffer (stage for admission) or an admitted
+                    // dock point (go in service) is handled by the FMS arm, which keeps the agent NOT done and NOT
+                    // parked. It returns false (and this is inert) without an FmsScenario, so the arrival logic below
+                    // is byte-identical when off. Claim the current cell so no mover steps onto it this tick.
+                    if (await FmsHandleArrivalAsync(ag, here).ConfigureAwait(false))
+                    {
+                        _claimedNext.Add(here);
+                        continue;
+                    }
+
                     if (!ag.FrontierIsGoal)
                     {
                         // RHCR: reached the rolling-horizon window frontier, not the (effective) goal yet. Drop

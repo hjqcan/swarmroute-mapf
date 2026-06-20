@@ -2,6 +2,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\SwarmRoute.SpatioTemporal.Kernel\SwarmRoute.SpatioTemporal.Kernel.csproj" />
+    <!-- Dispatch mobility-class leaf (a pure-enum project, references nothing): the AgentLivenessView carries the
+         agent's MobilityClass so the policy can treat an in-service (immovable) vehicle as a hard obstacle.
+         One-way ref into a leaf enum project — no dependency cycle. -->
+    <ProjectReference Include="..\..\Dispatch\SwarmRoute.Dispatch.Domain.Shared\SwarmRoute.Dispatch.Domain.Shared.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -22,4 +22,11 @@ public interface IStationCatalog
     /// <param name="station">On success, the matching <see cref="StationDefinition"/>; otherwise <see langword="null"/>.</param>
     /// <returns><see langword="true"/> if a station with that id is known; otherwise <see langword="false"/>.</returns>
     bool TryGet(string stationId, out StationDefinition? station);
+
+    /// <summary>
+    /// All stations in the catalog, in a stable enumeration order. Consumers that need a reverse index — e.g. the
+    /// Round-2 dock-admission controller mapping a goal's destination dock point back to its station — build it from
+    /// this snapshot.
+    /// </summary>
+    IReadOnlyCollection<StationDefinition> Stations { get; }
 }

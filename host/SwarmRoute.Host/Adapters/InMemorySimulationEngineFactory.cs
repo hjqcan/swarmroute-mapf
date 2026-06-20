@@ -2,6 +2,8 @@ using SwarmRoute.Liveness.Domain.Detection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using SwarmRoute.Coordination.Application;
+using SwarmRoute.Dispatch.Application;
+using SwarmRoute.Dispatch.Application.Contract;
 using SwarmRoute.Liveness.Infra.CrossCutting.IoC;
 using SwarmRoute.EventBus.Extensions;
 using SwarmRoute.Map.Application.Contract.Services;
@@ -22,7 +24,12 @@ namespace SwarmRoute.Host.Adapters;
 /// </summary>
 public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
 {
-    public ISimulationEngine Create(RoadmapGraph graph, PlannerKind planner = PlannerKind.Dijkstra, long horizonWindowMs = long.MaxValue, bool preventCycles = false)
+    public ISimulationEngine Create(
+        RoadmapGraph graph,
+        PlannerKind planner = PlannerKind.Dijkstra,
+        long horizonWindowMs = long.MaxValue,
+        bool preventCycles = false,
+        IStationCatalog? stationCatalog = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
 
@@ -50,6 +57,20 @@ public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
 
         services.AddCoordination();
 
+        // (FMS-V1 R2) When the run supplies a station catalog, wire the Dispatch dock-admission scheduler + its
+        // service-window calendar into THIS isolated container. The calendar plans service windows (dock CP + blocking
+        // closure leases) through the same ITrafficCoordinatorAppService → singleton ReservationTable the fleet plans
+        // on, so the executor's per-tick admission is coordinated with transit reservations. Registered as singletons
+        // to match the per-request engine's single-run lifetime (one logical scope), composing the singleton
+        // allocator/table. Omitted entirely when no catalog ⇒ ISimulationEngine.StationScheduler stays null ⇒
+        // byte-identical to a non-FMS run.
+        if (stationCatalog is not null)
+        {
+            services.AddSingleton(stationCatalog);
+            services.AddSingleton<IStationResourceCalendar, StationResourceCalendar>();
+            services.AddSingleton<IStationScheduler, StationScheduler>();
+        }
+
         // RHCR (v2): bound this run's planning horizon. The CoordinationCycleService reads HorizonWindowMs from
         // CoordinationLoopOptions and stamps each PlanRequest; long.MaxValue (default) = unbounded whole-path,
         // byte-identical to v1. Per-request and contained to this isolated container, like PlannerOptions above.
@@ -73,14 +94,17 @@ public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
             provider,
             roadmapId,
             provider.GetRequiredService<IFleetCoordinationCycle>(),
-            clock);
+            clock,
+            // Null unless a catalog was supplied above (the scheduler is then registered in this container).
+            provider.GetService<IStationScheduler>());
     }
 
     private sealed class Engine(
         ServiceProvider provider,
         Guid roadmapId,
         IFleetCoordinationCycle cycle,
-        ManualFleetClock clock)
+        ManualFleetClock clock,
+        IStationScheduler? stationScheduler)
         : ISimulationEngine
     {
         public Guid RoadmapId { get; } = roadmapId;
@@ -88,6 +112,8 @@ public sealed class InMemorySimulationEngineFactory : ISimulationEngineFactory
         public IFleetCoordinationCycle Cycle { get; } = cycle;
 
         public ManualFleetClock Clock { get; } = clock;
+
+        public IStationScheduler? StationScheduler { get; } = stationScheduler;
 
         public ValueTask DisposeAsync() => provider.DisposeAsync();
     }

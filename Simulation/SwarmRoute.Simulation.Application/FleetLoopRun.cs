@@ -1,4 +1,8 @@
 using SwarmRoute.Coordination.Application;
+using SwarmRoute.Dispatch.Application.Contract;
+using SwarmRoute.Dispatch.Domain;
+using SwarmRoute.Dispatch.Domain.Shared;
+using SwarmRoute.Map.Domain.Shared.Enums;
 using SwarmRoute.Map.Domain.ValueObjects;
 using SwarmRoute.Liveness.Application.Contract.Policy;
 using SwarmRoute.SpatioTemporal.Kernel;
@@ -24,6 +28,24 @@ internal sealed partial class FleetLoopRun
     private readonly FleetExecutionMode _executionMode;
     private readonly ILivenessPolicy _policy;
     private readonly Action<string>? _log;
+
+    // ── (FMS-V1 R2) Station overlay (null ⇒ every FMS branch below is skipped ⇒ byte-identical) ──────────────────
+    /// <summary>The FMS station overlay for this run, or <see langword="null"/> for a plain (non-FMS) run. When
+    /// null the dock-admission hold, in-service dock occupancy and post-service parking arms are all inert.</summary>
+    private readonly FmsScenario? _fms;
+
+    /// <summary>The dock-admission scheduler consulted per tick to admit an AGV from a pre-dock buffer onto a dock
+    /// point. Non-null only when <see cref="_fms"/> defines stations.</summary>
+    private readonly IStationScheduler? _stationScheduler;
+
+    /// <summary>Reverse index dock-point CP → its <see cref="StationDefinition"/>, built once from <see cref="_fms"/>.
+    /// Empty when no FMS scenario is in play. Used to recognise an arrived-at dock point and recover its service
+    /// duration / blocking closure.</summary>
+    private readonly IReadOnlyDictionary<string, StationDefinition> _stationByDock;
+
+    /// <summary>Reverse index pre-dock buffer CP → the station it buffers, built once from <see cref="_fms"/>. An AGV
+    /// physically standing on one of these (and bound for that station's dock) is a dock-admission candidate.</summary>
+    private readonly IReadOnlyDictionary<string, StationDefinition> _stationByBuffer;
 
     /// <summary>Set once at the top of <see cref="ExecuteAsync"/> (run-scoped, never mutated thereafter), so the
     /// loop methods can read it without threading it through every signature — exactly as the original local
@@ -81,7 +103,9 @@ internal sealed partial class FleetLoopRun
         Action<long>? advanceClock,
         FleetExecutionMode executionMode,
         ILivenessPolicy policy,
-        Action<string>? log)
+        Action<string>? log,
+        FmsScenario? fms = null,
+        IStationScheduler? stationScheduler = null)
     {
         _cycle = cycle;
         _roadmapId = roadmapId;
@@ -91,9 +115,25 @@ internal sealed partial class FleetLoopRun
         _executionMode = executionMode;
         _policy = policy;
         _log = log;
+        _fms = fms;
+        _stationScheduler = stationScheduler;
 
         _scheduleFaithful = executionMode == FleetExecutionMode.ScheduleFaithful;
         _pibtEpisodeMaxTicks = 2 * Math.Max(1, graph.VertexCount);
+
+        // (FMS-V1 R2) Build the dock/buffer reverse indexes once. Both stay empty when no FMS scenario is in play, so
+        // every station lookup below short-circuits and the run is byte-identical to a non-FMS run.
+        var byDock = new Dictionary<string, StationDefinition>(StringComparer.Ordinal);
+        var byBuffer = new Dictionary<string, StationDefinition>(StringComparer.Ordinal);
+        if (_fms is not null)
+            foreach (var station in _fms.Stations)
+            {
+                byDock.TryAdd(station.DockPoint, station);
+                foreach (var buffer in station.PreDockBuffers)
+                    byBuffer.TryAdd(buffer, station);
+            }
+        _stationByDock = byDock;
+        _stationByBuffer = byBuffer;
 
         // Stable fleet order (priority then ordinal id) so timeline + routes are reproducible.
         _fleet = agents
@@ -101,6 +141,18 @@ internal sealed partial class FleetLoopRun
             .ThenBy(a => a.Id, StringComparer.Ordinal)
             .Select(a => new RunAgent(a))
             .ToList();
+
+        // (FMS-V1 R2) An AGV whose goal is a station dock point starts the mission heading for the pre-dock buffer:
+        // its effective goal is the buffer (so it routes there for admission), MissionState=MovingToPreDockBuffer.
+        // The per-tick admission arm then flips its goal to the dock once granted. No-op without an FMS run.
+        if (_fms is not null)
+            foreach (var ag in _fleet)
+                if (_stationByDock.TryGetValue(ag.Goal, out var station))
+                {
+                    ag.StationId = station.StationId;
+                    ag.MissionState = AgvMissionState.MovingToPreDockBuffer;
+                    FmsInitStationGoal(ag, station);
+                }
 
         _agentViews = new List<AgentLivenessView>(_fleet.Count);
     }
@@ -235,7 +287,7 @@ internal sealed partial class FleetLoopRun
             EnRouteNextCellFor(a),
             a.EnRoute, a.Done, a.PibtActive, a.RedirectTarget is not null, a.HoldingAtAvoidSite,
             a.BlockedTicks, a.StuckTicks, a.YieldTicksRemaining, a.PibtHeldTicks, a.PibtEpisodeTicksLeft,
-            atRouteEnd, nextCellIsParked, scheduledToAdvance, scheduledToMoveThisTick);
+            atRouteEnd, nextCellIsParked, scheduledToAdvance, scheduledToMoveThisTick, a.Mobility);
 
     /// <summary>
     /// Puts an agent en route on a freshly-reserved path: the CP route plus each CP's planned arrival tick (the
@@ -273,6 +325,25 @@ internal sealed partial class FleetLoopRun
         public string Start { get; set; } = spec.StartSiteId;
         public string Goal { get; } = spec.GoalSiteId;
         public int Priority { get; } = spec.Priority;
+
+        /// <summary>(FMS) How freely the liveness layer may relocate this vehicle when resolving contention. The
+        /// default <see cref="MobilityClass.Movable"/> keeps behaviour byte-identical; once a vehicle is docked and
+        /// <see cref="MobilityClass.ImmovableUntilServiceComplete"/> it is surfaced to the policy as a hard obstacle
+        /// (never relocated / PIBT-driven / CBS-driven / yielded). Set by the (next-phase) service-admission arm.</summary>
+        public MobilityClass Mobility { get; set; } = MobilityClass.Movable;
+
+        /// <summary>(FMS) The agent's dispatch mission state. <see cref="AgvMissionState.Idle"/> by default so the
+        /// pre-FMS run is unchanged; the (next-phase) arrival/dock arm advances it through the service lifecycle.</summary>
+        public AgvMissionState MissionState { get; set; } = AgvMissionState.Idle;
+
+        /// <summary>(FMS) Ticks of docked service remaining while <see cref="AgvMissionState.InService"/>; counted
+        /// down by the service arm. Zero by default — no service in progress.</summary>
+        public int ServiceTicksRemaining { get; set; }
+
+        /// <summary>(FMS-V1 R2) The id of the station this AGV is bound to (its goal is the station's dock point), or
+        /// <see langword="null"/> when it is a plain transit agent. Set once at construction; used by the per-tick
+        /// dock-admission arm to recover the station and to release its service window on completion.</summary>
+        public string? StationId { get; set; }
 
         public bool EnRoute { get; set; }
         public bool Done { get; set; }
@@ -326,8 +397,19 @@ internal sealed partial class FleetLoopRun
         /// BeforePlanning policy phase). Drives <see cref="EffectiveGoal"/> and <see cref="HoldingAtAvoidSite"/>.</summary>
         public string? RedirectTarget { get; set; }
 
-        /// <summary>The goal to plan toward this tick: the avoidance site while stepping aside, else the real goal.</summary>
-        public string EffectiveGoal => RedirectTarget ?? Goal;
+        /// <summary>(FMS-V1 R2) A station-lifecycle goal override that takes precedence over both the gatekeeper
+        /// redirect and the real goal: the pre-dock buffer while heading there for admission, or the parking slot
+        /// after service. <see langword="null"/> for a transit agent (or once admitted to the dock), so a non-FMS run
+        /// is byte-identical (<see cref="EffectiveGoal"/> falls through to the existing redirect/goal logic).</summary>
+        public string? FmsGoalOverride { get; set; }
+
+        /// <summary>The goal to plan toward this tick: the FMS station-lifecycle override (buffer / parking) if any,
+        /// else the avoidance site while stepping aside, else the real goal.</summary>
+        public string EffectiveGoal => FmsGoalOverride ?? RedirectTarget ?? Goal;
+
+        /// <summary>(FMS-V1 R2) True while docked and performing the station service — a hard immovable obstacle that
+        /// holds the dock lease, is never re-planned, and is counted down by the service arm. False by default.</summary>
+        public bool InService => MissionState == AgvMissionState.InService;
 
         /// <summary>True while the agent is yielding to an avoidance site and physically sitting on it. Such an
         /// agent is not re-planned and is not "done"; the gatekeeper yield-window countdown restores its goal.</summary>

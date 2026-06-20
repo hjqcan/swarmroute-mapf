@@ -1,3 +1,5 @@
+using SwarmRoute.Dispatch.Domain.Shared;
+
 namespace SwarmRoute.Liveness.Application.Contract.Policy;
 
 /// <summary>
@@ -62,6 +64,10 @@ public enum LivenessPhase
 /// <param name="ScheduledToAdvance">(Advance phase) True when the schedule resolved a step for this agent this tick.</param>
 /// <param name="ScheduledToMoveThisTick">(Advance phase, schedule-faithful) True when the planned arrival tick for
 /// the next CP has come (so a non-advance is a real stall, not a planned wait).</param>
+/// <param name="Mobility">How freely the liveness layer may relocate this vehicle when resolving contention. The
+/// default <see cref="MobilityClass.Movable"/> preserves the pre-FMS behaviour exactly; a vehicle that is
+/// <see cref="MobilityClass.ImmovableUntilServiceComplete"/> (docked and in service) is a hard immovable obstacle
+/// and is never relocated, PIBT-driven, CBS-driven, or yielded by the policy.</param>
 public readonly record struct AgentLivenessView(
     string Id,
     string Position,
@@ -82,7 +88,8 @@ public readonly record struct AgentLivenessView(
     bool AtRouteEnd = false,
     bool NextCellIsParked = false,
     bool ScheduledToAdvance = false,
-    bool ScheduledToMoveThisTick = false);
+    bool ScheduledToMoveThisTick = false,
+    MobilityClass Mobility = MobilityClass.Movable);
 
 /// <summary>
 /// The whole-fleet physical state for one tick at one <see cref="Phase"/>: every agent's

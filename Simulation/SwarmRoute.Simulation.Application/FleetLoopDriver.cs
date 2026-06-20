@@ -1,4 +1,5 @@
 using SwarmRoute.Coordination.Application;
+using SwarmRoute.Dispatch.Application.Contract;
 using SwarmRoute.Map.Domain.ValueObjects;
 using SwarmRoute.Liveness.Application.Contract.Policy;
 
@@ -55,6 +56,14 @@ public sealed class FleetLoopDriver
     /// such decision through it and applies the returned directives with its own mechanism. When null, a no-op
     /// policy is used (no joint resolver, no step-aside) — byte-identical to the pre-policy baseline with those
     /// levers off. The policy carries the joint-resolver kind, the step-aside flag, and all standoff thresholds.</param>
+    /// <param name="fms">(FMS-V1 R2) The optional FMS station overlay: site roles, station definitions and the
+    /// arrival policy. When <see langword="null"/> (the default) every FMS branch in the executor is skipped, so the
+    /// run is byte-identical to a non-FMS run. When supplied, the executor honours stations end-to-end — pre-dock
+    /// buffer admission hold, in-service dock occupancy, and post-service relocation to parking.</param>
+    /// <param name="stationScheduler">(FMS-V1 R2) The dock-admission scheduler the executor consults per tick when
+    /// <paramref name="fms"/> is set, to decide whether an AGV queued at a station's pre-dock buffer may advance onto
+    /// the dock (its service window reserved over the SAME reservation system the fleet plans on). Required when
+    /// <paramref name="fms"/> defines stations; ignored when <paramref name="fms"/> is null.</param>
     /// <exception cref="ArgumentNullException">If <paramref name="cycle"/>, <paramref name="graph"/> or <paramref name="agents"/> is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException">If <paramref name="maxTicks"/> &lt; 1.</exception>
     /// <exception cref="FleetLoopException">Only on an internal invariant breach (reserved path does not start at the agent's current CP).</exception>
@@ -68,6 +77,8 @@ public sealed class FleetLoopDriver
         FleetExecutionMode executionMode = FleetExecutionMode.Greedy,
         ILivenessPolicy? policy = null,
         Action<string>? log = null,
+        FmsScenario? fms = null,
+        IStationScheduler? stationScheduler = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(cycle);
@@ -82,7 +93,8 @@ public sealed class FleetLoopDriver
         // All run-scoped state lives on this per-call instance, so the driver itself stays stateless (zero instance
         // fields) and concurrent calls are isolated.
         return await new FleetLoopRun(
-                cycle, roadmapId, graph, agents, maxTicks, advanceClock, executionMode, policy, log)
+                cycle, roadmapId, graph, agents, maxTicks, advanceClock, executionMode, policy, log,
+                fms, stationScheduler)
             .ExecuteAsync(cancellationToken)
             .ConfigureAwait(false);
     }

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
+using SwarmRoute.Coordination.Application;
 using SwarmRoute.Dispatch.Application;
 using SwarmRoute.Dispatch.Application.Contract;
 
@@ -52,8 +53,16 @@ public static class DispatchNativeInjectorBootStrapper
         services.AddScoped<IStationResourceCalendar, StationResourceCalendar>();
         services.AddScoped<IStationScheduler, StationScheduler>();
 
-        // NOTE: StationScheduler additionally depends on IStationCatalog (the fleet's station definitions). It is a
-        // data-bearing, scenario-specific dependency, so it is intentionally NOT registered here — the Host or a
-        // scenario loader supplies it (e.g. services.AddSingleton<IStationCatalog>(new InMemoryStationCatalog(...))).
+        // The Round-2 goal-filtering dock-admission controller (ADR-F3): implements the Coordination
+        // IDockAdmissionController port over the scheduler + catalog. SCOPED to match the scoped scheduler it
+        // composes. Additive — registering it does NOT wire it into the coordination loop; that binding (and the
+        // pass-through fallback when no FMS controller is present) is the HostWiring phase's job. This bootstrapper
+        // is still intentionally NOT called from the Host this round.
+        services.AddScoped<IDockAdmissionController, DockAdmissionController>();
+
+        // NOTE: both StationScheduler and DockAdmissionController additionally depend on IStationCatalog (the fleet's
+        // station definitions). It is a data-bearing, scenario-specific dependency, so it is intentionally NOT
+        // registered here — the Host or a scenario loader supplies it
+        // (e.g. services.AddSingleton<IStationCatalog>(new InMemoryStationCatalog(...))).
     }
 }

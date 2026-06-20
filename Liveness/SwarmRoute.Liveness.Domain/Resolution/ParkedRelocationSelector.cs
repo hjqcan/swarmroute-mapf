@@ -1,3 +1,4 @@
+using SwarmRoute.Dispatch.Domain.Shared;
 using SwarmRoute.Map.Domain.ValueObjects;
 
 namespace SwarmRoute.Liveness.Domain.Resolution;
@@ -18,9 +19,13 @@ public readonly record struct ParkedRelocation(string BlockerId, string Dest, st
 /// <param name="IsWalledCandidate">True when the agent is a waiting goal-seeker eligible to be unblocked
 /// (not done, not en route, not holding aside, not redirecting).</param>
 /// <param name="IsParked">True when the agent has arrived and is parked on its goal cell.</param>
+/// <param name="Mobility">(FMS) The vehicle's mobility class. A vehicle that is
+/// <see cref="MobilityClass.ImmovableUntilServiceComplete"/> (docked and in service) is a hard immovable obstacle
+/// and is never sent aside as a parked blocker. The default <see cref="MobilityClass.Movable"/> keeps the
+/// pre-FMS step-aside behaviour byte-identical.</param>
 public readonly record struct RelocationAgentState(
     string Id, string Position, string Goal, int StuckTicks, int YieldTicksRemaining,
-    bool IsWalledCandidate, bool IsParked);
+    bool IsWalledCandidate, bool IsParked, MobilityClass Mobility = MobilityClass.Movable);
 
 /// <summary>
 /// Pure selection of the parked-vehicle step-asides for one tick (the gatekeeper recovery's companion). A waiting
@@ -65,6 +70,13 @@ public static class ParkedRelocationSelector
         var isParkedNow = agents.ToDictionary(a => a.Id, a => a.IsParked, StringComparer.Ordinal);
         var yieldingNow = agents.ToDictionary(a => a.Id, a => a.YieldTicksRemaining > 0, StringComparer.Ordinal);
 
+        // (FMS InService gate) A vehicle docked and in service is an immovable obstacle: it must never be picked as a
+        // parked blocker to step aside. Default Movable ⇒ nothing is excluded ⇒ byte-identical to the pre-FMS path.
+        var immovable = agents
+            .Where(a => a.Mobility == MobilityClass.ImmovableUntilServiceComplete)
+            .Select(a => a.Id)
+            .ToHashSet(StringComparer.Ordinal);
+
         foreach (var stuck in agents)
         {
             if (!stuck.IsWalledCandidate || stuck.StuckTicks < gatekeeperUnblockThreshold)
@@ -84,10 +96,11 @@ public static class ParkedRelocationSelector
                     || string.Equals(cell, stuck.Goal, StringComparison.Ordinal))
                     continue;
 
-                // A finished vehicle parked on this approach cell that is not already yielding aside.
+                // A finished vehicle parked on this approach cell that is not already yielding aside — and is not an
+                // in-service immovable vehicle (those are hard obstacles, never relocated).
                 string? blockerId = null;
                 foreach (var a in agents)
-                    if (isParkedNow[a.Id] && !yieldingNow[a.Id]
+                    if (isParkedNow[a.Id] && !yieldingNow[a.Id] && !immovable.Contains(a.Id)
                         && string.Equals(positionOf[a.Id], cell, StringComparison.Ordinal))
                     {
                         blockerId = a.Id;

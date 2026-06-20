@@ -14,6 +14,24 @@
     <!-- PathPlanning shared enums (PlannerKind, for per-request planner selection on SimulationRequest). -->
     <ProjectReference Include="..\..\PathPlanning\SwarmRoute.PathPlanning.Domain.Shared\SwarmRoute.PathPlanning.Domain.Shared.csproj" />
 
+    <!-- Dispatch mobility-class + mission-state leaf (a pure-enum project, references nothing): a RunAgent carries
+         its MobilityClass / AgvMissionState so an in-service vehicle is surfaced to the liveness policy as a hard
+         immovable obstacle. One-way ref into a leaf enum project — no dependency cycle. -->
+    <ProjectReference Include="..\..\Dispatch\SwarmRoute.Dispatch.Domain.Shared\SwarmRoute.Dispatch.Domain.Shared.csproj" />
+
+    <!-- (FMS-V1 R2) Dispatch station contract + domain (StationDefinition, IStationScheduler / ServiceAdmission*):
+         the executor consults the dock-admission scheduler per tick to hold an AGV at a pre-dock buffer until its
+         service window is free, and reads the station's dock point / service duration from the FmsScenario.
+         Dispatch.Application.Contract -> Dispatch.Domain -> Kernel only (no Coordination/Simulation), so this is a
+         one-way reference with no dependency cycle. -->
+    <ProjectReference Include="..\..\Dispatch\SwarmRoute.Dispatch.Application.Contract\SwarmRoute.Dispatch.Application.Contract.csproj" />
+
+    <!-- (FMS-V1 R2) Dispatch.Application for IStationCatalog / InMemoryStationCatalog: the M-F1 scenario builder
+         assembles a station catalog the engine factory wires the dock-admission scheduler over. Dispatch.Application
+         -> Coordination.Application (one-way, for the IDockAdmissionController port), which Simulation already
+         references; Coordination references neither Simulation nor Dispatch, so there is no dependency cycle. -->
+    <ProjectReference Include="..\..\Dispatch\SwarmRoute.Dispatch.Application\SwarmRoute.Dispatch.Application.csproj" />
+
     <!-- Liveness: the physical-standoff decision policy (ILivenessPolicy + directives + snapshot) the driver routes
          every standoff decision through; the concrete LivenessPolicy lives in Liveness.Application. The driver
          itself no longer references Liveness.Domain (PIBT/cluster code) — that is the policy's concern now. -->

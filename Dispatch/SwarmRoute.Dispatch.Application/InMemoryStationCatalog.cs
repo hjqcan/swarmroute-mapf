@@ -10,6 +10,7 @@ namespace SwarmRoute.Dispatch.Application;
 public sealed class InMemoryStationCatalog : IStationCatalog
 {
     private readonly IReadOnlyDictionary<string, StationDefinition> _byId;
+    private readonly IReadOnlyList<StationDefinition> _ordered;
 
     /// <summary>
     /// Builds the catalog from the given stations.
@@ -21,16 +22,22 @@ public sealed class InMemoryStationCatalog : IStationCatalog
         ArgumentNullException.ThrowIfNull(stations);
 
         var byId = new Dictionary<string, StationDefinition>(StringComparer.Ordinal);
+        var ordered = new List<StationDefinition>();
         foreach (var station in stations)
         {
             ArgumentNullException.ThrowIfNull(station);
             if (!byId.TryAdd(station.StationId, station))
                 throw new ArgumentException(
                     $"Duplicate station id '{station.StationId}'.", nameof(stations));
+            ordered.Add(station);
         }
 
         _byId = byId;
+        _ordered = ordered;
     }
+
+    /// <inheritdoc />
+    public IReadOnlyCollection<StationDefinition> Stations => _ordered;
 
     /// <inheritdoc />
     public bool TryGet(string stationId, out StationDefinition? station)
