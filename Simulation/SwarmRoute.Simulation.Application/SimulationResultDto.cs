@@ -18,7 +18,37 @@ public sealed record SimulationResultDto(
     StatsDto Stats,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ContinuousTimelineDto? Continuous = null,
     SimulationMetricsDto? Metrics = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] GuidanceReportDto? Guidance = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] GuidanceReportDto? Guidance = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<TraceEventDto>? Trace = null,
+    RobustnessDto? Robustness = null);
+
+/// <summary>
+/// (v4 SwarmRoute Lab — Robust Execution) The run's Action-Dependency-Graph robustness summary: how many inter-AGV
+/// cell <b>handoffs</b> the plan implies, how many are <b>tight</b> (zero buffer — any delay there collides under
+/// naive timestamp execution), the <b>minimum slack</b> (the largest single delay the whole plan absorbs before a
+/// collision), and the tightest cells. Derived from the timeline; the bigger the dependency count / the smaller the
+/// slack, the more a real deployment needs to follow the dependency graph rather than the clock.
+/// </summary>
+/// <param name="HandoffDependencies">Inter-AGV cell-handoff dependencies (ADG/TPG type-2 edges) — execution coupling.</param>
+/// <param name="TightHandoffs">Handoffs with zero slack (a delay there collides under naive timestamp execution).</param>
+/// <param name="MinSlackTicks">The smallest handoff buffer — the largest single delay the plan tolerates naively.</param>
+/// <param name="TightestCells">The most delay-brittle control points, tightest first.</param>
+public sealed record RobustnessDto(
+    int HandoffDependencies, int TightHandoffs, int MinSlackTicks, IReadOnlyList<string> TightestCells);
+
+/// <summary>
+/// (v4 SwarmRoute Lab — TraceEvent) One event in a run's standardized trace: a typed transition stamped with the
+/// run's clock. <see cref="Kind"/> is <c>Planned</c> (at t0; <see cref="SiteId"/> = start, <see cref="FromSiteId"/> =
+/// goal), <c>Moved</c> (a CP hop; <see cref="SiteId"/> = entered cell, <see cref="FromSiteId"/> = left cell), or
+/// <c>Arrived</c> (<see cref="SiteId"/> = goal). Present only when the request opted in (<c>EmitTrace</c>), so default
+/// responses stay lean + byte-identical. Built post-hoc from the timeline, so it never perturbs the run.
+/// </summary>
+/// <param name="Tick">The run-clock instant (tick, or fleet-clock ms under the continuous executor).</param>
+/// <param name="AgentId">The AGV the event is about.</param>
+/// <param name="Kind"><c>Planned</c> | <c>Moved</c> | <c>Arrived</c>.</param>
+/// <param name="SiteId">The primary control point (entered cell / goal / start).</param>
+/// <param name="FromSiteId">For <c>Moved</c> the cell left; for <c>Planned</c> the goal; else null.</param>
+public sealed record TraceEventDto(long Tick, string AgentId, string Kind, string SiteId, string? FromSiteId = null);
 
 /// <summary>
 /// (v4 SwarmRoute Lab) Present only on an <c>OptimizeGuidance</c> run: the <see cref="Baseline"/> metrics (the run

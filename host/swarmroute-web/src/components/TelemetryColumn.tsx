@@ -202,7 +202,20 @@ function LabMetrics() {
   if (!m) return null
 
   const guidance = result?.guidance
+  const trace = result?.trace
+  const robustness = result?.robustness
   const pct = (v: number) => `${Math.round(v * 100)}%`
+
+  const downloadTrace = () => {
+    if (!trace) return
+    const blob = new Blob([JSON.stringify(trace, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'swarmroute-trace.json'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
   const items: { label: string; value: string; warn?: boolean }[] = [
     { label: intl.formatMessage({ id: 'metrics.throughput' }), value: m.throughputPerThousandTicks.toFixed(1) },
     { label: intl.formatMessage({ id: 'metrics.completion' }), value: pct(m.completionRate), warn: m.completionRate < 1 },
@@ -213,6 +226,14 @@ function LabMetrics() {
     { label: intl.formatMessage({ id: 'metrics.waitRatio' }), value: pct(m.meanWaitRatio), warn: m.meanWaitRatio > 0.4 },
     { label: intl.formatMessage({ id: 'metrics.fairness' }), value: m.fairnessIndex.toFixed(2), warn: m.fairnessIndex < 0.7 },
   ]
+  if (robustness) {
+    // (v4 Robust Execution) Coupling = inter-AGV cell-handoffs; Slack = the largest single delay the plan absorbs
+    // before a naive collision (0 = a back-to-back handoff exists → needs dependency-following execution).
+    items.push(
+      { label: intl.formatMessage({ id: 'metrics.coupling' }), value: String(robustness.handoffDependencies) },
+      { label: intl.formatMessage({ id: 'metrics.slack' }), value: String(robustness.minSlackTicks), warn: robustness.minSlackTicks === 0 },
+    )
+  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -268,6 +289,16 @@ function LabMetrics() {
             ))}
           </div>
         </div>
+      )}
+
+      {trace && trace.length > 0 && (
+        <button
+          type="button"
+          onClick={downloadTrace}
+          className="rounded-lg border border-hairline bg-base px-3 py-2 text-xs text-text-muted transition-colors hover:border-accent/50 hover:text-text-primary"
+        >
+          {intl.formatMessage({ id: 'trace.download' }, { count: trace.length })}
+        </button>
       )}
     </div>
   )

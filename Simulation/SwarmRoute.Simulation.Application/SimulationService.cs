@@ -89,14 +89,15 @@ public sealed class SimulationService : ISimulationService
         //    this run's measured congestion, then re-run the SAME fleet on the guided field and return the guided run
         //    alongside the baseline metrics for comparison. Off by default → single pass, byte-identical.
         if (!request.OptimizeGuidance)
-            return Map(field, agentSpecs, loop);
+            return Map(field, agentSpecs, loop, emitTrace: request.EmitTrace);
 
         var baselineMetrics = SimulationMetricsCalculator.Compute(loop, agentSpecs, PositionById(field));
         var guidance = CongestionGuidanceOptimizer.Derive(baselineMetrics, field);
         var guidedField = _gridFactory.BuildGrid(request.Width, request.Height, guidance, obstacles);
         var guidedLoop = await RunLoopAsync(guidedField, agentSpecs, request, cancellationToken).ConfigureAwait(false);
         return Map(guidedField, agentSpecs, guidedLoop,
-            new GuidanceReportDto(baselineMetrics, guidance.AdjustedLaneCount, guidance.MaxMultiplier));
+            new GuidanceReportDto(baselineMetrics, guidance.AdjustedLaneCount, guidance.MaxMultiplier),
+            emitTrace: request.EmitTrace);
     }
 
     /// <summary>
@@ -220,7 +221,8 @@ public sealed class SimulationService : ISimulationService
         GridField field,
         IReadOnlyList<FleetAgentSpec> specs,
         FleetLoopResult loop,
-        GuidanceReportDto? guidance = null)
+        GuidanceReportDto? guidance = null,
+        bool emitTrace = false)
     {
         var positionById = field.Sites.ToDictionary(s => s.Id, s => (X: (double)s.X, Y: (double)s.Y), StringComparer.Ordinal);
 
@@ -304,7 +306,15 @@ public sealed class SimulationService : ISimulationService
         // per-cell congestion heatmap — deterministically from the same timeline the frontend replays.
         var metrics = SimulationMetricsCalculator.Compute(loop, specs, positionById);
 
-        return new SimulationResultDto(fieldDto, agents, timeline, stats, continuous, metrics, guidance);
+        // (v4 SwarmRoute Lab — TraceEvent) Opt-in standardized event trace, derived from the timeline (Planned / Moved
+        // / Arrived). Null when not requested → omitted from the JSON, byte-identical.
+        var trace = emitTrace ? TraceEventBuilder.Build(loop, specs) : null;
+
+        // (v4 SwarmRoute Lab — Robust Execution) The Action-Dependency-Graph robustness summary, derived from the
+        // timeline: cell-handoff dependencies + how much delay the plan absorbs before a naive collision.
+        var robustness = RobustnessAnalyzer.Compute(loop);
+
+        return new SimulationResultDto(fieldDto, agents, timeline, stats, continuous, metrics, guidance, trace, robustness);
     }
 
     private static string RoadmapGraphLaneId(string from, string to) => $"{from}-{to}";

@@ -1,5 +1,5 @@
 import { Button, InputNumber, Segmented, Slider, Switch } from 'antd'
-import { Dices, Play, Loader2, Repeat, Sparkles, BarChart3 } from 'lucide-react'
+import { Dices, Play, Loader2, Repeat, Sparkles, BarChart3, FileDown } from 'lucide-react'
 import { useIntl } from 'react-intl'
 import { useSimStore } from '@/store/simStore'
 import type { PlannerKind, ScenarioKind, AssignmentPolicy } from '@/types'
@@ -269,6 +269,16 @@ export default function ControlRail() {
           checked={params.optimizeGuidance ?? false}
           onChange={(v) => setParam('optimizeGuidance', v)}
         />
+      </div>
+
+      {/* (v4 SwarmRoute Lab — TraceEvent) Emit the standardized event log (Planned/Moved/Arrived) on the result so
+          it can be downloaded for external analysis. */}
+      <div className="flex items-center justify-between">
+        <label className="flex items-center gap-2 text-sm text-text-muted">
+          <FileDown size={14} />
+          {intl.formatMessage({ id: 'controls.trace' })}
+        </label>
+        <Switch checked={params.emitTrace ?? false} onChange={(v) => setParam('emitTrace', v)} />
       </div>
 
       {/* Auto-loop: when a run finishes playing, pick a new seed (the field updates) and run again, forever. */}

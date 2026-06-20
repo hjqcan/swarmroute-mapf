@@ -81,6 +81,8 @@ export interface SimulationRequest {
   /** (v4 SwarmRoute Lab — Dispatcher) How the dispatcher matches AGVs to goals (default `Random`). `Optimal` is the
    *  Hungarian min-total-travel matching; `Nearest` the greedy nearest-robot heuristic — both cut travel. */
   assignment?: AssignmentPolicy
+  /** (v4 SwarmRoute Lab — TraceEvent) Opt-in: emit the standardized event trace on the result for export. Default off. */
+  emitTrace?: boolean
 }
 
 /** A single control point on the grid at planar (x=col, y=row). */
@@ -225,6 +227,11 @@ export interface SimulationResult {
   /** (v4 SwarmRoute Lab) Present only on an OptimizeGuidance run: the baseline (pre-guidance) metrics + the applied
    *  guidance summary; the top-level {@link metrics} are then the GUIDED run, for a baseline→guided comparison. */
   guidance?: GuidanceReport
+  /** (v4 SwarmRoute Lab — TraceEvent) The standardized event log (Planned/Moved/Arrived), present only when the
+   *  request opted in (`emitTrace`). Exportable for external analysis. */
+  trace?: TraceEvent[]
+  /** (v4 SwarmRoute Lab — Robust Execution) The ADG/TPG robustness summary (present on every run). */
+  robustness?: Robustness
 }
 
 /** (v4 SwarmRoute Lab) An OptimizeGuidance run's comparison payload: the unguided baseline metrics + a summary of
@@ -240,4 +247,24 @@ export interface GuidanceReport {
 export interface BenchmarkEntry {
   planner: PlannerKind
   metrics: SimulationMetrics | null
+}
+
+/** (v4 SwarmRoute Lab — TraceEvent) One event in a run's standardized trace: a typed transition stamped with the
+ *  run's clock. `kind` is `Planned` (siteId=start, fromSiteId=goal), `Moved` (fromSiteId→siteId hop), or `Arrived`. */
+export interface TraceEvent {
+  tick: number
+  agentId: string
+  kind: string
+  siteId: string
+  fromSiteId?: string
+}
+
+/** (v4 SwarmRoute Lab — Robust Execution) The run's Action-Dependency-Graph robustness: inter-AGV cell-handoff
+ *  dependencies (execution coupling), how many are tight (zero buffer), the min slack (largest single delay the plan
+ *  absorbs before a naive collision), and the most delay-brittle cells. */
+export interface Robustness {
+  handoffDependencies: number
+  tightHandoffs: number
+  minSlackTicks: number
+  tightestCells: string[]
 }
