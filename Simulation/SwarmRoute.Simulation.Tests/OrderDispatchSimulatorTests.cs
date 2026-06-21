@@ -1,3 +1,4 @@
+using SwarmRoute.Dispatch.Domain;
 using SwarmRoute.Simulation.Application;
 using Xunit;
 
@@ -56,6 +57,26 @@ public sealed class OrderDispatchSimulatorTests
             $"optimal mean latency {optimal.MeanLatencyMs} should be ≤ random {random.MeanLatencyMs}");
         Assert.True(optimal.OnTimeRate >= random.OnTimeRate,
             $"optimal on-time {optimal.OnTimeRate} should be ≥ random {random.OnTimeRate}");
+    }
+
+    [Fact]
+    public void Runs_over_a_real_dispatch_endpoint_set()
+    {
+        // Wired onto the real Dispatch domain: orders run between FMS workstations, charging at charger endpoints.
+        // A degenerate set (only 1 workstation) must not throw — it widens to parkings / falls back gracefully.
+        var grid = Grid(6, 6);
+        var endpoints = new EndpointSet(
+            Workstations: new HashSet<string> { "r0c0", "r0c5", "r5c0", "r5c5" },
+            Parkings: new HashSet<string> { "r2c2", "r3c3" },
+            Buffers: new HashSet<string>(),
+            Chargers: new HashSet<string> { "r0c2" });
+
+        var a = OrderDispatchSimulator.Run(grid, new[] { "r2c0", "r3c5" }, seed: 5, AssignmentPolicy.Optimal, Backlog(), endpoints);
+        var b = OrderDispatchSimulator.Run(grid, new[] { "r2c0", "r3c5" }, seed: 5, AssignmentPolicy.Optimal, Backlog(), endpoints);
+
+        Assert.Equal(a, b);                                   // deterministic over the real endpoint set too
+        Assert.Equal(a.OrdersTotal, a.OrdersCompleted);       // every order delivered between workstations
+        Assert.True(a.MakespanMs > 0);
     }
 
     [Fact]
